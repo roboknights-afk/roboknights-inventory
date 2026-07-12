@@ -3,20 +3,23 @@
 # every logged-in member. Chunk 3 adds students volunteering for events
 # they're eligible for by grade, and hosts can now edit an existing
 # competition (details, links, and events) the same way they create one.
-# Notifications and finalizing volunteers are still later chunks, built one
-# at a time per the usual house rule.
+# Chunk 4 lets the host finalize which volunteers are actually selected for
+# an event, capped at team_size * max_teams, and emails newly-selected
+# people. Day-before reminders and general announcements are still later
+# chunks, built one at a time per the usual house rule.
 
 from datetime import date
 
 import streamlit as st
 
-from shared import get_client
+from shared import get_client, send_email
 
 client = get_client()
 is_host = st.session_state.is_host
 current_user_id = st.session_state.current_user_id
 current_user_grade = st.session_state.current_user_grade
 user_name_by_id = st.session_state.user_name_by_id
+user_email_by_id = st.session_state.user_email_by_id
 
 GRADES = [7, 8, 9, 10, 11, 12]
 BLANK_LINK = {"label": "", "url": ""}
@@ -416,11 +419,17 @@ else:
                         volunteer_names = [
                             user_name_by_id.get(v["user_id"], "Unknown") for v in event_volunteers
                         ]
+                        selected_names = [
+                            user_name_by_id.get(v["user_id"], "Unknown")
+                            for v in event_volunteers
+                            if v.get("selected")
+                        ]
                         already_volunteered = any(v["user_id"] == current_user_id for v in event_volunteers)
                         is_eligible = (
                             current_user_grade is not None
                             and e["min_grade"] <= current_user_grade <= e["max_grade"]
                         )
+                        cap = e["team_size"] * e["max_teams"]
 
                         with st.container(border=True):
                             st.markdown(
@@ -430,6 +439,11 @@ else:
                             if e.get("details"):
                                 st.caption(e["details"])
 
+                            if selected_names:
+                                st.caption(
+                                    f":material/verified: Selected ({len(selected_names)}/{cap}): "
+                                    + ", ".join(selected_names)
+                                )
                             if volunteer_names:
                                 st.caption(
                                     f":material/group: Volunteers ({len(volunteer_names)}): "
@@ -465,3 +479,45 @@ else:
                                         }).execute()
                                         st.session_state.volunteer_message = f"You volunteered for {e['name']}!"
                                         st.rerun()
+
+                            # Host-only: finalize who's actually selected,
+                            # capped at team_size * max_teams. Only newly
+                            # selected people (not already-selected ones
+                            # re-saved unchanged) get an email.
+                            if is_host and event_volunteers:
+                                finalize_ids = st.multiselect(
+                                    "Finalize volunteers",
+                                    options=[v["user_id"] for v in event_volunteers],
+                                    default=[v["user_id"] for v in event_volunteers if v.get("selected")],
+                                    format_func=lambda uid: user_name_by_id.get(uid, "Unknown"),
+                                    max_selections=cap,
+                                    key=f"finalize_{e['event_id']}",
+                                )
+                                if st.button(
+                                    "Save selection", key=f"save_finalize_{e['event_id']}",
+                                    icon=":material/check:",
+                                ):
+                                    previously_selected = {
+                                        v["user_id"] for v in event_volunteers if v.get("selected")
+                                    }
+                                    newly_selected = set(finalize_ids) - previously_selected
+                                    newly_deselected = previously_selected - set(finalize_ids)
+
+                                    for uid in newly_selected:
+                                        client.table("event_volunteers").update({"selected": True}).eq(
+                                            "event_id", e["event_id"]
+                                        ).eq("user_id", uid).execute()
+                                        send_email(
+                                            user_email_by_id.get(uid),
+                                            f"You're selected: {e['name']} at {comp['name']}",
+                                            f"You've been selected to represent RoboKnights in "
+                                            f"{e['name']} at {comp['name']}.\n\n"
+                                            f"Log in to the app for full details.",
+                                        )
+                                    for uid in newly_deselected:
+                                        client.table("event_volunteers").update({"selected": False}).eq(
+                                            "event_id", e["event_id"]
+                                        ).eq("user_id", uid).execute()
+
+                                    st.session_state.volunteer_message = f"Saved selection for {e['name']}."
+                                    st.rerun()

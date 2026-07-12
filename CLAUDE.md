@@ -364,9 +364,22 @@ email, which is a separate system we don't have admin-key access to (see
 the anon-vs-service-role-key note earlier in this file). Flagged as a
 caption directly on the page so the host sees it every time, not just here.
 
-Not yet built (next chunks, one at a time): host finalizing volunteers +
-selection email, day-before reminder email + bot-status field (extending
-the existing GitHub Actions job), general announcements broadcast.
+Chunk 4 (host finalizing volunteers) — done: new `event_volunteers.selected`
+boolean column. On any event with at least one volunteer, the host sees a
+`st.multiselect` ("Finalize volunteers") pre-filled with whoever's already
+selected, hard-capped at `team_size × max_teams` via `max_selections` —
+Streamlit itself refuses to let the host pick past the cap. "Save
+selection" diffs the new picks against the previous ones: newly-selected
+people get a "You're selected" email, newly-deselected people are just
+quietly unmarked (no email either way for someone whose status didn't
+change, so re-saving without edits doesn't spam anyone). Everyone (not
+just the host) sees a "Selected (n/cap): ..." line above the volunteer
+list once anyone's been picked, alongside the existing full volunteer
+list. Verified live by the student.
+
+Not yet built (next chunks, one at a time): day-before reminder email +
+bot-status field (extending the existing GitHub Actions job), general
+announcements broadcast.
 
 ## Explicitly NOT in v1
 

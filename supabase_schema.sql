@@ -91,3 +91,7 @@ create table if not exists event_volunteers (
 alter table users add column if not exists section text;
 alter table users add column if not exists admission_no text;
 alter table users add column if not exists phone_no text;
+
+-- Competitions feature, Chunk 4: host finalizing volunteers. Capped at
+-- team_size * max_teams in the app, not the database.
+alter table event_volunteers add column if not exists selected boolean not null default false;
