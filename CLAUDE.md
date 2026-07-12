@@ -342,16 +342,31 @@ the record's own owner (there's no UI surface for them at all yet beyond
 the signup form itself), so this is naturally satisfied today, but keep it
 in mind for any future screen that lists user details.
 
-Deferred, explicitly "a later chunk" per the student: a host-only "member
-directory" screen showing every member and their full details (grade,
-section, admission no., phone no.) — the intentional exception to the
-privacy rule above, since only hosts should see everyone's details at
-once. Not built yet.
+Host member directory — done, same day: new `app_pages/members.py` page,
+titled "Members" in the sidebar nav, showing every member's name,
+institutional email, grade, section, admission no., and phone no. The
+intentional exception to the privacy rule above, since only hosts should
+see everyone's details at once. Gated two ways: `app.py` only adds this
+page to the `st.navigation` pages list at all when
+`st.session_state.is_host` is true (so non-hosts never see it in the
+sidebar), AND the page itself re-checks `is_host` and `st.stop()`s if
+false, in case someone hits its URL directly — `st.navigation`'s page list
+alone doesn't stop a direct link, so the page needs its own guard too.
+Table is a `st.data_editor` (student asked to edit everything in it, not
+just view it) — every field editable inline, Grade constrained to a 7–12
+dropdown via `column_config.SelectboxColumn`, `num_rows="fixed"` so hosts
+can't add/delete rows here (a member only ever comes from signing up), one
+"Save changes" button diffs edited rows against the originals and only
+writes what actually changed. Verified live by the student. NOTE:
+editing "Institutional email" here only changes our own `users.email`
+column — it does NOT change the person's actual Supabase Auth login
+email, which is a separate system we don't have admin-key access to (see
+the anon-vs-service-role-key note earlier in this file). Flagged as a
+caption directly on the page so the host sees it every time, not just here.
 
-Not yet built (next chunks, one at a time): host member directory (above),
-host finalizing volunteers + selection email, day-before reminder email +
-bot-status field (extending the existing GitHub Actions job), general
-announcements broadcast.
+Not yet built (next chunks, one at a time): host finalizing volunteers +
+selection email, day-before reminder email + bot-status field (extending
+the existing GitHub Actions job), general announcements broadcast.
 
 ## Explicitly NOT in v1
 
