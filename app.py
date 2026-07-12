@@ -11,6 +11,10 @@ from supabase import create_client
 # file, so they never get accidentally shared or committed.
 load_dotenv()
 
+# Where this app is running. The new-request email links back here.
+# Change this when the app moves somewhere other than your own laptop.
+APP_URL = "http://localhost:8501"
+
 
 # --- Email notifications ------------------------------------------------------
 
@@ -263,6 +267,15 @@ if top_col2.button("Log out"):
     st.session_state.auth_user = None
     st.rerun()
 
+# If they got here by clicking the "New request" email link, that link ends
+# in ?tab=requests. Unlike the password-reset links, this is a normal query
+# parameter (not a "#" fragment), so Streamlit reads it natively — no
+# JavaScript needed. "Requests for my parts" further down already has an
+# auto-generated #requests-for-my-parts anchor (every st.subheader gets
+# one), so a plain link can jump straight to it.
+if st.query_params.get("tab") == "requests":
+    st.info("You clicked a link about a new request. [Jump to it ↓](#requests-for-my-parts)")
+
 # --- Add a part I own --------------------------------------------------------
 
 if "part_added_message" not in st.session_state:
@@ -359,7 +372,7 @@ for part in parts:
                 f"New request for {part['part_number']}",
                 f"{current_user_name} wants to borrow your {part['part_number']} ({part['name']}) "
                 f"for {days_wanted} day(s).\n\n"
-                f"Log in to RoboKnights Parts Inventory to approve or reject the request.",
+                f"Approve or reject it here: {APP_URL}/?tab=requests",
             )
             st.session_state.requested_part_id = part["part_id"]
             # Reload the page with fresh data so the tables below don't show
