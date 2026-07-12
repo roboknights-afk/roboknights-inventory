@@ -85,3 +85,9 @@ create table if not exists event_volunteers (
     created_at   timestamptz not null default now(),
     unique (event_id, user_id)
 );
+
+-- Added later, for the fuller signup form. "email" is already the login
+-- address (relabeled "Institutional email" in the UI, not a separate column).
+alter table users add column if not exists section text;
+alter table users add column if not exists admission_no text;
+alter table users add column if not exists phone_no text;

@@ -69,10 +69,15 @@ def show_login_signup(client):
 
             with signup_tab:
                 name = st.text_input("Your name", key="signup_name")
-                email = st.text_input("Email", key="signup_email")
+                # This IS the login email too — just labeled to make clear it
+                # should be the school one, not a personal address.
+                email = st.text_input("Institutional email", key="signup_email")
                 # Individual grade, not a band — competitions later filter who
                 # can volunteer for a given event by exactly this number.
                 grade = st.selectbox("Your grade", [7, 8, 9, 10, 11, 12], key="signup_grade")
+                section = st.text_input("Section", key="signup_section")
+                admission_no = st.text_input("Admission no.", key="signup_admission_no")
+                phone_no = st.text_input("Phone no.", key="signup_phone_no")
                 password = st.text_input("Password", type="password", key="signup_password")
                 if st.button("Sign up", icon=":material/person_add:", type="primary", width="stretch"):
                     try:
@@ -90,13 +95,17 @@ def show_login_signup(client):
                                 "Log in tab."
                             )
                         else:
-                            # Save the name/grade alongside the real login id, in
-                            # our own table — Supabase Auth only knows email/password.
+                            # Save profile details alongside the real login id,
+                            # in our own table — Supabase Auth only knows
+                            # email/password.
                             client.table("users").upsert({
                                 "user_id": result.user.id,
                                 "name": name,
                                 "email": email,
                                 "grade": grade,
+                                "section": section.strip(),
+                                "admission_no": admission_no.strip(),
+                                "phone_no": phone_no.strip(),
                             }).execute()
 
                             try:

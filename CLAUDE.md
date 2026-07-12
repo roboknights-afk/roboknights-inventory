@@ -315,9 +315,43 @@ so deleting a `users` row does NOT delete the matching Supabase Auth login
 dashboard (or a service-role key, which we don't have configured). Student
 handled the Auth-side deletion themselves.
 
-Not yet built (next chunks, one at a time): host finalizing volunteers +
-selection email, day-before reminder email + bot-status field (extending
-the existing GitHub Actions job), general announcements broadcast.
+Host can edit an existing competition — done, same day: an Edit button
+(host-only) on each competition card opens the same kind of form used to
+create one, pre-filled. Top-level details, links, and events are all
+editable. Links are simply replaced wholesale on save (nothing references
+them). Events are matched by their existing `event_id` and updated in
+place when kept, so an event's volunteer signups (`event_volunteers`,
+which cascades on event delete) survive an edit — only removing an event
+outright removes its volunteers too, same as deleting a part removes its
+request history.
+
+Fuller signup form — done, same day: added `section`, `admission_no`,
+`phone_no` text fields (alongside the existing `grade`). The existing
+Email field was relabeled "Institutional email" rather than adding a
+second field — it's still the one login email, just clarified that it
+should be the school address, not a personal one. Not enforced/validated
+as @dpsrkp.net specifically, since the two current real members
+(Naitik, Aryamman) are staying on personal Gmail for now. Backfilled
+section/admission_no/phone_no for both via direct script, same approach as
+the earlier grade backfill.
+
+**Privacy rule (student's explicit instruction):** section, admission no.,
+and phone no. are private — no member should be able to see another
+member's values for these. Nothing currently displays them to anyone but
+the record's own owner (there's no UI surface for them at all yet beyond
+the signup form itself), so this is naturally satisfied today, but keep it
+in mind for any future screen that lists user details.
+
+Deferred, explicitly "a later chunk" per the student: a host-only "member
+directory" screen showing every member and their full details (grade,
+section, admission no., phone no.) — the intentional exception to the
+privacy rule above, since only hosts should see everyone's details at
+once. Not built yet.
+
+Not yet built (next chunks, one at a time): host member directory (above),
+host finalizing volunteers + selection email, day-before reminder email +
+bot-status field (extending the existing GitHub Actions job), general
+announcements broadcast.
 
 ## Explicitly NOT in v1
 
