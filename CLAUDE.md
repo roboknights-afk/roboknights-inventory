@@ -149,8 +149,30 @@ not bundled — see house rule #1 below):
   due dates existed, which correctly showed "no due date set" instead
   of erroring.
 
-This closes out the full post-Chunk-9 roadmap. Nothing currently planned
-except: RoboKnights logo + general UI polish (not yet scheduled).
+This closes out the full post-Chunk-9 roadmap.
+
+Branding/UI/deployment chunk (done):
+- Done: RoboKnights branding — logo (the actual gear mark from
+  roboknights.in, extracted as inline SVG and saved to
+  `static/roboknights_logo.svg`, shown via `st.logo()`), dark theme + Work
+  Sans font matching the real site (`.streamlit/config.toml`), and general
+  polish (Material Symbol icons on buttons, `st.container(border=True)`
+  around each list row instead of divider lines, `layout="wide"`).
+  Done natively via Streamlit's own theming system, NOT custom CSS — the
+  student asked about a third-party tool called "Impeccable" for this,
+  which was declined: it's an npm/React/Tailwind tool (explicitly against
+  the "no npm" stack rule) that doesn't apply to a Streamlit app at all.
+- Done: deployment provisions for Streamlit Community Cloud — added
+  `requirements.txt`, made `APP_URL` read from an environment variable
+  (falls back to localhost) so deploying doesn't need a code change, and
+  wrote full deploy steps in `DEPLOY.md`. Not yet actually deployed —
+  that's the student's call to make (needs their own
+  share.streamlit.io login), instructions are just ready to go.
+- Deferred, too vague to build yet: "add other features" (which ones?)
+  and "link to the roboknights.in website in the future" (not actionable
+  until there's a concrete integration to build — ask what "link" means
+  when it comes up again: an outbound link from the club site, embedding,
+  shared login, etc. are all very different asks).
 
 ## Identity — real accounts now
 
