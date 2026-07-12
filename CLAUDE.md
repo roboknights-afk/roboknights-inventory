@@ -130,11 +130,15 @@ not bundled — see house rule #1 below):
   reminder going out twice. Verified for real: triggered the workflow
   manually from the Actions tab and confirmed via the database that it
   ran on GitHub's servers and correctly marked the reminder sent.
-- Then: "redirect to accept/reject" link inside the new-request email
-  (query-param based, e.g. `?tab=requests` — safe, unlike the fragment/
-  iframe mess password-reset links ran into, since Streamlit reads query
-  params natively).
-- Then: two dashboard views — "parts I've lent out" (owner-only) and
+- Done: "redirect to accept/reject" link inside the new-request email.
+  Ends in `?tab=requests` — a plain query parameter, not a "#" fragment,
+  so unlike the password-reset links this needed no JavaScript at all;
+  Streamlit reads it natively via st.query_params. When present (and the
+  owner is logged in), a banner appears right under "Logged in as" with
+  a "[Jump to it ↓](#requests-for-my-parts)" link — Streamlit auto-gives
+  every st.subheader an anchor matching its text, so the link just uses
+  that directly.
+- Next: two dashboard views — "parts I've lent out" (owner-only) and
   "what I've borrowed" (requester-only).
 
 Later, not yet scheduled: RoboKnights logo + general UI polish.
