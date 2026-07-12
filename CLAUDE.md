@@ -241,6 +241,60 @@ Do not store passwords ourselves anywhere — Supabase Auth owns that entirely.
 App-specific data about a member (their name, etc.) lives in our own table,
 keyed to the Supabase Auth user id — not by re-implementing auth tables.
 
+## Competitions feature (2026-07-13, in progress)
+
+New subsystem replacing the club's Excel sheet for competition logistics —
+who's going, what events, links, volunteer selection, reminders. Agreed
+data model: a **Competition** (name, venue, date, registration deadline,
+free-text student in-charge, many links) contains one or more **Events**
+(name, free-text details, team_size, max_teams, min_grade–max_grade
+eligibility range). Host-only tools (add competition, finalize volunteers,
+announcements) are gated by a hardcoded email set in `HOST_EMAILS`
+(`shared.py`) — just `roboknights@dpsrkp.net` so far, teacher's email still
+TBD. Everyone can browse every competition/event/link; the volunteer button
+itself is grade-gated (later chunk) and doesn't exist yet.
+
+Chunk 1 (foundation) — done:
+- Converted the single-file app into a real multi-page app: `app.py` now
+  only handles login/signup/reset + computes shared per-user state
+  (`st.session_state`), then hands off via `st.navigation`/`st.Page` to
+  `app_pages/inventory.py` (the old screen, logic unchanged) and
+  `app_pages/competitions.py` (new). `shared.py` holds what both pages
+  need (`get_client()`, `send_email()`, `APP_URL`, `HOST_EMAILS`) since a
+  page script can't import from the entry-point `app.py` without
+  re-running the login screen.
+- Added `grade` (7–12, self-reported) to signup.
+- New tables `competitions`, `competition_links`, `competition_events` +
+  `users.grade` column, in `supabase_schema.sql`.
+- Competitions page: host-only "add a competition" form (with add/remove
+  buttons for a variable number of links and events, same
+  list-in-session-state + rerun pattern as elsewhere), and a read-only
+  "browse all competitions" view for everyone.
+
+Same-day follow-up fixes after first live test:
+- Account card (name + Log out) moved out of `inventory.py`'s sidebar into
+  `app.py` itself, so it renders before the page router runs and shows up
+  on every page, not just Inventory.
+- Host admin override on the Inventory page: `is_host` can now Mark as
+  returned / Delete ANY part (not just their own), see who an on-loan part
+  is currently lent to (a host-only "Lent to X" caption — regular owners
+  already get this via their own "lent out" dashboard), and Edit any part
+  inline (rename, reassign owner via a dropdown, or flip status directly).
+  Manually flipping on-loan→available through Edit also closes out the
+  matching approved request, so it doesn't linger in lent-out/borrowed
+  dashboards — same cleanup the existing "Mark as returned" button does.
+- Bug fix: a link typed without `http://`/`https://` (e.g. "discord.com")
+  was being treated as relative to the app's own address, sending clicks
+  to `localhost:8501/discord.com`. Fixed at both ends — new links get
+  `https://` prepended before saving, and existing links get the same fix
+  applied at display time, so already-saved bad links work without needing
+  a delete/edit feature for competition links (which doesn't exist yet).
+
+Not yet built (next chunks, one at a time): students volunteering for
+eligible events, host finalizing volunteers + selection email, day-before
+reminder email + bot-status field (extending the existing GitHub Actions
+job), general announcements broadcast.
+
 ## Explicitly NOT in v1
 
 No SMS/WhatsApp (India needs DLT registration / paid business API), no
