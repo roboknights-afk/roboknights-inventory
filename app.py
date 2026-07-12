@@ -59,38 +59,28 @@ def get_client():
     return create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
 
 
-def seed_sample_data(client):
-    # Only add sample data once. If users already exist, do nothing —
-    # otherwise every restart would pile on duplicates.
-    already_seeded = client.table("users").select("user_id").execute().data
-    if already_seeded:
-        return
-
-    # Postgres generates each user_id for us (it's a UUID, not a number we
-    # pick), so we insert the users first and read back the ids it assigned.
-    users_to_insert = [
-        {"name": "Naitik",   "email": "naitik@example.com"},
-        {"name": "Aryamman", "email": "aryamman@example.com"},
-        {"name": "Ishaan",   "email": "ishaan@example.com"},
-    ]
-    inserted_users = client.table("users").insert(users_to_insert).execute().data
-    user_id_by_name = {u["name"]: u["user_id"] for u in inserted_users}
-
-    # One row per physical part. Two identical motors = two rows.
-    parts_to_insert = [
-        {"part_number": "P219", "name": "N20 gear motor",      "owner_id": user_id_by_name["Naitik"],   "status": "available"},
-        {"part_number": "P220", "name": "TB6612FNG driver",    "owner_id": user_id_by_name["Naitik"],   "status": "available"},
-        {"part_number": "P305", "name": "HC-SR04 ultrasonic",  "owner_id": user_id_by_name["Aryamman"], "status": "available"},
-        {"part_number": "P410", "name": "Arduino Nano",        "owner_id": user_id_by_name["Aryamman"], "status": "on loan"},
-        {"part_number": "P512", "name": "Li-ion battery pack", "owner_id": user_id_by_name["Ishaan"],   "status": "available"},
-    ]
-    client.table("parts").insert(parts_to_insert).execute()
-
-
 # --- Login / signup ----------------------------------------------------------
 
 def show_login_signup(client):
     # This whole screen only appears when nobody is logged in yet.
+    # The wordmark logo is black-on-transparent, which would nearly
+    # disappear on our dark theme — so it gets its own small white card.
+    # This one CSS rule is scoped to just this card (via key=) rather than
+    # touching the app's overall theming, which stays in config.toml.
+    with st.container(key="rk_wordmark_box"):
+        st.image("static/RKs Logo (2).png")
+    st.html("""
+        <style>
+        .st-key-rk_wordmark_box {
+            background-color: white;
+            border-radius: 12px;
+            padding: 20px;
+            max-width: 420px;
+            margin-bottom: 8px;
+        }
+        </style>
+    """)
+
     st.title("RoboKnights Parts Inventory")
     st.caption("Log in or create an account to continue.")
 
@@ -229,7 +219,6 @@ def show_reset_screen(client):
 # --- App ---------------------------------------------------------------------
 
 client = get_client()
-seed_sample_data(client)
 
 if "auth_user" not in st.session_state:
     st.session_state.auth_user = None
@@ -260,7 +249,6 @@ if "approving_request_id" not in st.session_state:
     st.session_state.approving_request_id = None
 
 st.title("RoboKnights Parts Inventory")
-st.caption("Every part below is stored in Supabase (a real, shared database).")
 
 # --- Who am I? -----------------------------------------------------------
 # Real login now — no more dropdown. current_user_id comes from the actual
@@ -347,6 +335,19 @@ if st.session_state.deleted_part_message:
 parts = client.table("parts").select("*").order("part_number").execute().data
 part_by_id = {p["part_id"]: p for p in parts}
 
+st.subheader(":material/list_alt: All parts")
+
+if not parts:
+    st.caption("No parts yet — add one below.")
+else:
+    # Column headers, lined up with the same widths as the data rows below.
+    head1, head2, head3, head4, head5, head6 = st.columns([1, 2, 2, 2, 1, 2])
+    head1.markdown("**Serial no**")
+    head2.markdown("**Name**")
+    head3.markdown("**Owned by**")
+    head4.markdown("**Status**")
+    head5.markdown("**Days**")
+
 # One row of columns per part, so each row can have its own button.
 for part in parts:
     owner_name = user_name_by_id.get(part["owner_id"], "Unknown")
@@ -363,7 +364,10 @@ for part in parts:
         col1.write(part["part_number"])
         col2.write(part["name"])
         col3.write(owner_name)
-        col4.write(part["status"])
+        if is_available:
+            col4.badge("Available", icon=":material/check_circle:", color="green")
+        else:
+            col4.badge("On loan", icon=":material/schedule:", color="orange")
 
         if is_available and not is_mine:
             # The requester says how many days they want it for; the owner
