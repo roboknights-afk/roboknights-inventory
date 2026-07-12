@@ -248,8 +248,6 @@ if "decision_message" not in st.session_state:
 if "approving_request_id" not in st.session_state:
     st.session_state.approving_request_id = None
 
-st.title("RoboKnights Parts Inventory")
-
 # --- Who am I? -----------------------------------------------------------
 # Real login now — no more dropdown. current_user_id comes from the actual
 # Supabase Auth session, not a guess.
@@ -260,46 +258,42 @@ user_email_by_id = {u["user_id"]: u["email"] for u in users}
 current_user_id = st.session_state.auth_user["id"]
 current_user_name = user_name_by_id.get(current_user_id, st.session_state.auth_user["email"])
 
-top_col1, top_col2 = st.columns([4, 1])
-top_col1.write(f"Logged in as **{current_user_name}**")
-if top_col2.button("Log out", icon=":material/logout:"):
-    client.auth.sign_out()
-    st.session_state.auth_user = None
-    st.rerun()
-
-# If they got here by clicking the "New request" email link, that link ends
-# in ?tab=requests. Unlike the password-reset links, this is a normal query
-# parameter (not a "#" fragment), so Streamlit reads it natively — no
-# JavaScript needed. "Requests for my parts" further down already has an
-# auto-generated #requests-for-my-parts anchor (every st.subheader gets
-# one), so a plain link can jump straight to it.
-if st.query_params.get("tab") == "requests":
-    st.info("You clicked a link about a new request. [Jump to it ↓](#requests-for-my-parts)")
-
-# --- Add a part I own --------------------------------------------------------
+# --- Sidebar: account + add a part --------------------------------------------
+# Account controls and the add-part form live in the sidebar so the main
+# page is purely "the inventory" — less clutter, clearer focus.
 
 if "part_added_message" not in st.session_state:
     st.session_state.part_added_message = None
 
-with st.expander("Add a part I own", icon=":material/add_box:"):
+with st.sidebar:
+    with st.container(border=True):
+        st.markdown(f":material/person: Logged in as\n\n**{current_user_name}**")
+        if st.button("Log out", icon=":material/logout:"):
+            client.auth.sign_out()
+            st.session_state.auth_user = None
+            st.rerun()
+
+    st.subheader(":material/add_box: Add a part I own")
     new_part_name = st.text_input("Part name (e.g. N20 gear motor)", key="new_part_name")
     if st.button("Add part", icon=":material/add:"):
         if not new_part_name.strip():
             st.session_state.part_added_message = ("error", "Part name is required.")
         else:
             # No more typing in a part number by hand — that's how we ended
-            # up with two different parts both called "2". Instead: look at
-            # the highest RK-#### number currently in use and count up from
-            # there. (Earlier this used the part's own database id instead —
-            # that number keeps climbing forever and never reuses ids freed
-            # up by deleted parts, so numbering could jump way ahead, e.g.
-            # straight to RK-0018 with only 5 parts actually in the table.)
-            existing_numbers = [
+            # up with two different parts both called "2". The next serial is
+            # the LOWEST RK-#### number not currently in use — so a number
+            # freed up by a deleted part gets recycled by the next new part,
+            # keeping the numbering compact. Existing parts never get
+            # renumbered (their serial may be written on the physical part,
+            # or quoted in old emails — it has to stay stable).
+            used_numbers = {
                 int(p["part_number"][3:])
                 for p in client.table("parts").select("part_number").execute().data
                 if p["part_number"].startswith("RK-") and p["part_number"][3:].isdigit()
-            ]
-            next_number = max(existing_numbers, default=0) + 1
+            }
+            next_number = 1
+            while next_number in used_numbers:
+                next_number += 1
             serial = f"RK-{next_number:04d}"
 
             client.table("parts").insert({
@@ -312,14 +306,25 @@ with st.expander("Add a part I own", icon=":material/add_box:"):
             st.session_state.part_added_message = ("success", f"Added {serial} — {new_part_name.strip()}.")
         st.rerun()
 
-# Shown outside the expander on purpose — same reason as the login screen's
-# forgot-password message: Streamlit won't let a script force an expander
-# back open after you've clicked inside it, so a message placed inside it
-# would be invisible right after the click.
-if st.session_state.part_added_message:
-    kind, text = st.session_state.part_added_message
-    (st.success if kind == "success" else st.error)(text)
-    st.session_state.part_added_message = None
+    # Shown right under the form. Stashed in session_state so it survives
+    # the rerun the button click causes (same pattern as everywhere else).
+    if st.session_state.part_added_message:
+        kind, text = st.session_state.part_added_message
+        (st.success if kind == "success" else st.error)(text)
+        st.session_state.part_added_message = None
+
+# --- Main page -----------------------------------------------------------
+
+st.title("RoboKnights Parts Inventory")
+
+# If they got here by clicking the "New request" email link, that link ends
+# in ?tab=requests. Unlike the password-reset links, this is a normal query
+# parameter (not a "#" fragment), so Streamlit reads it natively — no
+# JavaScript needed. "Requests for my parts" further down already has an
+# auto-generated #requests-for-my-parts anchor (every st.subheader gets
+# one), so a plain link can jump straight to it.
+if st.query_params.get("tab") == "requests":
+    st.info("You clicked a link about a new request. [Jump to it ↓](#requests-for-my-parts)")
 
 # --- Parts list ------------------------------------------------------------
 
@@ -335,10 +340,65 @@ if st.session_state.deleted_part_message:
 parts = client.table("parts").select("*").order("part_number").execute().data
 part_by_id = {p["part_id"]: p for p in parts}
 
+# Fetched here (not further down where it's displayed) so the metric row
+# below can show the pending count. Only the pending ones — approved and
+# rejected requests don't need action anymore.
+my_requests = (
+    client.table("requests")
+    .select("*")
+    .eq("owner_id", current_user_id)
+    .eq("status", "pending")
+    .order("request_id")
+    .execute()
+    .data
+)
+
+# --- At-a-glance numbers -----------------------------------------------------
+
+available_count = sum(1 for p in parts if p["status"] == "available")
+on_loan_count = sum(1 for p in parts if p["status"] == "on loan")
+
+m1, m2, m3, m4 = st.columns(4, border=True)
+m1.metric("Total parts", len(parts))
+m2.metric("Available", available_count)
+m3.metric("On loan", on_loan_count)
+m4.metric("Requests for me", len(my_requests))
+
 st.subheader(":material/list_alt: All parts")
 
+# Search box + quick status filter, side by side above the table.
+search_col, filter_col = st.columns([2, 2], vertical_alignment="center")
+search_text = search_col.text_input(
+    "Search parts",
+    key="parts_search",
+    placeholder="Search by serial no or name",
+    icon=":material/search:",
+    label_visibility="collapsed",
+)
+status_filter = filter_col.segmented_control(
+    "Filter parts",
+    ["All", "Available", "On loan", "Mine"],
+    default="All",
+    key="parts_filter",
+    label_visibility="collapsed",
+) or "All"  # deselecting every pill returns None — treat that as "All"
+
+visible_parts = []
+for p in parts:
+    if search_text and search_text.lower() not in (p["part_number"] + " " + p["name"]).lower():
+        continue
+    if status_filter == "Available" and p["status"] != "available":
+        continue
+    if status_filter == "On loan" and p["status"] != "on loan":
+        continue
+    if status_filter == "Mine" and p["owner_id"] != current_user_id:
+        continue
+    visible_parts.append(p)
+
 if not parts:
-    st.caption("No parts yet — add one below.")
+    st.caption("No parts yet — add one from the sidebar.")
+elif not visible_parts:
+    st.caption("No parts match your search or filter.")
 else:
     # Column headers, lined up with the same widths as the data rows below.
     head1, head2, head3, head4, head5, head6 = st.columns([1, 2, 2, 2, 1, 2])
@@ -349,7 +409,7 @@ else:
     head5.markdown("**Days**")
 
 # One row of columns per part, so each row can have its own button.
-for part in parts:
+for part in visible_parts:
     owner_name = user_name_by_id.get(part["owner_id"], "Unknown")
     if part["owner_id"] == current_user_id:
         owner_name += " (yours)"
@@ -360,7 +420,7 @@ for part in parts:
     is_on_loan = part["status"] == "on loan"
 
     with st.container(border=True):
-        col1, col2, col3, col4, col5, col6 = st.columns([1, 2, 2, 2, 1, 2])
+        col1, col2, col3, col4, col5, col6 = st.columns([1, 2, 2, 2, 1, 2], vertical_alignment="center")
         col1.write(part["part_number"])
         col2.write(part["name"])
         col3.write(owner_name)
@@ -447,17 +507,7 @@ if st.session_state.decision_message:
     st.info(st.session_state.decision_message)
     st.session_state.decision_message = None
 
-# Only the pending ones — approved/rejected requests don't need action anymore.
-my_requests = (
-    client.table("requests")
-    .select("*")
-    .eq("owner_id", current_user_id)
-    .eq("status", "pending")
-    .order("request_id")
-    .execute()
-    .data
-)
-
+# my_requests was already fetched up top (the metric row needed the count).
 if not my_requests:
     st.caption("No pending requests.")
 
@@ -468,7 +518,7 @@ for req in my_requests:
     requested_days = req.get("requested_days") or 7
 
     with st.container(border=True):
-        col1, col2, col3, col4 = st.columns([2, 2, 1, 1])
+        col1, col2, col3, col4 = st.columns([2, 2, 1, 1], vertical_alignment="center")
         col1.write(f"{part['part_number']} — {part['name']}")
         col2.write(f"Requested by {requester_name} for {requested_days} day(s)")
 
@@ -551,7 +601,7 @@ else:
         part = part_by_id.get(req["part_id"])
         borrower_name = user_name_by_id.get(req["requester_id"], "Unknown")
         with st.container(border=True):
-            col1, col2, col3 = st.columns([2, 2, 2])
+            col1, col2, col3 = st.columns([2, 2, 2], vertical_alignment="center")
             col1.write(f"{part['part_number']} — {part['name']}")
             col2.write(f"Lent to {borrower_name}")
             col3.write(f"Due {format_due(req)}")
@@ -575,7 +625,7 @@ else:
         part = part_by_id.get(req["part_id"])
         owner_name = user_name_by_id.get(req["owner_id"], "Unknown")
         with st.container(border=True):
-            col1, col2, col3 = st.columns([2, 2, 2])
+            col1, col2, col3 = st.columns([2, 2, 2], vertical_alignment="center")
             col1.write(f"{part['part_number']} — {part['name']}")
             col2.write(f"Borrowed from {owner_name}")
             col3.write(f"Due {format_due(req)}")
