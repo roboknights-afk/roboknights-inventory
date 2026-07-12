@@ -1,0 +1,18 @@
+# Matches roboknights.in: dark, near-black background, Work Sans typeface.
+# The real site is deliberately monochrome (no colored brand accent), so we
+# follow that instead of inventing a color that isn't actually theirs.
+
+[theme]
+base = "dark"
+primaryColor = "#5C5C5C"
+backgroundColor = "#242424"
+secondaryBackgroundColor = "#2E2E2E"
+textColor = "#FFFFFF"
+linkColor = "#FFFFFF"
+borderColor = "#3A3A3A"
+font = "Work Sans:https://fonts.googleapis.com/css2?family=Work+Sans:wght@400;500;600;700&display=swap"
+headingFont = "Work Sans:https://fonts.googleapis.com/css2?family=Work+Sans:wght@600;700&display=swap"
+baseFontSize = 16
+baseRadius = "8px"
+showWidgetBorder = true
+linkUnderline = false

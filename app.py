@@ -11,9 +11,21 @@ from supabase import create_client
 # file, so they never get accidentally shared or committed.
 load_dotenv()
 
-# Where this app is running. The new-request email links back here.
-# Change this when the app moves somewhere other than your own laptop.
-APP_URL = "http://localhost:8501"
+# Where this app is running. The new-request email links back here. Reads
+# from an APP_URL secret if one is set (e.g. once deployed), otherwise
+# falls back to your own laptop — so deploying doesn't need a code change,
+# just one new secret.
+APP_URL = os.environ.get("APP_URL", "http://localhost:8501")
+
+# Must be the first Streamlit call in the script. "wide" gives the
+# multi-column parts table room to breathe instead of squeezing everything
+# into a narrow centered strip.
+st.set_page_config(
+    page_title="RoboKnights Parts Inventory",
+    page_icon="static/roboknights_logo.svg",
+    layout="wide",
+)
+st.logo("static/roboknights_logo.svg", size="large")
 
 
 # --- Email notifications ------------------------------------------------------
@@ -87,7 +99,7 @@ def show_login_signup(client):
     with login_tab:
         email = st.text_input("Email", key="login_email")
         password = st.text_input("Password", type="password", key="login_password")
-        if st.button("Log in"):
+        if st.button("Log in", icon=":material/login:"):
             try:
                 result = client.auth.sign_in_with_password({"email": email, "password": password})
                 st.session_state.auth_user = {"id": result.user.id, "email": result.user.email}
@@ -106,7 +118,7 @@ def show_login_signup(client):
         name = st.text_input("Your name", key="signup_name")
         email = st.text_input("Email", key="signup_email")
         password = st.text_input("Password", type="password", key="signup_password")
-        if st.button("Sign up"):
+        if st.button("Sign up", icon=":material/person_add:"):
             try:
                 result = client.auth.sign_up({"email": email, "password": password})
 
@@ -143,7 +155,7 @@ def show_login_signup(client):
 
         # If the confirmation email never arrived (spam filter, typo fixed,
         # etc.), this asks Supabase to send it again for the email typed above.
-        if st.button("Resend confirmation email"):
+        if st.button("Resend confirmation email", icon=":material/mail:"):
             try:
                 client.auth.resend({"type": "signup", "email": email})
                 st.success("Confirmation email resent — check your inbox and spam folder.")
@@ -167,7 +179,7 @@ def show_reset_screen(client):
     if st.session_state.reset_sent_to is None:
         # Step 1: ask for the email, send a code to it.
         email = st.text_input("Your email", key="reset_email")
-        if st.button("Send reset code"):
+        if st.button("Send reset code", icon=":material/send:"):
             try:
                 client.auth.reset_password_for_email(email)
                 st.session_state.reset_sent_to = email
@@ -185,7 +197,7 @@ def show_reset_screen(client):
             key="reset_code",
         )
         new_password = st.text_input("New password", type="password", key="reset_new_password")
-        if st.button("Update password"):
+        if st.button("Update password", icon=":material/lock_reset:"):
             try:
                 entered = code.strip()
                 if "token_hash=" in entered:
@@ -262,7 +274,7 @@ current_user_name = user_name_by_id.get(current_user_id, st.session_state.auth_u
 
 top_col1, top_col2 = st.columns([4, 1])
 top_col1.write(f"Logged in as **{current_user_name}**")
-if top_col2.button("Log out"):
+if top_col2.button("Log out", icon=":material/logout:"):
     client.auth.sign_out()
     st.session_state.auth_user = None
     st.rerun()
@@ -281,9 +293,9 @@ if st.query_params.get("tab") == "requests":
 if "part_added_message" not in st.session_state:
     st.session_state.part_added_message = None
 
-with st.expander("Add a part I own"):
+with st.expander("Add a part I own", icon=":material/add_box:"):
     new_part_name = st.text_input("Part name (e.g. N20 gear motor)", key="new_part_name")
-    if st.button("Add part"):
+    if st.button("Add part", icon=":material/add:"):
         if not new_part_name.strip():
             st.session_state.part_added_message = ("error", "Part name is required.")
         else:
@@ -341,84 +353,87 @@ for part in parts:
     if part["owner_id"] == current_user_id:
         owner_name += " (yours)"
 
-    col1, col2, col3, col4, col5, col6 = st.columns([1, 2, 2, 2, 1, 2])
-    col1.write(part["part_number"])
-    col2.write(part["name"])
-    col3.write(owner_name)
-    col4.write(part["status"])
-
     # Only show a Request button if the part is free and it isn't already yours.
     is_available = part["status"] == "available"
     is_mine = part["owner_id"] == current_user_id
     is_on_loan = part["status"] == "on loan"
 
-    if is_available and not is_mine:
-        # The requester says how many days they want it for; the owner gets
-        # to keep that number or change it when they approve (below).
-        days_wanted = col5.number_input(
-            "Days", min_value=1, value=7, key=f"days_{part['part_id']}", label_visibility="collapsed"
-        )
-        # key= makes each button unique so Streamlit doesn't mix them up.
-        if col6.button("Request this", key=f"request_{part['part_id']}"):
-            client.table("requests").insert({
-                "part_id": part["part_id"],
-                "requester_id": current_user_id,
-                "owner_id": part["owner_id"],
-                "status": "pending",
-                "requested_days": days_wanted,
-            }).execute()
-            send_email(
-                user_email_by_id.get(part["owner_id"]),
-                f"New request for {part['part_number']}",
-                f"{current_user_name} wants to borrow your {part['part_number']} ({part['name']}) "
-                f"for {days_wanted} day(s).\n\n"
-                f"Approve or reject it here: {APP_URL}/?tab=requests",
+    with st.container(border=True):
+        col1, col2, col3, col4, col5, col6 = st.columns([1, 2, 2, 2, 1, 2])
+        col1.write(part["part_number"])
+        col2.write(part["name"])
+        col3.write(owner_name)
+        col4.write(part["status"])
+
+        if is_available and not is_mine:
+            # The requester says how many days they want it for; the owner
+            # gets to keep that number or change it when they approve (below).
+            days_wanted = col5.number_input(
+                "Days", min_value=1, value=7, key=f"days_{part['part_id']}", label_visibility="collapsed"
             )
-            st.session_state.requested_part_id = part["part_id"]
-            # Reload the page with fresh data so the tables below don't show
-            # stale info (e.g. this same part still listed as available).
-            st.rerun()
+            # key= makes each button unique so Streamlit doesn't mix them up.
+            if col6.button("Request this", key=f"request_{part['part_id']}", icon=":material/send:"):
+                client.table("requests").insert({
+                    "part_id": part["part_id"],
+                    "requester_id": current_user_id,
+                    "owner_id": part["owner_id"],
+                    "status": "pending",
+                    "requested_days": days_wanted,
+                }).execute()
+                send_email(
+                    user_email_by_id.get(part["owner_id"]),
+                    f"New request for {part['part_number']}",
+                    f"{current_user_name} wants to borrow your {part['part_number']} ({part['name']}) "
+                    f"for {days_wanted} day(s).\n\n"
+                    f"Approve or reject it here: {APP_URL}/?tab=requests",
+                )
+                st.session_state.requested_part_id = part["part_id"]
+                # Reload the page with fresh data so the tables below don't
+                # show stale info (e.g. this same part still listed as available).
+                st.rerun()
 
-    # Only the owner can mark their own on-loan part as returned — finishes
-    # the last step of the lifecycle: on loan -> returned -> available again.
-    if is_on_loan and is_mine:
-        if col6.button("Mark as returned", key=f"return_{part['part_id']}"):
-            client.table("parts").update({"status": "available"}).eq("part_id", part["part_id"]).execute()
-            # The approved request that put it on loan is done now. There's
-            # only ever one active "approved" request per part, because the
-            # Request button already disappears once a part is on loan.
-            client.table("requests").update({"status": "returned"}).eq(
-                "part_id", part["part_id"]
-            ).eq("status", "approved").execute()
-            st.session_state.returned_part_id = part["part_id"]
-            st.rerun()
+        # Only the owner can mark their own on-loan part as returned — finishes
+        # the last step of the lifecycle: on loan -> returned -> available again.
+        if is_on_loan and is_mine:
+            if col6.button("Mark as returned", key=f"return_{part['part_id']}", icon=":material/assignment_return:"):
+                client.table("parts").update({"status": "available"}).eq("part_id", part["part_id"]).execute()
+                # The approved request that put it on loan is done now. There's
+                # only ever one active "approved" request per part, because the
+                # Request button already disappears once a part is on loan.
+                client.table("requests").update({"status": "returned"}).eq(
+                    "part_id", part["part_id"]
+                ).eq("status", "approved").execute()
+                st.session_state.returned_part_id = part["part_id"]
+                st.rerun()
 
-    # Only lets you delete your own part while it's available — not while
-    # it's on loan, so we never silently lose track of who currently has it.
-    if is_available and is_mine:
-        if col6.button("Delete", key=f"delete_{part['part_id']}"):
-            # A part can't be deleted while old request rows still point at
-            # it (foreign key), so its request history goes with it. That's
-            # fine here — deleting a part means "this doesn't exist in our
-            # inventory anymore," so its history isn't needed either.
-            client.table("requests").delete().eq("part_id", part["part_id"]).execute()
-            client.table("parts").delete().eq("part_id", part["part_id"]).execute()
-            st.session_state.deleted_part_message = f"Deleted {part['part_number']} — {part['name']}."
-            st.rerun()
+        # Only lets you delete your own part while it's available — not while
+        # it's on loan, so we never silently lose track of who currently has it.
+        if is_available and is_mine:
+            if col6.button("Delete", key=f"delete_{part['part_id']}", icon=":material/delete:"):
+                # A part can't be deleted while old request rows still point at
+                # it (foreign key), so its request history goes with it. That's
+                # fine here — deleting a part means "this doesn't exist in our
+                # inventory anymore," so its history isn't needed either.
+                client.table("requests").delete().eq("part_id", part["part_id"]).execute()
+                client.table("parts").delete().eq("part_id", part["part_id"]).execute()
+                st.session_state.deleted_part_message = f"Deleted {part['part_number']} — {part['name']}."
+                st.rerun()
 
-    # Show "Returned" just once, right under the row you clicked on.
-    if part["part_id"] == st.session_state.returned_part_id:
-        st.success(f"Marked {part['part_number']} as returned — it's available again.")
-        st.session_state.returned_part_id = None
+        # Show "Returned" just once, right under the row you clicked on.
+        if part["part_id"] == st.session_state.returned_part_id:
+            st.success(f"Marked {part['part_number']} as returned — it's available again.")
+            st.session_state.returned_part_id = None
 
-    # Show "Requested" just once, right under the row you clicked on.
-    if part["part_id"] == st.session_state.requested_part_id:
-        st.success(f"Requested — waiting for {owner_name} to approve.")
-        st.session_state.requested_part_id = None
+        # Show "Requested" just once, right under the row you clicked on.
+        if part["part_id"] == st.session_state.requested_part_id:
+            st.success(f"Requested — waiting for {owner_name} to approve.")
+            st.session_state.requested_part_id = None
 
 # --- Requests for my parts ---------------------------------------------------
 
-st.write("---")
+# Plain text on purpose, no icon prefix — the "Jump to it" link from the
+# new-request email hardcodes #requests-for-my-parts as the anchor, and
+# that anchor is auto-generated from this exact heading text.
 st.subheader("Requests for my parts")
 
 # Show the Approve/Reject outcome once. The request row itself disappears
@@ -440,7 +455,7 @@ my_requests = (
 )
 
 if not my_requests:
-    st.write("No pending requests.")
+    st.caption("No pending requests.")
 
 for req in my_requests:
     part = part_by_id.get(req["part_id"])
@@ -448,57 +463,58 @@ for req in my_requests:
     # Older requests made before loan durations existed won't have this set.
     requested_days = req.get("requested_days") or 7
 
-    col1, col2, col3, col4 = st.columns([2, 2, 1, 1])
-    col1.write(f"{part['part_number']} — {part['name']}")
-    col2.write(f"Requested by {requester_name} for {requested_days} day(s)")
+    with st.container(border=True):
+        col1, col2, col3, col4 = st.columns([2, 2, 1, 1])
+        col1.write(f"{part['part_number']} — {part['name']}")
+        col2.write(f"Requested by {requester_name} for {requested_days} day(s)")
 
-    # Approving is two steps: click Approve, then confirm (optionally
-    # changing) how many days it's actually approved for. We only know
-    # the final due date once that second click happens.
-    if st.session_state.approving_request_id == req["request_id"]:
-        approve_days = st.number_input(
-            "Approve for how many days?",
-            min_value=1,
-            value=requested_days,
-            key=f"approve_days_{req['request_id']}",
-        )
-        confirm_col, cancel_col = st.columns([1, 1])
-        if confirm_col.button("Confirm approval", key=f"confirm_{req['request_id']}"):
-            due_date = date.today() + timedelta(days=approve_days)
-            client.table("requests").update({
-                "status": "approved",
-                "due_date": due_date.isoformat(),
-            }).eq("request_id", req["request_id"]).execute()
-            client.table("parts").update({"status": "on loan"}).eq("part_id", req["part_id"]).execute()
-            send_email(
-                user_email_by_id.get(req["requester_id"]),
-                f"Request approved: {part['part_number']}",
-                f"{current_user_name} approved your request for {part['part_number']} ({part['name']}) "
-                f"for {approve_days} day(s) (until {due_date.strftime('%d %b %Y')}).\n\n"
-                f"Get in touch with them to arrange collection.",
+        # Approving is two steps: click Approve, then confirm (optionally
+        # changing) how many days it's actually approved for. We only know
+        # the final due date once that second click happens.
+        if st.session_state.approving_request_id == req["request_id"]:
+            approve_days = st.number_input(
+                "Approve for how many days?",
+                min_value=1,
+                value=requested_days,
+                key=f"approve_days_{req['request_id']}",
             )
-            st.session_state.decision_message = (
-                f"Approved. {part['part_number']} is now on loan until {due_date.strftime('%d %b %Y')}."
-            )
-            st.session_state.approving_request_id = None
-            st.rerun()
-        if cancel_col.button("Cancel", key=f"cancel_{req['request_id']}"):
-            st.session_state.approving_request_id = None
-            st.rerun()
-    else:
-        if col3.button("Approve", key=f"approve_{req['request_id']}"):
-            st.session_state.approving_request_id = req["request_id"]
-            st.rerun()
+            confirm_col, cancel_col = st.columns([1, 1])
+            if confirm_col.button("Confirm approval", key=f"confirm_{req['request_id']}", icon=":material/check:"):
+                due_date = date.today() + timedelta(days=approve_days)
+                client.table("requests").update({
+                    "status": "approved",
+                    "due_date": due_date.isoformat(),
+                }).eq("request_id", req["request_id"]).execute()
+                client.table("parts").update({"status": "on loan"}).eq("part_id", req["part_id"]).execute()
+                send_email(
+                    user_email_by_id.get(req["requester_id"]),
+                    f"Request approved: {part['part_number']}",
+                    f"{current_user_name} approved your request for {part['part_number']} ({part['name']}) "
+                    f"for {approve_days} day(s) (until {due_date.strftime('%d %b %Y')}).\n\n"
+                    f"Get in touch with them to arrange collection.",
+                )
+                st.session_state.decision_message = (
+                    f"Approved. {part['part_number']} is now on loan until {due_date.strftime('%d %b %Y')}."
+                )
+                st.session_state.approving_request_id = None
+                st.rerun()
+            if cancel_col.button("Cancel", key=f"cancel_{req['request_id']}", icon=":material/close:"):
+                st.session_state.approving_request_id = None
+                st.rerun()
+        else:
+            if col3.button("Approve", key=f"approve_{req['request_id']}", icon=":material/check:"):
+                st.session_state.approving_request_id = req["request_id"]
+                st.rerun()
 
-        if col4.button("Reject", key=f"reject_{req['request_id']}"):
-            client.table("requests").update({"status": "rejected"}).eq("request_id", req["request_id"]).execute()
-            send_email(
-                user_email_by_id.get(req["requester_id"]),
-                f"Request rejected: {part['part_number']}",
-                f"{current_user_name} rejected your request for {part['part_number']} ({part['name']}).",
-            )
-            st.session_state.decision_message = f"Rejected the request for {part['part_number']}."
-            st.rerun()
+            if col4.button("Reject", key=f"reject_{req['request_id']}", icon=":material/close:"):
+                client.table("requests").update({"status": "rejected"}).eq("request_id", req["request_id"]).execute()
+                send_email(
+                    user_email_by_id.get(req["requester_id"]),
+                    f"Request rejected: {part['part_number']}",
+                    f"{current_user_name} rejected your request for {part['part_number']} ({part['name']}).",
+                )
+                st.session_state.decision_message = f"Rejected the request for {part['part_number']}."
+                st.rerun()
 
 # --- Parts I've lent out / what I've borrowed ---------------------------------
 # Both read from the same place: an "approved" request means that loan is
@@ -512,8 +528,7 @@ def format_due(req):
     return date.fromisoformat(req["due_date"]).strftime("%d %b %Y")
 
 
-st.write("---")
-st.subheader("Parts I've lent out")
+st.subheader(":material/logout: Parts I've lent out")
 
 lent_out = (
     client.table("requests")
@@ -526,17 +541,18 @@ lent_out = (
 )
 
 if not lent_out:
-    st.write("You haven't lent out any parts.")
+    st.caption("You haven't lent out any parts.")
 else:
     for req in lent_out:
         part = part_by_id.get(req["part_id"])
         borrower_name = user_name_by_id.get(req["requester_id"], "Unknown")
-        col1, col2, col3 = st.columns([2, 2, 2])
-        col1.write(f"{part['part_number']} — {part['name']}")
-        col2.write(f"Lent to {borrower_name}")
-        col3.write(f"Due {format_due(req)}")
+        with st.container(border=True):
+            col1, col2, col3 = st.columns([2, 2, 2])
+            col1.write(f"{part['part_number']} — {part['name']}")
+            col2.write(f"Lent to {borrower_name}")
+            col3.write(f"Due {format_due(req)}")
 
-st.subheader("What I've borrowed")
+st.subheader(":material/login: What I've borrowed")
 
 borrowed = (
     client.table("requests")
@@ -549,12 +565,13 @@ borrowed = (
 )
 
 if not borrowed:
-    st.write("You haven't borrowed any parts.")
+    st.caption("You haven't borrowed any parts.")
 else:
     for req in borrowed:
         part = part_by_id.get(req["part_id"])
         owner_name = user_name_by_id.get(req["owner_id"], "Unknown")
-        col1, col2, col3 = st.columns([2, 2, 2])
-        col1.write(f"{part['part_number']} — {part['name']}")
-        col2.write(f"Borrowed from {owner_name}")
-        col3.write(f"Due {format_due(req)}")
+        with st.container(border=True):
+            col1, col2, col3 = st.columns([2, 2, 2])
+            col1.write(f"{part['part_number']} — {part['name']}")
+            col2.write(f"Borrowed from {owner_name}")
+            col3.write(f"Due {format_due(req)}")
