@@ -210,7 +210,27 @@ Follow-up polish round (done, same day):
   headers/badges/real data correctly, and the wordmark logo renders
   properly in its white card on the login screen.
 
-## Identity — real accounts now
+Second polish round (done, same day):
+- Serial numbers on delete: student asked for full renumbering so numbers
+  stay contiguous after a delete. Pushed back with the concrete risk (an
+  on-loan part's serial silently changing out from under emails/labels)
+  and offered the alternative; student chose it: existing parts NEVER get
+  renumbered, but a number freed by deletion is recycled by the next new
+  part (next serial = lowest RK-#### not in use, instead of max+1).
+  Verified live through the real UI: with only RK-0007 in the table, a
+  new part correctly got RK-0001; deleted it; RK-0007 kept its number.
+- UI overhaul, all native Streamlit: account card + Add-a-part form moved
+  to the sidebar (main page is now purely the inventory); metrics row
+  (Total parts / Available / On loan / Requests for me) in bordered
+  columns via st.metric; search box (matches serial or name; Streamlit
+  text_input only applies on Enter/blur — that's built-in behavior) +
+  st.segmented_control status filter (All / Available / On loan / Mine)
+  above the table; vertical_alignment="center" on all row columns so
+  badges and buttons line up with text. NOTE for future edits:
+  st.subheader() in this Streamlit (1.59.1) has NO icon= kwarg — icons in
+  headings go in the text as ':material/xyz:' markdown instead. Check
+  signatures with inspect before using a kwarg; the skill docs can be
+  ahead of the installed version.
 
 Real signup/login via Supabase Auth, email + password. Signup is open to
 anyone with the link for now (no invite list, no admin approval step) — the
