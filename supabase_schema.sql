@@ -33,3 +33,9 @@ create table if not exists requests (
 -- just run these two lines on their own.
 alter table requests add column if not exists requested_days integer;
 alter table requests add column if not exists due_date date;
+
+-- Added later, for the "due soon" reminder emails. Tracks whether each
+-- reminder has already gone out, so the daily job never sends the same
+-- one twice.
+alter table requests add column if not exists reminder_2day_sent boolean not null default false;
+alter table requests add column if not exists reminder_1day_sent boolean not null default false;
