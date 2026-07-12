@@ -23,6 +23,13 @@ real storage and real accounts, after being reminded this reverses the
 original "no auth, no cloud hosting" rule. Treat Supabase + real auth as the
 current source of truth, not a deviation from it.
 
+**Also changed 2026-07-12 (later the same day):** the project is now a git
+repo, pushed to a private GitHub repo
+(github.com/roboknights-afk/roboknights-inventory), specifically so a
+GitHub Actions scheduled workflow can send due-date reminder emails on a
+real daily timer — discussed as a deliberate tradeoff against the simpler
+"check on every page load" option, not scope creep.
+
 ## Data model — three tables (already in app.py)
 
 - **users**: user_id, name, email
@@ -107,10 +114,22 @@ not bundled — see house rule #1 below):
   (today + however many days) and the approval email says e.g. "approved
   ... for 5 day(s) (until 17 Jul 2026)". Verified end-to-end with real
   test accounts, including the date math.
-- Next: "due soon" reminder emails — needs an actual design conversation
-  first, not just code. Streamlit only runs when someone has the page
-  open; there's no background clock yet. Decide the trigger mechanism
-  (check on every page load vs. a real scheduled job) before building.
+- Done: "due soon" reminder emails, sent 2 days and 1 day before
+  requests.due_date. Chose a real scheduled job over "check on page
+  load" (discussed both — student wanted reliable timing over
+  simplicity). This is why the project is now a git repo pushed to
+  github.com/roboknights-afk/roboknights-inventory: a GitHub Actions
+  workflow (.github/workflows/due-reminders.yml) runs
+  send_due_reminders.py once a day (3:30 UTC / 9:00 AM IST) and on
+  manual trigger, completely independent of whether the Streamlit app
+  or the student's laptop is running. Needs its own copy of the SMTP +
+  Supabase credentials as GitHub repo secrets (Settings → Secrets and
+  variables → Actions) — same values as .env, just re-entered there
+  since GitHub Actions can't read a local .env file. Two new columns
+  (requests.reminder_2day_sent, reminder_1day_sent) stop the same
+  reminder going out twice. Verified for real: triggered the workflow
+  manually from the Actions tab and confirmed via the database that it
+  ran on GitHub's servers and correctly marked the reminder sent.
 - Then: "redirect to accept/reject" link inside the new-request email
   (query-param based, e.g. `?tab=requests` — safe, unlike the fragment/
   iframe mess password-reset links ran into, since Streamlit reads query
