@@ -289,11 +289,35 @@ Same-day follow-up fixes after first live test:
   `https://` prepended before saving, and existing links get the same fix
   applied at display time, so already-saved bad links work without needing
   a delete/edit feature for competition links (which doesn't exist yet).
+- Owners (not just hosts) can now also see who their own on-loan part is
+  lent to, right in the main parts list — was previously only visible in
+  the separate "Parts I've lent out" dashboard further down the page.
 
-Not yet built (next chunks, one at a time): students volunteering for
-eligible events, host finalizing volunteers + selection email, day-before
-reminder email + bot-status field (extending the existing GitHub Actions
-job), general announcements broadcast.
+Chunk 3 (students volunteering for eligible events) — done:
+- New `event_volunteers` table (event_id, user_id, unique together — no
+  "selected" column yet, that's chunk 4's job). Every event now shows its
+  volunteer list ("Volunteers (n): ...", or "No volunteers yet") to
+  everyone, and a Volunteer/Withdraw button to the viewer specifically,
+  gated by grade the same way "Request this" is gated by part availability
+  on Inventory — only shown when eligible. No cap on how many can
+  volunteer; the cap (team_size × max_teams) applies at selection time in
+  chunk 4, not here. No notification email yet either.
+- Verified live by the student.
+
+Data cleanup, same day: removed 7 leftover test/duplicate accounts
+(TestBot, TestBot2, and a few duplicate/placeholder signups) from the
+`users` table — none of them owned parts or had request history, so no FK
+issues. Backfilled `grade = 11` for the two real pre-existing members
+(Naitik, Aryamman) who signed up before the grade field existed. Note for
+future cleanup like this: our `.env` only holds the Supabase **anon** key,
+so deleting a `users` row does NOT delete the matching Supabase Auth login
+— that's a separate system needing the Authentication tab in the Supabase
+dashboard (or a service-role key, which we don't have configured). Student
+handled the Auth-side deletion themselves.
+
+Not yet built (next chunks, one at a time): host finalizing volunteers +
+selection email, day-before reminder email + bot-status field (extending
+the existing GitHub Actions job), general announcements broadcast.
 
 ## Explicitly NOT in v1
 

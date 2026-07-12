@@ -1,7 +1,8 @@
 # Chunk 1 of the Competitions feature: a host-only form to add a competition
 # (with its links and events), and a read-only "browse everything" view for
-# every logged-in member. No volunteering or notifications yet — those are
-# later chunks, built one at a time per the usual house rule.
+# every logged-in member. Chunk 3 adds students volunteering for events
+# they're eligible for by grade. Notifications and finalizing volunteers are
+# still later chunks, built one at a time per the usual house rule.
 
 from datetime import date
 
@@ -11,6 +12,9 @@ from shared import get_client
 
 client = get_client()
 is_host = st.session_state.is_host
+current_user_id = st.session_state.current_user_id
+current_user_grade = st.session_state.current_user_grade
+user_name_by_id = st.session_state.user_name_by_id
 
 GRADES = [7, 8, 9, 10, 11, 12]
 
@@ -155,9 +159,16 @@ if st.session_state.competition_added_message:
 
 # --- Everyone: browse all competitions --------------------------------------
 # Everyone sees every competition and every event/link on it. Grade
-# eligibility only controls whether a "Volunteer" button appears — that
-# button doesn't exist yet (it's a later chunk), so for now this is
-# read-only for every member, host or not.
+# eligibility controls whether a "Volunteer" button appears on a given
+# event — mirrors the existing "Request this" pattern on the Inventory page
+# (only shown when you're allowed to act).
+
+if "volunteer_message" not in st.session_state:
+    st.session_state.volunteer_message = None
+
+if st.session_state.volunteer_message:
+    st.success(st.session_state.volunteer_message)
+    st.session_state.volunteer_message = None
 
 st.subheader(":material/list_alt: All competitions")
 
@@ -168,6 +179,7 @@ if not competitions:
 else:
     all_links = client.table("competition_links").select("*").execute().data
     all_events = client.table("competition_events").select("*").execute().data
+    all_volunteers = client.table("event_volunteers").select("*").execute().data
 
     for comp in competitions:
         links = [l for l in all_links if l["competition_id"] == comp["competition_id"]]
@@ -214,9 +226,53 @@ else:
                         if e["min_grade"] == e["max_grade"]
                         else f"Grades {e['min_grade']}–{e['max_grade']}"
                     )
-                    st.markdown(
-                        f"- **{e['name']}** — {grade_range}, {e['team_size']} per team, "
-                        f"up to {e['max_teams']} team(s)"
+                    event_volunteers = [v for v in all_volunteers if v["event_id"] == e["event_id"]]
+                    volunteer_names = [user_name_by_id.get(v["user_id"], "Unknown") for v in event_volunteers]
+                    already_volunteered = any(v["user_id"] == current_user_id for v in event_volunteers)
+                    is_eligible = (
+                        current_user_grade is not None
+                        and e["min_grade"] <= current_user_grade <= e["max_grade"]
                     )
-                    if e.get("details"):
-                        st.caption(e["details"])
+
+                    with st.container(border=True):
+                        st.markdown(
+                            f"**{e['name']}** — {grade_range}, {e['team_size']} per team, "
+                            f"up to {e['max_teams']} team(s)"
+                        )
+                        if e.get("details"):
+                            st.caption(e["details"])
+
+                        if volunteer_names:
+                            st.caption(
+                                f":material/group: Volunteers ({len(volunteer_names)}): "
+                                + ", ".join(volunteer_names)
+                            )
+                        else:
+                            st.caption(":material/group: No volunteers yet")
+
+                        # Only shown when eligible — same pattern as the
+                        # "Request this" button on Inventory only showing up
+                        # when a part is actually requestable by you.
+                        if is_eligible:
+                            if already_volunteered:
+                                if st.button(
+                                    "Withdraw", key=f"withdraw_{e['event_id']}", icon=":material/close:"
+                                ):
+                                    client.table("event_volunteers").delete().eq(
+                                        "event_id", e["event_id"]
+                                    ).eq("user_id", current_user_id).execute()
+                                    st.session_state.volunteer_message = f"Withdrew from {e['name']}."
+                                    st.rerun()
+                            else:
+                                if st.button(
+                                    "Volunteer",
+                                    key=f"volunteer_{e['event_id']}",
+                                    icon=":material/front_hand:",
+                                    type="primary",
+                                ):
+                                    client.table("event_volunteers").insert({
+                                        "event_id": e["event_id"],
+                                        "user_id": current_user_id,
+                                    }).execute()
+                                    st.session_state.volunteer_message = f"You volunteered for {e['name']}!"
+                                    st.rerun()

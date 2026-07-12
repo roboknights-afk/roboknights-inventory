@@ -131,14 +131,26 @@ if st.session_state.part_edited_message:
 parts = client.table("parts").select("*").order("part_number").execute().data
 part_by_id = {p["part_id"]: p for p in parts}
 
-# Hosts can see who any on-loan part is currently with (not just their own
-# lent-out parts). Only ever one active "approved" request per part, since
-# the Request button already disappears once a part is on loan.
+# Owners can see who their own on-loan part is with, right in the main
+# list (not just buried in "Parts I've lent out" further down). Hosts can
+# see this for every part, not just ones they own. Only ever one active
+# "approved" request per part, since the Request button already disappears
+# once a part is on loan.
 active_loan_by_part_id = {}
 if is_host:
     active_loan_by_part_id = {
         r["part_id"]: r
         for r in client.table("requests").select("*").eq("status", "approved").execute().data
+    }
+else:
+    active_loan_by_part_id = {
+        r["part_id"]: r
+        for r in client.table("requests")
+        .select("*")
+        .eq("owner_id", current_user_id)
+        .eq("status", "approved")
+        .execute()
+        .data
     }
 
 # Fetched here (not further down where it's displayed) so the metric row
@@ -230,9 +242,8 @@ for part in visible_parts:
         else:
             col4.badge("On loan", icon=":material/schedule:", color="orange")
 
-        # Only hosts see who has it — regular owners already get this via
-        # their own "Parts I've lent out" dashboard further down.
-        if is_host and is_on_loan:
+        # Owner sees this for their own parts, host sees it for every part.
+        if (is_mine or is_host) and is_on_loan:
             loan = active_loan_by_part_id.get(part["part_id"])
             if loan:
                 st.caption(f":material/person: Lent to {user_name_by_id.get(loan['requester_id'], 'Unknown')}")
