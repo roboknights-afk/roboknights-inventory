@@ -499,3 +499,62 @@ for req in my_requests:
             )
             st.session_state.decision_message = f"Rejected the request for {part['part_number']}."
             st.rerun()
+
+# --- Parts I've lent out / what I've borrowed ---------------------------------
+# Both read from the same place: an "approved" request means that loan is
+# still active. The moment it's marked returned (status -> 'returned'),
+# it naturally disappears from both lists below — nothing extra to track.
+
+
+def format_due(req):
+    if not req.get("due_date"):
+        return "no due date set"
+    return date.fromisoformat(req["due_date"]).strftime("%d %b %Y")
+
+
+st.write("---")
+st.subheader("Parts I've lent out")
+
+lent_out = (
+    client.table("requests")
+    .select("*")
+    .eq("owner_id", current_user_id)
+    .eq("status", "approved")
+    .order("due_date")
+    .execute()
+    .data
+)
+
+if not lent_out:
+    st.write("You haven't lent out any parts.")
+else:
+    for req in lent_out:
+        part = part_by_id.get(req["part_id"])
+        borrower_name = user_name_by_id.get(req["requester_id"], "Unknown")
+        col1, col2, col3 = st.columns([2, 2, 2])
+        col1.write(f"{part['part_number']} — {part['name']}")
+        col2.write(f"Lent to {borrower_name}")
+        col3.write(f"Due {format_due(req)}")
+
+st.subheader("What I've borrowed")
+
+borrowed = (
+    client.table("requests")
+    .select("*")
+    .eq("requester_id", current_user_id)
+    .eq("status", "approved")
+    .order("due_date")
+    .execute()
+    .data
+)
+
+if not borrowed:
+    st.write("You haven't borrowed any parts.")
+else:
+    for req in borrowed:
+        part = part_by_id.get(req["part_id"])
+        owner_name = user_name_by_id.get(req["owner_id"], "Unknown")
+        col1, col2, col3 = st.columns([2, 2, 2])
+        col1.write(f"{part['part_number']} — {part['name']}")
+        col2.write(f"Borrowed from {owner_name}")
+        col3.write(f"Due {format_due(req)}")
