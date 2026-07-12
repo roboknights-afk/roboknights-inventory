@@ -1,0 +1,21 @@
+Password reset now uses a 6-digit CODE instead of a clickable link.
+Why: Streamlit runs custom code in a locked-down sandbox, and browsers block
+that sandbox from acting on a reset link. A code the user reads and types
+sidesteps all of that and is the normal pattern for apps like this.
+
+One change to make in your Supabase dashboard:
+
+Authentication -> Email Templates -> Reset Password
+   Replace the whole message body with this:
+
+       <h2>Reset your RoboKnights password</h2>
+       <p>Your 6-digit password reset code is:</p>
+       <h1>{{ .Token }}</h1>
+       <p>Type this code into the app to set a new password.
+          It expires in 1 hour. If you didn't ask for this, ignore this email.</p>
+
+   The important part is {{ .Token }} — that is what prints the 6-digit code.
+   There is no link anymore, so there's nothing for the browser to block.
+
+(The old URL Configuration / redirect-URL step is no longer needed for
+password reset, since we don't rely on the email linking back to the app.)

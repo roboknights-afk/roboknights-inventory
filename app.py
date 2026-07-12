@@ -1,0 +1,488 @@
+import os
+import smtplib
+from datetime import date, timedelta
+from email.mime.text import MIMEText
+
+import streamlit as st
+from dotenv import load_dotenv
+from supabase import create_client
+
+# Secrets (the Supabase URL and key) live in a local .env file, not in this
+# file, so they never get accidentally shared or committed.
+load_dotenv()
+
+
+# --- Email notifications ------------------------------------------------------
+
+def send_email(to_email, subject, body):
+    # Plain-text email over the same Brevo SMTP relay Supabase's own login
+    # emails already use. If sending fails for any reason (bad network, a
+    # typo'd email, Brevo hiccup), we don't want that to break the actual
+    # request/approve/reject action — the database change already happened;
+    # the email is a nice-to-have on top, not something to fail loudly over.
+    msg = MIMEText(body)
+    msg["Subject"] = subject
+    msg["From"] = os.environ["SMTP_SENDER"]
+    msg["To"] = to_email
+
+    try:
+        with smtplib.SMTP(os.environ["SMTP_HOST"], int(os.environ["SMTP_PORT"])) as server:
+            server.starttls()
+            server.login(os.environ["SMTP_USERNAME"], os.environ["SMTP_PASSWORD"])
+            server.send_message(msg)
+    except Exception:
+        pass
+
+
+# --- Database setup ----------------------------------------------------------
+
+def get_client():
+    # Talks to Supabase over the internet instead of opening a local file.
+    # The three tables (users, parts, requests) already exist in Supabase —
+    # see supabase_schema.sql — this script no longer creates them.
+    return create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
+
+
+def seed_sample_data(client):
+    # Only add sample data once. If users already exist, do nothing —
+    # otherwise every restart would pile on duplicates.
+    already_seeded = client.table("users").select("user_id").execute().data
+    if already_seeded:
+        return
+
+    # Postgres generates each user_id for us (it's a UUID, not a number we
+    # pick), so we insert the users first and read back the ids it assigned.
+    users_to_insert = [
+        {"name": "Naitik",   "email": "naitik@example.com"},
+        {"name": "Aryamman", "email": "aryamman@example.com"},
+        {"name": "Ishaan",   "email": "ishaan@example.com"},
+    ]
+    inserted_users = client.table("users").insert(users_to_insert).execute().data
+    user_id_by_name = {u["name"]: u["user_id"] for u in inserted_users}
+
+    # One row per physical part. Two identical motors = two rows.
+    parts_to_insert = [
+        {"part_number": "P219", "name": "N20 gear motor",      "owner_id": user_id_by_name["Naitik"],   "status": "available"},
+        {"part_number": "P220", "name": "TB6612FNG driver",    "owner_id": user_id_by_name["Naitik"],   "status": "available"},
+        {"part_number": "P305", "name": "HC-SR04 ultrasonic",  "owner_id": user_id_by_name["Aryamman"], "status": "available"},
+        {"part_number": "P410", "name": "Arduino Nano",        "owner_id": user_id_by_name["Aryamman"], "status": "on loan"},
+        {"part_number": "P512", "name": "Li-ion battery pack", "owner_id": user_id_by_name["Ishaan"],   "status": "available"},
+    ]
+    client.table("parts").insert(parts_to_insert).execute()
+
+
+# --- Login / signup ----------------------------------------------------------
+
+def show_login_signup(client):
+    # This whole screen only appears when nobody is logged in yet.
+    st.title("RoboKnights Parts Inventory")
+    st.caption("Log in or create an account to continue.")
+
+    login_tab, signup_tab = st.tabs(["Log in", "Sign up"])
+
+    with login_tab:
+        email = st.text_input("Email", key="login_email")
+        password = st.text_input("Password", type="password", key="login_password")
+        if st.button("Log in"):
+            try:
+                result = client.auth.sign_in_with_password({"email": email, "password": password})
+                st.session_state.auth_user = {"id": result.user.id, "email": result.user.email}
+                st.rerun()
+            except Exception as e:
+                st.error(f"Couldn't log in: {e}")
+
+        # Sends the user to the separate reset screen (below). A plain button
+        # + full screen swap avoids Streamlit's habit of collapsing expanders
+        # and resetting tabs every time you click something mid-flow.
+        if st.button("Forgot password?"):
+            st.session_state.show_reset = True
+            st.rerun()
+
+    with signup_tab:
+        name = st.text_input("Your name", key="signup_name")
+        email = st.text_input("Email", key="signup_email")
+        password = st.text_input("Password", type="password", key="signup_password")
+        if st.button("Sign up"):
+            try:
+                result = client.auth.sign_up({"email": email, "password": password})
+
+                # Supabase quirk: if this email ALREADY has an account, it
+                # doesn't error — it "succeeds" but sends no email (so that
+                # strangers can't probe which emails are registered). The
+                # giveaway is an empty identities list on the returned user.
+                already_registered = result.user is not None and not result.user.identities
+                if already_registered:
+                    st.error(
+                        "This email already has an account — no email will be "
+                        "sent. Log in instead, or use Forgot password on the "
+                        "Log in tab."
+                    )
+                else:
+                    # Save the name alongside the real login id, in our own
+                    # table — Supabase Auth only knows email/password, not "name".
+                    client.table("users").upsert({
+                        "user_id": result.user.id,
+                        "name": name,
+                        "email": email,
+                    }).execute()
+
+                    try:
+                        # This only succeeds right away if "Confirm email" is off
+                        # in Supabase. Otherwise they have to click the email link first.
+                        login_result = client.auth.sign_in_with_password({"email": email, "password": password})
+                        st.session_state.auth_user = {"id": login_result.user.id, "email": login_result.user.email}
+                        st.rerun()
+                    except Exception:
+                        st.success("Account created! Check your email (including spam) to confirm it, then log in above.")
+            except Exception as e:
+                st.error(f"Couldn't sign up: {e}")
+
+        # If the confirmation email never arrived (spam filter, typo fixed,
+        # etc.), this asks Supabase to send it again for the email typed above.
+        if st.button("Resend confirmation email"):
+            try:
+                client.auth.resend({"type": "signup", "email": email})
+                st.success("Confirmation email resent — check your inbox and spam folder.")
+            except Exception as e:
+                st.error(f"Couldn't resend: {e}")
+
+
+def show_reset_screen(client):
+    # A code-based password reset. No magic links: the email carries a plain
+    # 6-digit code (see supabase_email_template.txt) that the user reads and
+    # types in here. This sidesteps all the browser-security trouble that
+    # clicking a reset *link* ran into inside Streamlit.
+    st.title("RoboKnights Parts Inventory")
+    st.caption("Reset your password")
+
+    # Which of the two steps we're on. Kept in session_state so it survives
+    # the reruns that button clicks cause.
+    if "reset_sent_to" not in st.session_state:
+        st.session_state.reset_sent_to = None
+
+    if st.session_state.reset_sent_to is None:
+        # Step 1: ask for the email, send a code to it.
+        email = st.text_input("Your email", key="reset_email")
+        if st.button("Send reset code"):
+            try:
+                client.auth.reset_password_for_email(email)
+                st.session_state.reset_sent_to = email
+                st.rerun()
+            except Exception as e:
+                st.error(f"Couldn't send code: {e}")
+    else:
+        # Step 2: use whatever the email contained. Depending on how the
+        # Supabase email template is set up, that's either a 6-digit code
+        # ({{ .Token }}) or a clickable link. Both work here: for a link,
+        # just paste the whole thing and we pull the token_hash out of it.
+        st.write(f"We emailed **{st.session_state.reset_sent_to}**.")
+        code = st.text_input(
+            "6-digit code from the email — or paste the full reset link",
+            key="reset_code",
+        )
+        new_password = st.text_input("New password", type="password", key="reset_new_password")
+        if st.button("Update password"):
+            try:
+                entered = code.strip()
+                if "token_hash=" in entered:
+                    # They pasted a link. Grab just the token_hash=... value.
+                    token_hash = entered.split("token_hash=")[1].split("&")[0]
+                    client.auth.verify_otp({"token_hash": token_hash, "type": "recovery"})
+                elif entered.startswith("http") and "token=" in entered:
+                    # Older link style: ...verify?token=pkce_xxx&type=recovery
+                    token_hash = entered.split("token=")[1].split("&")[0]
+                    client.auth.verify_otp({"token_hash": token_hash, "type": "recovery"})
+                else:
+                    # A plain code they typed in.
+                    client.auth.verify_otp({
+                        "email": st.session_state.reset_sent_to,
+                        "token": entered,
+                        "type": "recovery",
+                    })
+                client.auth.update_user({"password": new_password})
+                st.success("Password updated! Go back and log in with your new password.")
+            except Exception as e:
+                st.error(f"Couldn't update password: {e}")
+
+    if st.button("← Back to login"):
+        st.session_state.reset_sent_to = None
+        st.session_state.show_reset = False
+        st.rerun()
+
+
+# --- App ---------------------------------------------------------------------
+
+client = get_client()
+seed_sample_data(client)
+
+if "auth_user" not in st.session_state:
+    st.session_state.auth_user = None
+if "show_reset" not in st.session_state:
+    st.session_state.show_reset = False
+
+# Nobody logged in yet — show either the reset screen or the login/signup
+# screen, then stop here so the parts list below stays hidden.
+if st.session_state.auth_user is None:
+    if st.session_state.show_reset:
+        show_reset_screen(client)
+    else:
+        show_login_signup(client)
+    st.stop()
+
+# --- One-time messages ---------------------------------------------------
+# Streamlit re-runs the whole script on every click, so a normal st.success()
+# right before st.rerun() would get wiped out before you ever saw it. Instead
+# we stash the message in session_state (it survives reruns), show it once,
+# then clear it so it doesn't linger forever.
+if "requested_part_id" not in st.session_state:
+    st.session_state.requested_part_id = None
+if "returned_part_id" not in st.session_state:
+    st.session_state.returned_part_id = None
+if "decision_message" not in st.session_state:
+    st.session_state.decision_message = None
+if "approving_request_id" not in st.session_state:
+    st.session_state.approving_request_id = None
+
+st.title("RoboKnights Parts Inventory")
+st.caption("Every part below is stored in Supabase (a real, shared database).")
+
+# --- Who am I? -----------------------------------------------------------
+# Real login now — no more dropdown. current_user_id comes from the actual
+# Supabase Auth session, not a guess.
+users = client.table("users").select("user_id, name, email").order("name").execute().data
+user_name_by_id = {u["user_id"]: u["name"] for u in users}
+user_email_by_id = {u["user_id"]: u["email"] for u in users}
+
+current_user_id = st.session_state.auth_user["id"]
+current_user_name = user_name_by_id.get(current_user_id, st.session_state.auth_user["email"])
+
+top_col1, top_col2 = st.columns([4, 1])
+top_col1.write(f"Logged in as **{current_user_name}**")
+if top_col2.button("Log out"):
+    client.auth.sign_out()
+    st.session_state.auth_user = None
+    st.rerun()
+
+# --- Add a part I own --------------------------------------------------------
+
+if "part_added_message" not in st.session_state:
+    st.session_state.part_added_message = None
+
+with st.expander("Add a part I own"):
+    new_part_name = st.text_input("Part name (e.g. N20 gear motor)", key="new_part_name")
+    if st.button("Add part"):
+        if not new_part_name.strip():
+            st.session_state.part_added_message = ("error", "Part name is required.")
+        else:
+            # No more typing in a part number by hand — that's how we ended
+            # up with two different parts both called "2". Instead: look at
+            # the highest RK-#### number currently in use and count up from
+            # there. (Earlier this used the part's own database id instead —
+            # that number keeps climbing forever and never reuses ids freed
+            # up by deleted parts, so numbering could jump way ahead, e.g.
+            # straight to RK-0018 with only 5 parts actually in the table.)
+            existing_numbers = [
+                int(p["part_number"][3:])
+                for p in client.table("parts").select("part_number").execute().data
+                if p["part_number"].startswith("RK-") and p["part_number"][3:].isdigit()
+            ]
+            next_number = max(existing_numbers, default=0) + 1
+            serial = f"RK-{next_number:04d}"
+
+            client.table("parts").insert({
+                "part_number": serial,
+                "name": new_part_name.strip(),
+                "owner_id": current_user_id,
+                "status": "available",
+            }).execute()
+
+            st.session_state.part_added_message = ("success", f"Added {serial} — {new_part_name.strip()}.")
+        st.rerun()
+
+# Shown outside the expander on purpose — same reason as the login screen's
+# forgot-password message: Streamlit won't let a script force an expander
+# back open after you've clicked inside it, so a message placed inside it
+# would be invisible right after the click.
+if st.session_state.part_added_message:
+    kind, text = st.session_state.part_added_message
+    (st.success if kind == "success" else st.error)(text)
+    st.session_state.part_added_message = None
+
+# --- Parts list ------------------------------------------------------------
+
+if "deleted_part_message" not in st.session_state:
+    st.session_state.deleted_part_message = None
+
+# Shown here (top of the section) rather than "under" the deleted row, since
+# that row won't exist anymore once the part is gone.
+if st.session_state.deleted_part_message:
+    st.info(st.session_state.deleted_part_message)
+    st.session_state.deleted_part_message = None
+
+parts = client.table("parts").select("*").order("part_number").execute().data
+part_by_id = {p["part_id"]: p for p in parts}
+
+# One row of columns per part, so each row can have its own button.
+for part in parts:
+    owner_name = user_name_by_id.get(part["owner_id"], "Unknown")
+    if part["owner_id"] == current_user_id:
+        owner_name += " (yours)"
+
+    col1, col2, col3, col4, col5, col6 = st.columns([1, 2, 2, 2, 1, 2])
+    col1.write(part["part_number"])
+    col2.write(part["name"])
+    col3.write(owner_name)
+    col4.write(part["status"])
+
+    # Only show a Request button if the part is free and it isn't already yours.
+    is_available = part["status"] == "available"
+    is_mine = part["owner_id"] == current_user_id
+    is_on_loan = part["status"] == "on loan"
+
+    if is_available and not is_mine:
+        # The requester says how many days they want it for; the owner gets
+        # to keep that number or change it when they approve (below).
+        days_wanted = col5.number_input(
+            "Days", min_value=1, value=7, key=f"days_{part['part_id']}", label_visibility="collapsed"
+        )
+        # key= makes each button unique so Streamlit doesn't mix them up.
+        if col6.button("Request this", key=f"request_{part['part_id']}"):
+            client.table("requests").insert({
+                "part_id": part["part_id"],
+                "requester_id": current_user_id,
+                "owner_id": part["owner_id"],
+                "status": "pending",
+                "requested_days": days_wanted,
+            }).execute()
+            send_email(
+                user_email_by_id.get(part["owner_id"]),
+                f"New request for {part['part_number']}",
+                f"{current_user_name} wants to borrow your {part['part_number']} ({part['name']}) "
+                f"for {days_wanted} day(s).\n\n"
+                f"Log in to RoboKnights Parts Inventory to approve or reject the request.",
+            )
+            st.session_state.requested_part_id = part["part_id"]
+            # Reload the page with fresh data so the tables below don't show
+            # stale info (e.g. this same part still listed as available).
+            st.rerun()
+
+    # Only the owner can mark their own on-loan part as returned — finishes
+    # the last step of the lifecycle: on loan -> returned -> available again.
+    if is_on_loan and is_mine:
+        if col6.button("Mark as returned", key=f"return_{part['part_id']}"):
+            client.table("parts").update({"status": "available"}).eq("part_id", part["part_id"]).execute()
+            # The approved request that put it on loan is done now. There's
+            # only ever one active "approved" request per part, because the
+            # Request button already disappears once a part is on loan.
+            client.table("requests").update({"status": "returned"}).eq(
+                "part_id", part["part_id"]
+            ).eq("status", "approved").execute()
+            st.session_state.returned_part_id = part["part_id"]
+            st.rerun()
+
+    # Only lets you delete your own part while it's available — not while
+    # it's on loan, so we never silently lose track of who currently has it.
+    if is_available and is_mine:
+        if col6.button("Delete", key=f"delete_{part['part_id']}"):
+            # A part can't be deleted while old request rows still point at
+            # it (foreign key), so its request history goes with it. That's
+            # fine here — deleting a part means "this doesn't exist in our
+            # inventory anymore," so its history isn't needed either.
+            client.table("requests").delete().eq("part_id", part["part_id"]).execute()
+            client.table("parts").delete().eq("part_id", part["part_id"]).execute()
+            st.session_state.deleted_part_message = f"Deleted {part['part_number']} — {part['name']}."
+            st.rerun()
+
+    # Show "Returned" just once, right under the row you clicked on.
+    if part["part_id"] == st.session_state.returned_part_id:
+        st.success(f"Marked {part['part_number']} as returned — it's available again.")
+        st.session_state.returned_part_id = None
+
+    # Show "Requested" just once, right under the row you clicked on.
+    if part["part_id"] == st.session_state.requested_part_id:
+        st.success(f"Requested — waiting for {owner_name} to approve.")
+        st.session_state.requested_part_id = None
+
+# --- Requests for my parts ---------------------------------------------------
+
+st.write("---")
+st.subheader("Requests for my parts")
+
+# Show the Approve/Reject outcome once. The request row itself disappears
+# from the list below (it's no longer pending), so this appears here instead
+# of "under" a row that's gone.
+if st.session_state.decision_message:
+    st.info(st.session_state.decision_message)
+    st.session_state.decision_message = None
+
+# Only the pending ones — approved/rejected requests don't need action anymore.
+my_requests = (
+    client.table("requests")
+    .select("*")
+    .eq("owner_id", current_user_id)
+    .eq("status", "pending")
+    .order("request_id")
+    .execute()
+    .data
+)
+
+if not my_requests:
+    st.write("No pending requests.")
+
+for req in my_requests:
+    part = part_by_id.get(req["part_id"])
+    requester_name = user_name_by_id.get(req["requester_id"], "Unknown")
+    # Older requests made before loan durations existed won't have this set.
+    requested_days = req.get("requested_days") or 7
+
+    col1, col2, col3, col4 = st.columns([2, 2, 1, 1])
+    col1.write(f"{part['part_number']} — {part['name']}")
+    col2.write(f"Requested by {requester_name} for {requested_days} day(s)")
+
+    # Approving is two steps: click Approve, then confirm (optionally
+    # changing) how many days it's actually approved for. We only know
+    # the final due date once that second click happens.
+    if st.session_state.approving_request_id == req["request_id"]:
+        approve_days = st.number_input(
+            "Approve for how many days?",
+            min_value=1,
+            value=requested_days,
+            key=f"approve_days_{req['request_id']}",
+        )
+        confirm_col, cancel_col = st.columns([1, 1])
+        if confirm_col.button("Confirm approval", key=f"confirm_{req['request_id']}"):
+            due_date = date.today() + timedelta(days=approve_days)
+            client.table("requests").update({
+                "status": "approved",
+                "due_date": due_date.isoformat(),
+            }).eq("request_id", req["request_id"]).execute()
+            client.table("parts").update({"status": "on loan"}).eq("part_id", req["part_id"]).execute()
+            send_email(
+                user_email_by_id.get(req["requester_id"]),
+                f"Request approved: {part['part_number']}",
+                f"{current_user_name} approved your request for {part['part_number']} ({part['name']}) "
+                f"for {approve_days} day(s) (until {due_date.strftime('%d %b %Y')}).\n\n"
+                f"Get in touch with them to arrange collection.",
+            )
+            st.session_state.decision_message = (
+                f"Approved. {part['part_number']} is now on loan until {due_date.strftime('%d %b %Y')}."
+            )
+            st.session_state.approving_request_id = None
+            st.rerun()
+        if cancel_col.button("Cancel", key=f"cancel_{req['request_id']}"):
+            st.session_state.approving_request_id = None
+            st.rerun()
+    else:
+        if col3.button("Approve", key=f"approve_{req['request_id']}"):
+            st.session_state.approving_request_id = req["request_id"]
+            st.rerun()
+
+        if col4.button("Reject", key=f"reject_{req['request_id']}"):
+            client.table("requests").update({"status": "rejected"}).eq("request_id", req["request_id"]).execute()
+            send_email(
+                user_email_by_id.get(req["requester_id"]),
+                f"Request rejected: {part['part_number']}",
+                f"{current_user_name} rejected your request for {part['part_number']} ({part['name']}).",
+            )
+            st.session_state.decision_message = f"Rejected the request for {part['part_number']}."
+            st.rerun()
