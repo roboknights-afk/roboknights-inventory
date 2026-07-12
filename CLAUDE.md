@@ -138,10 +138,19 @@ not bundled — see house rule #1 below):
   a "[Jump to it ↓](#requests-for-my-parts)" link — Streamlit auto-gives
   every st.subheader an anchor matching its text, so the link just uses
   that directly.
-- Next: two dashboard views — "parts I've lent out" (owner-only) and
-  "what I've borrowed" (requester-only).
+- Done: two dashboard views — "Parts I've lent out" (owner-only) and
+  "What I've borrowed" (requester-only), at the bottom of the page. Both
+  just read requests where status = 'approved' (still on loan), filtered
+  by owner_id or requester_id — no new columns needed, and a loan drops
+  off both lists automatically once "Mark as returned" flips its status.
+  Verified via direct query (not full browser login — see house rule
+  about the ashish.jindal079 test inbox below) using the original seed
+  accounts (Naitik/Aryamman), including a pre-existing loan from before
+  due dates existed, which correctly showed "no due date set" instead
+  of erroring.
 
-Later, not yet scheduled: RoboKnights logo + general UI polish.
+This closes out the full post-Chunk-9 roadmap. Nothing currently planned
+except: RoboKnights logo + general UI polish (not yet scheduled).
 
 ## Identity — real accounts now
 
@@ -172,3 +181,8 @@ PDF-to-spreadsheet feature.
 5. Push back plainly when the student is wrong or overcomplicating.
 6. Never assume approval for the next chunk. Finish the current one, say
    it's done, and stop.
+7. Don't access the ashish.jindal079@gmail.com inbox (or its +testbot /
+   +testbot2 aliases) for verification — the student asked for this
+   directly. Verify features another way instead: direct database
+   queries that replicate the exact app logic, or ask the student to
+   test and report back.
