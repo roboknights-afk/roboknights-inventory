@@ -174,6 +174,42 @@ Branding/UI/deployment chunk (done):
   when it comes up again: an outbound link from the club site, embedding,
   shared login, etc. are all very different asks).
 
+Follow-up polish round (done, same day):
+- Declined switching to Gradio or NiceGUI — student asked directly. Pushed
+  back plainly: this app already has real, working, Streamlit-specific
+  integrations (session_state, query_params, st.rerun, the GitHub Actions
+  deploy story) that a framework switch would mean rewriting from
+  scratch, for a payoff ("more presentable") that's achievable in
+  Streamlit directly. Stayed on Streamlit, pushed visual polish further
+  instead — see below.
+- Added the student's own RoboKnights wordmark PNG (gears + "ROBOKNIGHTS"
+  text, `static/RKs Logo (2).png`) to the login screen specifically. It's
+  black-on-transparent, which would nearly vanish on the dark theme, so
+  it sits in a small white card — the ONE deliberate exception to
+  "no custom CSS," scoped narrowly via `st.container(key=...)` +
+  `st.html()` targeting just that one element, not general theming
+  (which stays in config.toml as before).
+- Column headers added above the main parts table (Serial no / Name /
+  Owned by / Status / Days) — there weren't any before. Status is now a
+  colored `st.badge` (green "Available" / orange "On loan") instead of
+  plain text.
+- Removed the "Every part below is stored in Supabase..." caption line
+  (no longer needed/wanted).
+- Removed `seed_sample_data()` entirely (function + call site) — real
+  members are signing up and adding real parts now, so auto-seeding fake
+  sample data on an empty table is dead scaffolding, not a safety net.
+- Deleted the placeholder data it had created: 3 fake seed users
+  (Naitik/Aryamman/Ishaan, @example.com emails) and 5 fake seed parts
+  (RK-0001..RK-0005), plus the test requests tangled up with them.
+  Confirmed first which data was real (checked for real @dpsrkp.net /
+  personal emails and parts added through the actual Add Part flow, e.g.
+  RK-0007 "Chain 20 feet" owned by a real member) before deleting
+  anything — only removed rows traceable back to the original seed
+  function or requests that referenced them.
+- Verified the whole round visually via screenshot: logged-in view shows
+  headers/badges/real data correctly, and the wordmark logo renders
+  properly in its white card on the login screen.
+
 ## Identity — real accounts now
 
 Real signup/login via Supabase Auth, email + password. Signup is open to
