@@ -43,7 +43,7 @@ def show_login_signup(client):
             </style>
         """)
 
-        st.title("Parts Inventory", text_alignment="center")
+        st.title("RoboKnights Dashboard", text_alignment="center")
         st.caption("Log in or create an account to continue.", text_alignment="center")
 
         with st.container(border=True):
