@@ -2,11 +2,9 @@
 # and Competitions do — a distinct place, not buried inside another screen.
 # Sending is host-only; every logged-in member can view what's been sent.
 
-from datetime import date
-
 import streamlit as st
 
-from shared import get_client, send_email
+from shared import format_ist, get_client, send_email
 
 client = get_client()
 is_host = st.session_state.is_host
@@ -56,8 +54,7 @@ else:
             col1, col2 = st.columns([5, 1])
             col1.markdown(f"**{a['subject']}**")
             st.write(a["body"])
-            posted_at = date.fromisoformat(a["created_at"][:10]).strftime("%d %b %Y")
-            st.caption(posted_at)
+            st.caption(format_ist(a["created_at"]))
 
             if is_host:
                 if col2.button("Delete", key=f"delete_announcement_{a['announcement_id']}", icon=":material/delete:"):

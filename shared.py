@@ -5,6 +5,7 @@
 
 import os
 import smtplib
+from datetime import datetime, timedelta, timezone
 from email.mime.text import MIMEText
 
 import streamlit as st
@@ -30,6 +31,18 @@ def get_client():
     # @st.cache_resource means this only actually runs once per app
     # process, not once per page load — Streamlit reuses the same client.
     return create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
+
+
+IST = timezone(timedelta(hours=5, minutes=30))
+
+
+def format_ist(created_at):
+    # Supabase stores timestamps in UTC; convert to IST for display since
+    # that's the timezone everyone using this app is actually in.
+    posted = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+    if posted.tzinfo is None:
+        posted = posted.replace(tzinfo=timezone.utc)
+    return posted.astimezone(IST).strftime("%d %b %Y, %I:%M %p IST")
 
 
 def send_email(to_email, subject, body):

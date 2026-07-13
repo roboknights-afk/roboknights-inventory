@@ -406,6 +406,57 @@ Host also got a Delete button per announcement (plain
 it's not tied to any other data — nothing references an announcement row).
 Verified live by the student, including delete.
 
+## Post-Competitions feature ideas (2026-07-13)
+
+Context: RoboKnights inductions are launching in ~2 weeks, so these were
+scoped and prioritized with that deadline in mind. Agreed build order:
+(1) private student queries, (2) meeting scheduler, (3) WhatsApp "help me"
+link, (4) induction task tracker. Two ideas were discussed and explicitly
+NOT built:
+- **WhatsApp automated notifications** — stays out of scope (already was,
+  per "Explicitly NOT in v1" below). Discussed real numbers: per-message
+  cost in India is actually cheap (roughly ₹0.10–₹1/message), but DLT
+  registration requires a registered business entity (GST/company), which
+  a school club doesn't have — that's the real blocker, not price.
+- **Razorpay for merch payments** — deferred. Real payment gateways need
+  KYC tied to an adult-owned bank account; the student is a minor and
+  can't open that account himself. Recommended a free, no-registration
+  middle ground instead when merch launches: a static UPI QR/link plus a
+  "upload your payment screenshot" flow the host manually approves (same
+  pending→approved pattern used everywhere else in this app) — not built
+  yet, needs a parent/teacher involved before real money changes hands.
+
+Chunk (1) — private student queries — done, then reshaped same day: first
+built as one question + one host answer, then redesigned into a real
+back-and-forth thread per the student's request (both sides can keep
+replying, both sides can edit only their own past messages). New
+`app_pages/queries.py`, added to `st.navigation` unconditionally (both
+students and the host need it, unlike the host-only Members page).
+Data model: `queries` is just the thread container (`student_id`,
+`created_at`); every message — including the original question — lives in
+a new `query_messages` table (`query_id`, `sender_id`, `body`,
+`created_at`, `edited_at`). The `queries` table's original
+`question`/`answer`/`status`/`answered_at` columns from the first version
+are now unused (its `question` column had its `not null` constraint
+dropped via `alter table ... drop not null` so new rows can omit it) —
+left in place rather than dropped, matching how this project never
+removes columns. Privacy: students only ever see their own threads
+(filtered by `student_id`), host sees every thread grouped by student
+name — same private-to-owner rule as grade/section/phone. Notifications:
+starting a new thread emails every `HOST_EMAILS` address; a host's reply
+emails that student; further back-and-forth after that doesn't email
+either side each time, since the Queries page itself is the ongoing
+conversation view (mirrors how Requests-for-my-parts doesn't email on
+every state either). Every message shows an IST timestamp
+(`shared.format_ist` — Supabase stores UTC, converted with a fixed
++5:30 offset since IST has no DST). Verified live by the student,
+including edits on both sides.
+
+Announcements also got real timestamps the same day: `format_ist` was
+first written directly in `app_pages/announcements.py`, then pulled up
+into `shared.py` once Queries needed the same conversion, so both pages
+share one implementation instead of two copies.
+
 ## Explicitly NOT in v1
 
 No SMS/WhatsApp (India needs DLT registration / paid business API), no
