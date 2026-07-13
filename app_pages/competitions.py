@@ -156,9 +156,13 @@ if is_host:
                 st.session_state.new_events = [dict(BLANK_EVENT)]
                 st.rerun()
 
+# Success pops as a toast; errors stay inline so they can't be missed.
 if st.session_state.competition_message:
     kind, text = st.session_state.competition_message
-    (st.success if kind == "success" else st.error)(text)
+    if kind == "success":
+        st.toast(text, icon=":material/check_circle:")
+    else:
+        st.error(text)
     st.session_state.competition_message = None
 
 # --- Everyone: browse all competitions --------------------------------------
@@ -172,7 +176,7 @@ if "volunteer_message" not in st.session_state:
     st.session_state.volunteer_message = None
 
 if st.session_state.volunteer_message:
-    st.success(st.session_state.volunteer_message)
+    st.toast(st.session_state.volunteer_message, icon=":material/check_circle:")
     st.session_state.volunteer_message = None
 
 st.subheader(":material/list_alt: All competitions")
@@ -192,7 +196,9 @@ else:
         events = [e for e in all_events if e["competition_id"] == cid]
         editing_this = is_host and st.session_state.editing_competition_id == cid
 
-        with st.container(border=True):
+        # key= gives the card a stable "st-key-rkcard_..." CSS class, which
+        # the hover animation in app.py targets.
+        with st.container(border=True, key=f"rkcard_comp_{cid}"):
             if editing_this:
                 # --- Host: edit this competition ---------------------------
                 # Same list-in-session-state + Add/Remove pattern as the
@@ -432,7 +438,7 @@ else:
                         )
                         cap = e["team_size"] * e["max_teams"]
 
-                        with st.container(border=True):
+                        with st.container(border=True, key=f"rkcard_event_{e['event_id']}"):
                             st.markdown(
                                 f"**{e['name']}** — {grade_range}, {e['team_size']} per team, "
                                 f"up to {e['max_teams']} team(s)"

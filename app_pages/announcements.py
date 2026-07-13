@@ -38,9 +38,13 @@ if is_host:
                 del st.session_state["announcement_body"]
             st.rerun()
 
+# Success pops as a toast; errors stay inline so they can't be missed.
 if st.session_state.announcement_message:
     kind, text = st.session_state.announcement_message
-    (st.success if kind == "success" else st.error)(text)
+    if kind == "success":
+        st.toast(text, icon=":material/campaign:")
+    else:
+        st.error(text)
     st.session_state.announcement_message = None
 
 announcements = (
@@ -50,7 +54,9 @@ if not announcements:
     st.caption("No announcements yet.")
 else:
     for a in announcements:
-        with st.container(border=True):
+        # key= gives the card a stable "st-key-rkcard_..." CSS class, which
+        # the hover animation in app.py targets.
+        with st.container(border=True, key=f"rkcard_ann_{a['announcement_id']}"):
             col1, col2 = st.columns([5, 1])
             col1.markdown(f"**{a['subject']}**")
             st.write(a["body"])

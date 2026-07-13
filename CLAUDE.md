@@ -457,6 +457,46 @@ first written directly in `app_pages/announcements.py`, then pulled up
 into `shared.py` once Queries needed the same conversion, so both pages
 share one implementation instead of two copies.
 
+Animation pass (2026-07-13, student asked directly for "animations and
+everything"): Streamlit has no animation API, so this added the SECOND
+deliberate exception to the "no custom CSS" rule (first was the login
+wordmark card) — one `st.html` style block in `app.py`, display-only,
+applied app-wide: page content fades up on load/page-switch, sidebar
+slides in, primary/secondary buttons lift on hover and press on click,
+the header gear logo rotates on hover, and list cards lift with a shadow
+on hover. Card hovers target `div[class*="st-key-rkcard_"]` — stable
+classes Streamlit generates from `st.container(key="rkcard_...")`, which
+was added to the parts/requests/lent/borrowed rows, competition cards,
+event cards, and announcement cards. Do NOT target the auto-generated
+`st-emotion-cache-*` classes; they change between Streamlit versions
+(checked the live DOM first: this version has no
+stVerticalBlockBorderWrapper testid, so keyed classes were the only
+stable hook). Same pass converted all transient success messages from
+inline st.success/st.info to `st.toast(...)` (animated, auto-dismissing,
+bottom-right); form ERRORS deliberately stay inline where the user is
+looking, so they can't be missed. The session_state
+set-message→rerun→display-once pattern is unchanged — only the display
+call swapped.
+
+Second animation round (2026-07-14, student picked from a menu): gold
+accent `#E8B33D` replaced the grey primaryColor in config.toml (student
+chose "knight gold" from options; primary buttons get dark text via CSS
+since white-on-gold was unreadable and Streamlit has no button-text theme
+option). Gear splash overlay plays once per login (spin-up + fade) and in
+reverse on logout — factored into `render_gear_splash(direction)` in
+app.py. TWO HARD-WON GOTCHAS, do not re-trip: (1) `st.html` silently
+STRIPS inline `<svg>` — splash must use `st.markdown(...,
+unsafe_allow_html=True)`; (2) Markdown turns indented lines into literal
+code blocks, so that HTML must be flush-left in the string. Also added:
+staggered card entrance (nth-child delays on rkcard classes; fill mode is
+`backwards` NOT `forwards`, because forwards would permanently override
+the hover transform), gold hover glow on cards, a pulsing gold border on
+the "Requests for me" metric while non-zero (keyed marker container
+`rkpulse_requests` in inventory.py + `:has()` rule in app.py),
+`st.balloons()` after signup, and a faint (5% opacity, blurred, 120s
+rotation) gear watermark in the bottom-right via `stApp::after` with the
+SVG inlined as base64 (Streamlit doesn't serve static/ over HTTP).
+
 ## Explicitly NOT in v1
 
 No SMS/WhatsApp (India needs DLT registration / paid business API), no

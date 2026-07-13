@@ -1,3 +1,6 @@
+import base64
+from pathlib import Path
+
 import streamlit as st
 from dotenv import load_dotenv
 
@@ -16,6 +19,181 @@ st.set_page_config(
     layout="wide",
 )
 st.logo("static/roboknights_logo.svg", size="large")
+
+# --- Animations (app-wide) ----------------------------------------------------
+# Streamlit has no animation system of its own, so this is the one other
+# deliberate exception (besides the login wordmark card) to the "no custom
+# CSS" rule — added at the student's direct request. Display-only: nothing
+# here changes how any feature works. Card hover effects target the stable
+# `st-key-rkcard_*` classes Streamlit itself generates from
+# st.container(key="rkcard_...") — NOT the auto-generated emotion classes,
+# which change between Streamlit versions and would silently break.
+st.html("""
+    <style>
+    /* Page content fades up on every page load / page switch */
+    @keyframes rk-fade-up {
+        from { opacity: 0; transform: translateY(10px); }
+        to   { opacity: 1; transform: translateY(0); }
+    }
+    [data-testid="stMainBlockContainer"] { animation: rk-fade-up 0.35s ease-out; }
+
+    /* Sidebar slides in */
+    @keyframes rk-slide-right {
+        from { opacity: 0; transform: translateX(-14px); }
+        to   { opacity: 1; transform: translateX(0); }
+    }
+    [data-testid="stSidebar"] > div:first-child { animation: rk-slide-right 0.3s ease-out; }
+
+    /* Buttons lift on hover, press down on click (not tertiary/link-style ones) */
+    button[data-testid="stBaseButton-primary"],
+    button[data-testid="stBaseButton-secondary"] {
+        transition: transform 0.12s ease, box-shadow 0.12s ease, background-color 0.12s ease;
+    }
+    button[data-testid="stBaseButton-primary"]:hover,
+    button[data-testid="stBaseButton-secondary"]:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 4px 10px rgba(0, 0, 0, 0.35);
+    }
+    button[data-testid="stBaseButton-primary"]:active,
+    button[data-testid="stBaseButton-secondary"]:active {
+        transform: translateY(0) scale(0.98);
+        box-shadow: none;
+    }
+    button[data-testid="stBaseButton-tertiary"] { transition: color 0.12s ease; }
+
+    /* Gold primary buttons need dark text — Streamlit defaults to white,
+       which is unreadable on this shade and has no theme option to fix. */
+    button[data-testid="stBaseButton-primary"],
+    button[data-testid="stBaseButton-primary"] * { color: #1E1E1E !important; }
+
+    /* List cards (parts, competitions, announcements) lift slightly on
+       hover, with a soft gold glow tying into the accent color */
+    div[class*="st-key-rkcard_"] {
+        transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease;
+    }
+    div[class*="st-key-rkcard_"]:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 6px 14px rgba(0, 0, 0, 0.3), 0 0 10px 1px rgba(232, 179, 61, 0.25);
+        border-color: rgba(232, 179, 61, 0.6);
+    }
+
+    /* Cards stagger in one after another. "backwards" fill (NOT forwards)
+       on purpose: it hides a card during its delay, but releases control
+       once the animation ends — with forwards, the final keyframe would
+       permanently override the hover transform above. */
+    @keyframes rk-card-in {
+        from { opacity: 0; transform: translateY(12px); }
+    }
+    div[class*="st-key-rkcard_"] { animation: rk-card-in 0.4s ease-out backwards; }
+    div[class*="st-key-rkcard_"]:nth-child(2)  { animation-delay: 0.04s; }
+    div[class*="st-key-rkcard_"]:nth-child(3)  { animation-delay: 0.08s; }
+    div[class*="st-key-rkcard_"]:nth-child(4)  { animation-delay: 0.12s; }
+    div[class*="st-key-rkcard_"]:nth-child(5)  { animation-delay: 0.16s; }
+    div[class*="st-key-rkcard_"]:nth-child(6)  { animation-delay: 0.20s; }
+    div[class*="st-key-rkcard_"]:nth-child(7)  { animation-delay: 0.24s; }
+    div[class*="st-key-rkcard_"]:nth-child(8)  { animation-delay: 0.28s; }
+    div[class*="st-key-rkcard_"]:nth-child(9)  { animation-delay: 0.32s; }
+    div[class*="st-key-rkcard_"]:nth-child(10) { animation-delay: 0.36s; }
+    div[class*="st-key-rkcard_"]:nth-child(11) { animation-delay: 0.40s; }
+    div[class*="st-key-rkcard_"]:nth-child(12) { animation-delay: 0.44s; }
+    div[class*="st-key-rkcard_"]:nth-child(13) { animation-delay: 0.48s; }
+    div[class*="st-key-rkcard_"]:nth-child(14) { animation-delay: 0.52s; }
+    div[class*="st-key-rkcard_"]:nth-child(n+15) { animation-delay: 0.56s; }
+
+    /* "Requests for me" pulses gold while there's something to act on.
+       The rkpulse container is only rendered when the count is non-zero
+       (see inventory.py), and :has() lights up its surrounding column. */
+    @keyframes rk-pulse {
+        0%, 100% { box-shadow: 0 0 0 0 rgba(232, 179, 61, 0); }
+        50%      { box-shadow: 0 0 14px 1px rgba(232, 179, 61, 0.35); border-color: rgba(232, 179, 61, 0.8); }
+    }
+    div[data-testid="stColumn"]:has(div[class*="st-key-rkpulse"]) {
+        animation: rk-pulse 2.2s ease-in-out infinite;
+    }
+
+    /* The gear logo does a little turn when hovered */
+    [data-testid="stHeaderLogo"] { transition: transform 0.4s ease; }
+    [data-testid="stHeaderLogo"]:hover { transform: rotate(60deg); }
+
+    /* Inputs ease their focus-border in instead of snapping */
+    [data-testid="stTextInputRootElement"] { transition: border-color 0.15s ease; }
+    </style>
+""")
+
+# --- Gear watermark -------------------------------------------------------
+# A huge, extremely faint, slowly rotating gear in the bottom-right corner,
+# behind everything interactive (pointer-events: none). Deliberately blurred
+# and at 5% opacity so it reads as texture, not content. Inlined as a
+# base64 data-URI because Streamlit doesn't serve the static/ folder over
+# HTTP by default.
+_gear_b64 = base64.b64encode(Path("static/roboknights_logo.svg").read_bytes()).decode()
+st.html(f"""
+    <style>
+    @keyframes rk-watermark-spin {{
+        from {{ transform: rotate(0deg); }}
+        to   {{ transform: rotate(360deg); }}
+    }}
+    [data-testid="stApp"]::after {{
+        content: "";
+        position: fixed;
+        width: 75vmin;
+        height: 75vmin;
+        right: -15vmin;
+        bottom: -15vmin;
+        background: url("data:image/svg+xml;base64,{_gear_b64}") no-repeat center / contain;
+        opacity: 0.05;
+        filter: blur(2px);
+        pointer-events: none;
+        z-index: 0;
+        animation: rk-watermark-spin 120s linear infinite;
+    }}
+    </style>
+""")
+
+
+def render_gear_splash(direction="in"):
+    # The gear overlay: "in" plays after login (spins up from tiny, then the
+    # overlay fades to reveal the app), "out" plays on logout (spins away).
+    # Two hard-won gotchas baked in:
+    #  - st.html silently STRIPS inline <svg>, so this must be st.markdown
+    #    with unsafe_allow_html=True instead.
+    #  - the HTML must be flush-left: Markdown turns indented lines into a
+    #    literal code block (the CSS would show up on screen as text).
+    gear_svg = Path("static/roboknights_logo.svg").read_text(encoding="utf-8")
+    if direction == "in":
+        overlay_secs, gear_secs = "1.8s", "1.6s"
+        gear_frames = """
+0%   { transform: scale(0.2) rotate(0deg); opacity: 0; }
+20%  { opacity: 1; }
+75%  { transform: scale(1.0) rotate(540deg); opacity: 1; }
+100% { transform: scale(1.3) rotate(720deg); opacity: 0; }"""
+    else:
+        overlay_secs, gear_secs = "1.3s", "1.1s"
+        gear_frames = """
+0%   { transform: scale(1.1) rotate(0deg); opacity: 1; }
+100% { transform: scale(0.15) rotate(-540deg); opacity: 0; }"""
+    st.markdown(f"""<style>
+#rk-splash {{
+    position: fixed; inset: 0; z-index: 999999; background: #242424;
+    display: flex; align-items: center; justify-content: center;
+    pointer-events: none;
+    animation: rk-splash-fade {overlay_secs} ease forwards;
+}}
+#rk-splash svg {{
+    width: 150px; height: 150px;
+    animation: rk-splash-gear {gear_secs} cubic-bezier(0.4, 0, 0.2, 1) forwards;
+}}
+@keyframes rk-splash-gear {{{gear_frames}
+}}
+@keyframes rk-splash-fade {{
+    0%, 80% {{ opacity: 1; }}
+    100%    {{ opacity: 0; visibility: hidden; }}
+}}
+</style>
+<div id="rk-splash">{gear_svg}</div>""", unsafe_allow_html=True)
+
+
+# --- Login / signup ----------------------------------------------------------
 
 
 # --- Login / signup ----------------------------------------------------------
@@ -114,8 +292,13 @@ def show_login_signup(client):
                                 # the email link first.
                                 login_result = client.auth.sign_in_with_password({"email": email, "password": password})
                                 st.session_state.auth_user = {"id": login_result.user.id, "email": login_result.user.email}
+                                # Balloons fly after the rerun lands them in
+                                # the app (fired there — anything drawn here
+                                # would be wiped by the rerun itself).
+                                st.session_state.just_signed_up = True
                                 st.rerun()
                             except Exception:
+                                st.balloons()
                                 st.success("Account created! Check your email (including spam) to confirm it, then log in above.")
                     except Exception as e:
                         st.error(f"Couldn't sign up: {e}")
@@ -209,11 +392,30 @@ if "show_reset" not in st.session_state:
 # Nobody logged in yet — show either the reset screen or the login/signup
 # screen, then stop here so the rest of the app stays hidden.
 if st.session_state.auth_user is None:
+    # Re-arm the gear splash so it plays again on the next login.
+    st.session_state.splash_shown = False
+    # Coming here straight from a Log out click: gear spins away once.
+    if st.session_state.pop("splash_out", False):
+        render_gear_splash("out")
     if st.session_state.show_reset:
         show_reset_screen(client)
     else:
         show_login_signup(client)
     st.stop()
+
+# --- Gear splash ---------------------------------------------------------
+# Plays exactly once per login: the gear spins up in the center, then the
+# overlay fades away to reveal the app. pointer-events: none, so even while
+# visible it can't block a click — and the session_state flag stops it
+# replaying on every button-click rerun.
+if not st.session_state.get("splash_shown"):
+    st.session_state.splash_shown = True
+    render_gear_splash("in")
+
+# New-account celebration: balloons fly once, right after the very first
+# login that immediately follows signing up.
+if st.session_state.pop("just_signed_up", False):
+    st.balloons()
 
 # --- Who am I? -----------------------------------------------------------
 # Real login now — no more dropdown. current_user_id comes from the actual
@@ -242,6 +444,8 @@ with st.sidebar:
         if st.button("Log out", icon=":material/logout:"):
             client.auth.sign_out()
             st.session_state.auth_user = None
+            # Tells the login screen to play the gear spin-DOWN once.
+            st.session_state.splash_out = True
             st.rerun()
 
 # --- Navigation ------------------------------------------------------------

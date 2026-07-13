@@ -93,11 +93,15 @@ with st.sidebar:
                 )
         st.rerun()
 
-    # Shown right under the form. Stashed in session_state so it survives
-    # the rerun the button click causes (same pattern as everywhere else).
+    # Success pops up as a toast (an animated notification, bottom-right);
+    # errors stay put under the form so they can't be missed. Stashed in
+    # session_state so it survives the rerun the click causes, same as ever.
     if st.session_state.part_added_message:
         kind, text = st.session_state.part_added_message
-        (st.success if kind == "success" else st.error)(text)
+        if kind == "success":
+            st.toast(text, icon=":material/check_circle:")
+        else:
+            st.error(text)
         st.session_state.part_added_message = None
 
 # --- Main page -----------------------------------------------------------
@@ -118,14 +122,12 @@ if st.query_params.get("tab") == "requests":
 if "deleted_part_message" not in st.session_state:
     st.session_state.deleted_part_message = None
 
-# Shown here (top of the section) rather than "under" the deleted row, since
-# that row won't exist anymore once the part is gone.
 if st.session_state.deleted_part_message:
-    st.info(st.session_state.deleted_part_message)
+    st.toast(st.session_state.deleted_part_message, icon=":material/delete:")
     st.session_state.deleted_part_message = None
 
 if st.session_state.part_edited_message:
-    st.info(st.session_state.part_edited_message)
+    st.toast(st.session_state.part_edited_message, icon=":material/edit:")
     st.session_state.part_edited_message = None
 
 parts = client.table("parts").select("*").order("part_number").execute().data
@@ -175,7 +177,15 @@ m1, m2, m3, m4 = st.columns(4, border=True)
 m1.metric("Total parts", len(parts))
 m2.metric("Available", available_count)
 m3.metric("On loan", on_loan_count)
-m4.metric("Requests for me", len(my_requests))
+# The one number that means "you need to do something" pulses gold while
+# it's non-zero. The keyed container just gives CSS a stable hook
+# (st-key-rkpulse_requests) — the :has() rule in app.py does the pulsing.
+if my_requests:
+    with m4:
+        with st.container(key="rkpulse_requests"):
+            st.metric("Requests for me", len(my_requests))
+else:
+    m4.metric("Requests for me", len(my_requests))
 
 st.subheader(":material/list_alt: All parts")
 
@@ -232,7 +242,9 @@ for part in visible_parts:
     is_mine = part["owner_id"] == current_user_id
     is_on_loan = part["status"] == "on loan"
 
-    with st.container(border=True):
+    # key= gives the card a stable "st-key-rkcard_..." CSS class, which the
+    # hover animation in app.py targets.
+    with st.container(border=True, key=f"rkcard_part_{part['part_id']}"):
         col1, col2, col3, col4, col5, col6 = st.columns([1, 2, 2, 2, 1, 2], vertical_alignment="center")
         col1.write(part["part_number"])
         col2.write(part["name"])
@@ -352,14 +364,14 @@ for part in visible_parts:
                     st.session_state.editing_part_id = part["part_id"]
                     st.rerun()
 
-        # Show "Returned" just once, right under the row you clicked on.
+        # Show "Returned" just once, as a toast.
         if part["part_id"] == st.session_state.returned_part_id:
-            st.success(f"Marked {part['part_number']} as returned — it's available again.")
+            st.toast(f"Marked {part['part_number']} as returned — it's available again.", icon=":material/check_circle:")
             st.session_state.returned_part_id = None
 
-        # Show "Requested" just once, right under the row you clicked on.
+        # Show "Requested" just once, as a toast.
         if part["part_id"] == st.session_state.requested_part_id:
-            st.success(f"Requested — waiting for {owner_name} to approve.")
+            st.toast(f"Requested — waiting for {owner_name} to approve.", icon=":material/send:")
             st.session_state.requested_part_id = None
 
 # --- Requests for my parts ---------------------------------------------------
@@ -369,11 +381,9 @@ for part in visible_parts:
 # that anchor is auto-generated from this exact heading text.
 st.subheader("Requests for my parts")
 
-# Show the Approve/Reject outcome once. The request row itself disappears
-# from the list below (it's no longer pending), so this appears here instead
-# of "under" a row that's gone.
+# Show the Approve/Reject outcome once, as a toast.
 if st.session_state.decision_message:
-    st.info(st.session_state.decision_message)
+    st.toast(st.session_state.decision_message, icon=":material/check_circle:")
     st.session_state.decision_message = None
 
 # my_requests was already fetched up top (the metric row needed the count).
@@ -386,7 +396,7 @@ for req in my_requests:
     # Older requests made before loan durations existed won't have this set.
     requested_days = req.get("requested_days") or 7
 
-    with st.container(border=True):
+    with st.container(border=True, key=f"rkcard_req_{req['request_id']}"):
         col1, col2, col3, col4 = st.columns([2, 2, 1, 1], vertical_alignment="center")
         col1.write(f"{part['part_number']} — {part['name']}")
         col2.write(f"Requested by {requester_name} for {requested_days} day(s)")
@@ -469,7 +479,7 @@ else:
     for req in lent_out:
         part = part_by_id.get(req["part_id"])
         borrower_name = user_name_by_id.get(req["requester_id"], "Unknown")
-        with st.container(border=True):
+        with st.container(border=True, key=f"rkcard_lent_{req['request_id']}"):
             col1, col2, col3 = st.columns([2, 2, 2], vertical_alignment="center")
             col1.write(f"{part['part_number']} — {part['name']}")
             col2.write(f"Lent to {borrower_name}")
@@ -493,7 +503,7 @@ else:
     for req in borrowed:
         part = part_by_id.get(req["part_id"])
         owner_name = user_name_by_id.get(req["owner_id"], "Unknown")
-        with st.container(border=True):
+        with st.container(border=True, key=f"rkcard_borrowed_{req['request_id']}"):
             col1, col2, col3 = st.columns([2, 2, 2], vertical_alignment="center")
             col1.write(f"{part['part_number']} — {part['name']}")
             col2.write(f"Borrowed from {owner_name}")

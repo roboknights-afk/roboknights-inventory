@@ -27,7 +27,7 @@ if "editing_message_id" not in st.session_state:
     st.session_state.editing_message_id = None
 
 if st.session_state.query_message:
-    st.success(st.session_state.query_message)
+    st.toast(st.session_state.query_message, icon=":material/check_circle:")
     st.session_state.query_message = None
 
 
