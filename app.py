@@ -249,6 +249,7 @@ with st.sidebar:
 pages = [
     st.Page("app_pages/inventory.py", title="Inventory", icon=":material/inventory_2:"),
     st.Page("app_pages/competitions.py", title="Competitions", icon=":material/emoji_events:"),
+    st.Page("app_pages/announcements.py", title="Announcements", icon=":material/campaign:"),
 ]
 # Host-only page — only added to the nav at all when logged in as a host,
 # so non-hosts never even see it listed in the sidebar.

@@ -70,5 +70,59 @@ def send_reminders_for(days_before, sent_column):
         print(f"Sent {days_before}-day reminder for request {req['request_id']} ({part['part_number']})")
 
 
+def send_competition_reminders():
+    # Finds every competition happening tomorrow, and emails everyone
+    # selected (event_volunteers.selected) for one of its events — same
+    # "hasn't been sent yet" guard as the loan reminders above, just its
+    # own column since this is a different kind of reminder.
+    tomorrow = (date.today() + timedelta(days=1)).isoformat()
+
+    competitions = (
+        client.table("competitions").select("*").eq("competition_date", tomorrow).execute().data
+    )
+    if not competitions:
+        print("No competitions tomorrow.")
+        return
+
+    users = {u["user_id"]: u for u in client.table("users").select("user_id, name, email").execute().data}
+
+    for comp in competitions:
+        events = (
+            client.table("competition_events")
+            .select("*")
+            .eq("competition_id", comp["competition_id"])
+            .execute()
+            .data
+        )
+        for event in events:
+            selected_volunteers = (
+                client.table("event_volunteers")
+                .select("*")
+                .eq("event_id", event["event_id"])
+                .eq("selected", True)
+                .eq("reminder_sent", False)
+                .execute()
+                .data
+            )
+            for volunteer in selected_volunteers:
+                user = users.get(volunteer["user_id"])
+                if not user:
+                    continue
+
+                send_email(
+                    user["email"],
+                    f"Tomorrow: {event['name']} at {comp['name']}",
+                    f"Reminder — {comp['name']} is tomorrow, and you're selected for "
+                    f"{event['name']}.\n\n"
+                    f"Log in to the app and update your bot's status before the "
+                    f"competition.",
+                )
+                client.table("event_volunteers").update({"reminder_sent": True}).eq(
+                    "volunteer_id", volunteer["volunteer_id"]
+                ).execute()
+                print(f"Sent competition reminder to {user['name']} for {event['name']}")
+
+
 send_reminders_for(2, "reminder_2day_sent")
 send_reminders_for(1, "reminder_1day_sent")
+send_competition_reminders()

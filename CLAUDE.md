@@ -377,9 +377,34 @@ just the host) sees a "Selected (n/cap): ..." line above the volunteer
 list once anyone's been picked, alongside the existing full volunteer
 list. Verified live by the student.
 
-Not yet built (next chunks, one at a time): day-before reminder email +
-bot-status field (extending the existing GitHub Actions job), general
-announcements broadcast.
+Chunk 5 (day-before reminder + bot status) — done: `event_volunteers` got
+two new columns, `bot_status` (free text) and `reminder_sent` (stops the
+daily job emailing the same person twice, same pattern as
+`requests.reminder_2day_sent`/`reminder_1day_sent`). `send_due_reminders.py`
+— the same GitHub Actions job that already sends loan reminders — now also
+checks for competitions happening tomorrow and emails every selected
+volunteer for that competition's events, telling them to update their bot
+status. No workflow YAML changes needed, since it already runs this script
+daily with the right secrets. On the Competitions page, once a competition
+is 1 day away or sooner, each event shows a "Bot status" block: everyone
+can see every selected person's status (or "Not updated yet"), and the
+selected person themselves gets an editable field for their own. Verified:
+dry-ran the extended script locally against real data (no competitions
+were due "tomorrow" at the time, so it correctly sent nothing) and the
+bot-status UI live by the student.
+
+Chunk 6 (announcements) — done, then reshaped same day: originally built
+as a section on the Competitions page, but moved to its own page,
+`app_pages/announcements.py` (added to `st.navigation` unconditionally,
+unlike the host-only Members page — everyone should see this one), since
+the student wanted it to read like a real separate area rather than
+buried inside Competitions. New `announcements` table — sending is
+host-only (subject + body, "Send to everyone" emails every member AND
+saves a row), but every member can scroll the last 20, newest first.
+Host also got a Delete button per announcement (plain
+`.delete().eq("announcement_id", ...)`, no confirmation step needed since
+it's not tied to any other data — nothing references an announcement row).
+Verified live by the student, including delete.
 
 ## Explicitly NOT in v1
 

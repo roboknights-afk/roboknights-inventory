@@ -5,8 +5,9 @@
 # competition (details, links, and events) the same way they create one.
 # Chunk 4 lets the host finalize which volunteers are actually selected for
 # an event, capped at team_size * max_teams, and emails newly-selected
-# people. Day-before reminders and general announcements are still later
-# chunks, built one at a time per the usual house rule.
+# people. Day-before reminders and bot status live in send_due_reminders.py
+# instead, since those need to run on a schedule, not a page view.
+# Announcements moved to their own page (app_pages/announcements.py).
 
 from datetime import date
 
@@ -521,3 +522,44 @@ else:
 
                                     st.session_state.volunteer_message = f"Saved selection for {e['name']}."
                                     st.rerun()
+
+                            # Bot status: unlocked starting the day before
+                            # the competition (matches when the day-before
+                            # reminder email goes out), for anyone selected.
+                            # Everyone can see the statuses once unlocked;
+                            # only the selected person themselves can edit
+                            # their own.
+                            if selected_names and comp.get("competition_date"):
+                                days_until = (
+                                    date.fromisoformat(comp["competition_date"]) - date.today()
+                                ).days
+                                if days_until <= 1:
+                                    st.markdown("**Bot status**")
+                                    for v in event_volunteers:
+                                        if not v.get("selected"):
+                                            continue
+                                        vol_name = user_name_by_id.get(v["user_id"], "Unknown")
+                                        status_text = v.get("bot_status") or "Not updated yet"
+                                        st.caption(f"{vol_name}: {status_text}")
+
+                                    my_row = next(
+                                        (v for v in event_volunteers if v["user_id"] == current_user_id),
+                                        None,
+                                    )
+                                    if my_row and my_row.get("selected"):
+                                        new_status = st.text_input(
+                                            "Update your bot's status",
+                                            value=my_row.get("bot_status") or "",
+                                            key=f"bot_status_{e['event_id']}",
+                                        )
+                                        if st.button(
+                                            "Save status", key=f"save_bot_status_{e['event_id']}",
+                                            icon=":material/check:",
+                                        ):
+                                            client.table("event_volunteers").update(
+                                                {"bot_status": new_status.strip()}
+                                            ).eq("event_id", e["event_id"]).eq(
+                                                "user_id", current_user_id
+                                            ).execute()
+                                            st.session_state.volunteer_message = "Bot status updated."
+                                            st.rerun()
