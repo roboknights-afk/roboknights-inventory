@@ -195,8 +195,47 @@ def render_gear_splash(direction="in"):
 
 # --- Login / signup ----------------------------------------------------------
 
+# Only school addresses can sign up, log in, or reset a password now.
+# Rather than typing the full address and risk a typo'd or personal domain,
+# every email box here only takes the username — this appends
+# @dpsrkp.net automatically so nothing else is possible to submit.
+ALLOWED_EMAIL_DOMAIN = "@dpsrkp.net"
 
-# --- Login / signup ----------------------------------------------------------
+
+def build_school_email(username):
+    # Defensive: if someone pastes their full address anyway, don't double
+    # up the suffix.
+    username = username.strip()
+    if username.lower().endswith(ALLOWED_EMAIL_DOMAIN):
+        username = username[: -len(ALLOWED_EMAIL_DOMAIN)]
+    return f"{username}{ALLOWED_EMAIL_DOMAIN}"
+
+
+def school_email_input(label, key):
+    # A text_input with a fixed "@dpsrkp.net" suffix shown alongside it —
+    # Streamlit has no native "input with suffix" widget, so this is just
+    # two columns: the box, then the suffix as a label next to it.
+    col1, col2 = st.columns([2, 1.2], vertical_alignment="bottom")
+    username = col1.text_input(label, key=key, placeholder="yourusername")
+    col2.markdown(f"`{ALLOWED_EMAIL_DOMAIN}`")
+    return build_school_email(username)
+
+
+ADMISSION_NO_PREFIXES = ["R", "E", "V"]
+
+
+def admission_no_input(key_prefix):
+    # Every real admission number seen so far starts with R, E, or V
+    # (e.g. R22639) — a dropdown for the letter plus a plain number field
+    # for the digits, instead of one free-text box prone to typos.
+    col1, col2 = st.columns([1, 2], vertical_alignment="bottom")
+    prefix = col1.selectbox("Admission no.", ADMISSION_NO_PREFIXES, key=f"{key_prefix}_prefix")
+    digits = col2.text_input(
+        "Admission no. digits", key=f"{key_prefix}_digits",
+        label_visibility="collapsed", placeholder="12345",
+    )
+    return f"{prefix}{digits.strip()}"
+
 
 def show_login_signup(client):
     # This whole screen only appears when nobody is logged in yet.
@@ -228,7 +267,7 @@ def show_login_signup(client):
             login_tab, signup_tab = st.tabs(["Log in", "Sign up"])
 
             with login_tab:
-                email = st.text_input("Email", key="login_email")
+                email = school_email_input("Email", key="login_username")
                 password = st.text_input("Password", type="password", key="login_password")
                 if st.button("Log in", icon=":material/login:", type="primary", width="stretch"):
                     try:
@@ -247,61 +286,64 @@ def show_login_signup(client):
 
             with signup_tab:
                 name = st.text_input("Your name", key="signup_name")
-                # This IS the login email too — just labeled to make clear it
-                # should be the school one, not a personal address.
-                email = st.text_input("Institutional email", key="signup_email")
+                # This IS the login email too — just the username half, the
+                # @dpsrkp.net suffix is fixed and appended automatically.
+                email = school_email_input("Institutional email", key="signup_username")
                 # Individual grade, not a band — competitions later filter who
                 # can volunteer for a given event by exactly this number.
                 grade = st.selectbox("Your grade", [7, 8, 9, 10, 11, 12], key="signup_grade")
                 section = st.text_input("Section", key="signup_section")
-                admission_no = st.text_input("Admission no.", key="signup_admission_no")
+                admission_no = admission_no_input("signup_admission_no")
                 phone_no = st.text_input("Phone no.", key="signup_phone_no")
                 password = st.text_input("Password", type="password", key="signup_password")
                 if st.button("Sign up", icon=":material/person_add:", type="primary", width="stretch"):
-                    try:
-                        result = client.auth.sign_up({"email": email, "password": password})
+                    if email == ALLOWED_EMAIL_DOMAIN:
+                        st.error("Enter your username.")
+                    else:
+                        try:
+                            result = client.auth.sign_up({"email": email, "password": password})
 
-                        # Supabase quirk: if this email ALREADY has an account,
-                        # it doesn't error — it "succeeds" but sends no email
-                        # (so strangers can't probe which emails are registered).
-                        # The giveaway is an empty identities list.
-                        already_registered = result.user is not None and not result.user.identities
-                        if already_registered:
-                            st.error(
-                                "This email already has an account — no email will be "
-                                "sent. Log in instead, or use Forgot password on the "
-                                "Log in tab."
-                            )
-                        else:
-                            # Save profile details alongside the real login id,
-                            # in our own table — Supabase Auth only knows
-                            # email/password.
-                            client.table("users").upsert({
-                                "user_id": result.user.id,
-                                "name": name,
-                                "email": email,
-                                "grade": grade,
-                                "section": section.strip(),
-                                "admission_no": admission_no.strip(),
-                                "phone_no": phone_no.strip(),
-                            }).execute()
+                            # Supabase quirk: if this email ALREADY has an account,
+                            # it doesn't error — it "succeeds" but sends no email
+                            # (so strangers can't probe which emails are registered).
+                            # The giveaway is an empty identities list.
+                            already_registered = result.user is not None and not result.user.identities
+                            if already_registered:
+                                st.error(
+                                    "This email already has an account — no email will be "
+                                    "sent. Log in instead, or use Forgot password on the "
+                                    "Log in tab."
+                                )
+                            else:
+                                # Save profile details alongside the real login id,
+                                # in our own table — Supabase Auth only knows
+                                # email/password.
+                                client.table("users").upsert({
+                                    "user_id": result.user.id,
+                                    "name": name,
+                                    "email": email,
+                                    "grade": grade,
+                                    "section": section.strip(),
+                                    "admission_no": admission_no.strip(),
+                                    "phone_no": phone_no.strip(),
+                                }).execute()
 
-                            try:
-                                # Only succeeds right away if "Confirm email" is
-                                # off in Supabase. Otherwise they have to click
-                                # the email link first.
-                                login_result = client.auth.sign_in_with_password({"email": email, "password": password})
-                                st.session_state.auth_user = {"id": login_result.user.id, "email": login_result.user.email}
-                                # Balloons fly after the rerun lands them in
-                                # the app (fired there — anything drawn here
-                                # would be wiped by the rerun itself).
-                                st.session_state.just_signed_up = True
-                                st.rerun()
-                            except Exception:
-                                st.balloons()
-                                st.success("Account created! Check your email (including spam) to confirm it, then log in above.")
-                    except Exception as e:
-                        st.error(f"Couldn't sign up: {e}")
+                                try:
+                                    # Only succeeds right away if "Confirm email" is
+                                    # off in Supabase. Otherwise they have to click
+                                    # the email link first.
+                                    login_result = client.auth.sign_in_with_password({"email": email, "password": password})
+                                    st.session_state.auth_user = {"id": login_result.user.id, "email": login_result.user.email}
+                                    # Balloons fly after the rerun lands them in
+                                    # the app (fired there — anything drawn here
+                                    # would be wiped by the rerun itself).
+                                    st.session_state.just_signed_up = True
+                                    st.rerun()
+                                except Exception:
+                                    st.balloons()
+                                    st.success("Account created! Check your email (including spam) to confirm it, then log in above.")
+                        except Exception as e:
+                            st.error(f"Couldn't sign up: {e}")
 
                 # If the confirmation email never arrived (spam filter, typo
                 # fixed, etc.), asks Supabase to send it again.
@@ -331,14 +373,17 @@ def show_reset_screen(client):
         with st.container(border=True):
             if st.session_state.reset_sent_to is None:
                 # Step 1: ask for the email, send a code to it.
-                email = st.text_input("Your email", key="reset_email")
+                email = school_email_input("Your email", key="reset_username")
                 if st.button("Send reset code", icon=":material/send:", type="primary", width="stretch"):
-                    try:
-                        client.auth.reset_password_for_email(email)
-                        st.session_state.reset_sent_to = email
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Couldn't send code: {e}")
+                    if email == ALLOWED_EMAIL_DOMAIN:
+                        st.error("Enter your username.")
+                    else:
+                        try:
+                            client.auth.reset_password_for_email(email)
+                            st.session_state.reset_sent_to = email
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Couldn't send code: {e}")
             else:
                 # Step 2: use whatever the email contained. Depending on how
                 # the Supabase email template is set up, that's either a

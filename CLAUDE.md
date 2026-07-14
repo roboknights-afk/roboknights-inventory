@@ -497,6 +497,44 @@ the "Requests for me" metric while non-zero (keyed marker container
 rotation) gear watermark in the bottom-right via `stApp::after` with the
 SVG inlined as base64 (Streamlit doesn't serve static/ over HTTP).
 
+## Email deliverability incident + school-domain lock (2026-07-14)
+
+A school-address signup wasn't getting its confirmation email while a
+personal Gmail test did. Root cause: `SMTP_SENDER` was `roboknights@dpsrkp.net`,
+and sending "from" a school domain (relayed through Brevo, a third party
+not authorized in that domain's SPF/DKIM) to **another address on that
+same domain** is exactly the pattern Google Workspace/Microsoft 365 school
+tenants treat as spoofing and silently quarantine — Brevo's own "delivered"
+status only means the school's mail server accepted the handoff, not that
+it reached an inbox. Fixed by verifying a personal (non-school) sender
+address in Brevo's Single Sender Verification and switching `SMTP_SENDER`
+to it in all the places that value lives: local `.env`, Streamlit Cloud
+secrets, GitHub Actions secrets, AND Supabase's own separate Authentication
+→ SMTP Settings sender field (four places, not one — Supabase's auth
+emails don't read our app's secrets at all). Also separately: the
+confirmation email itself was linking to `localhost:8501` because
+Supabase's Site URL was never updated after deploying — fixed in
+Supabase → Authentication → URL Configuration.
+
+Same-day, the student then asked to lock signup/login/forgot-password to
+`@dpsrkp.net` only, to stop unauthorized signups. Implemented as an
+auto-append UI (`school_email_input()` in app.py): every email box takes
+just the username, with a fixed `@dpsrkp.net` label shown alongside it —
+not a validate-and-reject error, the domain literally can't be typed
+differently. **Known consequence, confirmed explicitly by the student
+before shipping:** Naitik and Aryamman are on personal Gmail accounts and
+are now locked out of login entirely, since there's no "change my email"
+feature yet and no admin/service-role Supabase access to fix it for them
+directly (same anon-key limitation noted earlier in this file). Recovery
+needs one of: build a self-service "change my email" field, or re-sign-up
+them fresh on real `@dpsrkp.net` addresses and manually move their
+existing parts/request history to the new account. Neither done yet —
+flag this to the student before it's forgotten.
+
+Also same day: the Admission no. signup field changed from free text to
+a dropdown (R/E/V) + digits box (`admission_no_input()`), matching the
+real format seen in the school's admission numbers (e.g. `R22639`).
+
 ## Explicitly NOT in v1
 
 No SMS/WhatsApp (India needs DLT registration / paid business API), no
