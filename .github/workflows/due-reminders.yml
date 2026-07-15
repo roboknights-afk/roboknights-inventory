@@ -2,8 +2,10 @@ name: Due date reminders
 
 on:
   schedule:
-    # 3:30 UTC = 9:00 AM IST, every day
+    # 3:30 UTC = 9:00 AM IST — loan due-date reminders + day-before competition reminders
     - cron: "30 3 * * *"
+    # 10:30 UTC = 4:00 PM IST — "how did it go" achievement reminders, competition day itself
+    - cron: "30 10 * * *"
   workflow_dispatch: # lets us trigger it manually from the Actions tab, for testing
 
 jobs:
@@ -15,7 +17,21 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install supabase python-dotenv
-      - run: python send_due_reminders.py
+      # Manual runs (github.event.schedule is empty) do both, for easy testing.
+      - name: Loan + day-before competition reminders (9am IST)
+        if: github.event.schedule != '30 10 * * *'
+        run: python send_due_reminders.py
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          SMTP_SENDER: ${{ secrets.SMTP_SENDER }}
+      - name: Achievement reminders (4pm IST)
+        if: github.event.schedule != '30 3 * * *'
+        run: python send_achievement_reminders.py
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}

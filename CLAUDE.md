@@ -535,6 +535,61 @@ Also same day: the Admission no. signup field changed from free text to
 a dropdown (R/E/V) + digits box (`admission_no_input()`), matching the
 real format seen in the school's admission numbers (e.g. `R22639`).
 
+## Meetings, Achievements (2026-07-14)
+
+New `app_pages/meetings.py`, added to nav unconditionally. Host schedules
+a meeting (title, agenda, date, time, external join link — no real video
+calling built in, just links out to Google Meet/Jitsi/whatever — plus
+optional Meeting ID and password, both truly optional since plenty of
+links don't need them). Everyone can RSVP ("I'm going" / "Can't make it",
+same existence-based pattern as `event_volunteers`). Once a meeting's date
+arrives, a self-check-in "I attended" button unlocks; host additionally
+gets an Attendance multiselect (pre-filled with self-check-ins, host can
+add/remove anyone) to correct the final record — same
+self-report-then-host-override shape as the Members directory edit. Host
+can also Edit (full inline form, same fields as scheduling) or Delete a
+meeting (RSVPs/attendance cascade-delete with it).
+
+New `app_pages/achievements.py`, added to nav unconditionally. Any member
+can log a result for a competition event — pick a competition, then an
+event under it (two-level select, same hierarchy as browsing
+Competitions), position (free text), and an optional attachment/link
+(NOT a real file upload — this app has no file storage configured, so
+it's a pasted link like every other link field in this app: photo, video,
+Drive folder, whatever). Self-reported; the poster or a host can delete
+an entry.
+
+New `send_achievement_reminders.py` + a second cron entry (10:30 UTC /
+4:00 PM IST) added to the existing `due-reminders.yml` workflow. On the
+competition's own day (not the day before — that's the existing bot-status
+reminder), it emails every volunteer who was actually SELECTED for an
+event happening that day, asking them to log their result — unless they've
+already logged one for that exact event, in which case it's silently
+skipped. Job steps use `if: github.event.schedule != '...'` so the two
+scripts don't both fire on both schedules (manual workflow_dispatch runs
+both, for easy testing — `github.event.schedule` is empty then, so
+neither `!=` condition excludes it).
+
+Discussed and NOT yet built: importing competitions from the club's real
+Google Sheet (student called it "E2C") — the sheet marks which rows are
+robotics competitions using actual Google Sheets **notes** (the
+hover-to-reveal corner-triangle annotation, confirmed via a screenshot —
+NOT a plain text column), which don't survive a CSV/Excel export, so this
+needs the Google Sheets API directly (a free API key, sheet shared as
+"anyone with the link can view") rather than a simple file upload. Blocked
+on: seeing the real sheet structure (only one competition block seen so
+far, "EDEN 6.0 THE NEXUS" — venue/date/links in one area, events + a
+team-format code like `1x6` + grade range in another; unclear whether
+`1x6` means team_size×max_teams or the reverse, and unclear how multiple
+competitions repeat across the sheet — separate blocks per tab, or
+stacked/side-by-side in one tab). Planned shape once unblocked: host
+pastes the sheet link → "Scan for robotics competitions" button → preview
+list with checkboxes for which ones to actually import → "Import
+selected" writes to `competitions`/`competition_events`/
+`competition_links`. Do not build the parser until the real structure is
+confirmed — a wrong guess here means either missed competitions or
+garbage rows getting imported.
+
 ## Explicitly NOT in v1
 
 No SMS/WhatsApp (India needs DLT registration / paid business API), no
