@@ -267,16 +267,29 @@ if is_host:
                 if st.button(
                     f"Sync all {len(already_imported)} already-imported competitions",
                     key="e2c_update_all", icon=":material/sync:",
+                    help="Re-reads the sheet fresh, so anyone who signed up since your last Scan is included",
                 ):
-                    for comp in already_imported:
-                        _sync_competition_from_scan(client, comp)
-                        for e in comp["events"]:
-                            if e.get("existing_event_id"):
-                                _insert_matched_participants(
-                                    client, e.get("existing_event_id"), e.get("teams", []), e["name"], comp["name"]
-                                )
-                    st.toast(f"Synced {len(already_imported)} competition(s).", icon=":material/check_circle:")
-                    st.rerun()
+                    try:
+                        # Re-scan fresh rather than reusing the cached results —
+                        # cached team data only remembers names that matched a
+                        # real member AT SCAN TIME, so replaying it can never
+                        # pick up someone who signed up since.
+                        fresh_by_name = {c["name"].strip().lower(): c for c in scan_e2c_sheet(client)}
+                    except Exception as e:
+                        st.error(f"Couldn't re-read the E2C sheet: {e}")
+                        fresh_by_name = {}
+                    if fresh_by_name:
+                        for comp in already_imported:
+                            fresh_comp = fresh_by_name.get(comp["name"].strip().lower(), comp)
+                            _sync_competition_from_scan(client, fresh_comp)
+                            for e in fresh_comp["events"]:
+                                if e.get("existing_event_id"):
+                                    _insert_matched_participants(
+                                        client, e.get("existing_event_id"), e.get("teams", []),
+                                        e["name"], fresh_comp["name"],
+                                    )
+                        st.toast(f"Synced {len(already_imported)} competition(s).", icon=":material/check_circle:")
+                        st.rerun()
 
             pending_new = []  # collects each new competition's current widget values
 
@@ -383,7 +396,20 @@ if is_host:
                     })
 
             if pending_new:
-                if st.button("Import selected", type="primary", key="e2c_import_btn", icon=":material/download:"):
+                if st.button(
+                    "Import selected", type="primary", key="e2c_import_btn", icon=":material/download:",
+                    help="Re-reads the sheet fresh so anyone newly signed up is included",
+                ):
+                    # One fresh re-scan for the whole import, not the cached
+                    # data — someone could've signed up since the last Scan.
+                    try:
+                        fresh_all_events_by_comp = {
+                            c["name"].strip().lower(): c.get("all_events", []) for c in scan_e2c_sheet(client)
+                        }
+                    except Exception as ex:
+                        st.error(f"Couldn't re-read the E2C sheet: {ex}")
+                        fresh_all_events_by_comp = {}
+
                     errors = []
                     imported = 0
                     for data in pending_new:
@@ -416,6 +442,7 @@ if is_host:
                                 for l in data["links"]
                             ]).execute()
 
+                        fresh_events_here = fresh_all_events_by_comp.get(data["name"].strip().lower(), [])
                         for e in valid_events:
                             event_result = client.table("competition_events").insert({
                                 "competition_id": competition_id,
@@ -424,8 +451,12 @@ if is_host:
                                 "min_grade": e["min_grade"], "max_grade": e["max_grade"],
                             }).execute()
                             new_event_id = event_result.data[0]["event_id"]
+                            fresh_event = next(
+                                (fe for fe in fresh_events_here if fe["name"].strip().lower() == e["name"].strip().lower()),
+                                e,
+                            )
                             _insert_matched_participants(
-                                client, new_event_id, e.get("teams", []), e["name"], data["name"]
+                                client, new_event_id, fresh_event.get("teams", []), e["name"], data["name"]
                             )
                         imported += 1
 
@@ -452,17 +483,28 @@ if is_host:
                             )
                             if st.button(
                                 "Update this competition", key=f"e2c_update_{idx}", icon=":material/sync:",
-                                help="Also syncs registered participants for this competition's events",
+                                help="Re-reads the sheet fresh — anyone who signed up since your last "
+                                     "Scan is included",
                             ):
-                                _sync_competition_from_scan(client, comp)
-                                for e in comp["events"]:
-                                    if e.get("existing_event_id"):
-                                        _insert_matched_participants(
-                                            client, e.get("existing_event_id"), e.get("teams", []),
-                                            e["name"], comp["name"],
-                                        )
-                                st.toast(f"Updated {comp['name']}.", icon=":material/check_circle:")
-                                st.rerun()
+                                try:
+                                    fresh_comp = next(
+                                        (c for c in scan_e2c_sheet(client)
+                                         if c["name"].strip().lower() == comp["name"].strip().lower()),
+                                        comp,
+                                    )
+                                except Exception as e:
+                                    st.error(f"Couldn't re-read the E2C sheet: {e}")
+                                    fresh_comp = None
+                                if fresh_comp:
+                                    _sync_competition_from_scan(client, fresh_comp)
+                                    for e in fresh_comp["events"]:
+                                        if e.get("existing_event_id"):
+                                            _insert_matched_participants(
+                                                client, e.get("existing_event_id"), e.get("teams", []),
+                                                e["name"], fresh_comp["name"],
+                                            )
+                                    st.toast(f"Updated {comp['name']}.", icon=":material/check_circle:")
+                                    st.rerun()
 
                             # Lets the host pull in a specific event that wasn't
                             # auto-detected as robotics (e.g. a borderline AI/IoT
@@ -534,8 +576,21 @@ if is_host:
                                     if teams_caption:
                                         st.caption(teams_caption)
                                 if st.button(
-                                    "Add selected events", key=f"e2c_addevents_btn_{idx}", icon=":material/add:"
+                                    "Add selected events", key=f"e2c_addevents_btn_{idx}", icon=":material/add:",
+                                    help="Re-reads the sheet fresh so anyone newly signed up is included",
                                 ):
+                                    # Re-scan fresh (not the cached teams data) so anyone who
+                                    # signed up since the last Scan still gets matched here.
+                                    try:
+                                        fresh_comp = next(
+                                            (c for c in scan_e2c_sheet(client)
+                                             if c["name"].strip().lower() == comp["name"].strip().lower()),
+                                            None,
+                                        )
+                                    except Exception as ex:
+                                        st.error(f"Couldn't re-read the E2C sheet: {ex}")
+                                        fresh_comp = None
+                                    fresh_all_events = fresh_comp.get("all_events", []) if fresh_comp else []
                                     for e in to_add:
                                         event_result = client.table("competition_events").insert({
                                             "competition_id": comp["existing_id"],
@@ -544,8 +599,13 @@ if is_host:
                                             "min_grade": e["min_grade"], "max_grade": e["max_grade"],
                                         }).execute()
                                         new_event_id = event_result.data[0]["event_id"]
+                                        fresh_event = next(
+                                            (fe for fe in fresh_all_events
+                                             if fe["name"].strip().lower() == e["name"].strip().lower()),
+                                            e,
+                                        )
                                         _insert_matched_participants(
-                                            client, new_event_id, e.get("teams", []), e["name"], comp["name"]
+                                            client, new_event_id, fresh_event.get("teams", []), e["name"], comp["name"]
                                         )
                                     if to_add:
                                         st.toast(
