@@ -303,7 +303,7 @@ if is_host:
                                 if not e["already_imported"]
                             }
                             match = next(
-                                (e for e in comp["all_events"] if e["name"].strip().lower() == add_name.strip().lower()),
+                                (e for e in comp.get("all_events", []) if e["name"].strip().lower() == add_name.strip().lower()),
                                 None,
                             )
                             if not match:
@@ -401,7 +401,7 @@ if is_host:
                                 e["name"].strip().lower() for e in comp["events"] + st.session_state[extra_key]
                             }
                             match = next(
-                                (e for e in comp["all_events"] if e["name"].strip().lower() == add_name.strip().lower()),
+                                (e for e in comp.get("all_events", []) if e["name"].strip().lower() == add_name.strip().lower()),
                                 None,
                             )
                             if not match:
