@@ -352,11 +352,14 @@ def _parse_robotics_events(block, user_id_by_name):
         team_rows = block[i:j]
 
         category, details = _split_note(b_cell["note"])
-        # Substring match (not exact) so compound categories like "Robotics
-        # and STEM" still count. A few real robotics events don't mention
-        # "robotics" in their note at all (e.g. one just repeats its own
-        # event name) — a known, accepted gap, not a bug.
-        if "robotics" in category.lower():
+        # "robo" (not "robotics") so compound/short categories like
+        # "Robotics and STEM" and "Robo Soccer" both count. When there's no
+        # note at all to check, fall back to the event's own name — this is
+        # only a fallback (not applied when a note exists but doesn't
+        # mention robo) so a genuinely different category isn't overridden
+        # just because of a coincidental name.
+        no_note = not category
+        if "robo" in category.lower() or (no_note and "robo" in b_cell["text"].lower()):
             elig = _parse_eligibility(c_cell["text"])
             events.append({
                 "name": b_cell["text"],
