@@ -193,11 +193,14 @@ def _sync_competition_from_scan(client, comp):
         ]).execute()
 
 
-def _insert_matched_participants(client, event_id, teams):
+def _insert_matched_participants(client, event_id, teams, event_name, comp_name):
     # teams: list of team-rows, each a list of {"user_id", "name", "selected"}
     # matched against real members. Re-scanning can only ADD someone or
     # PROMOTE them from pending to selected — never remove or un-select
     # anyone, so this can't silently undo a host's own finalize decision.
+    # Anyone newly added or promoted as selected gets the same "You're
+    # selected" email the manual finalize flow sends — being confirmed on
+    # the real sheet is no different from being finalized by the host.
     existing = {
         v["user_id"]: v["selected"]
         for v in client.table("event_volunteers").select("user_id, selected").eq("event_id", event_id).execute().data
@@ -209,12 +212,25 @@ def _insert_matched_participants(client, event_id, teams):
                     client.table("event_volunteers").update({"selected": True}).eq(
                         "event_id", event_id
                     ).eq("user_id", p["user_id"]).execute()
+                    _send_selected_email(p["user_id"], event_name, comp_name)
                 continue
             client.table("event_volunteers").insert({
                 "event_id": event_id, "user_id": p["user_id"],
                 "team_no": team_no, "selected": p["selected"],
             }).execute()
             existing[p["user_id"]] = p["selected"]
+            if p["selected"]:
+                _send_selected_email(p["user_id"], event_name, comp_name)
+
+
+def _send_selected_email(user_id, event_name, comp_name):
+    send_email(
+        user_email_by_id.get(user_id),
+        f"You're selected: {event_name} at {comp_name}",
+        f"You've been selected to represent RoboKnights in "
+        f"{event_name} at {comp_name}.\n\n"
+        f"Log in to the app for full details.",
+    )
 
 
 def _teams_caption(teams):
@@ -249,217 +265,122 @@ if is_host:
             already_imported = [c for c in results if c["already_imported"]]
             if already_imported:
                 if st.button(
-                    f"Update all {len(already_imported)} already-imported competitions",
+                    f"Sync all {len(already_imported)} already-imported competitions",
                     key="e2c_update_all", icon=":material/sync:",
                 ):
                     for comp in already_imported:
                         _sync_competition_from_scan(client, comp)
                         for e in comp["events"]:
                             if e.get("existing_event_id"):
-                                _insert_matched_participants(client, e.get("existing_event_id"), e.get("teams", []))
-                    st.toast(f"Updated {len(already_imported)} competition(s).", icon=":material/check_circle:")
+                                _insert_matched_participants(
+                                    client, e.get("existing_event_id"), e.get("teams", []), e["name"], comp["name"]
+                                )
+                    st.toast(f"Synced {len(already_imported)} competition(s).", icon=":material/check_circle:")
                     st.rerun()
 
             pending_new = []  # collects each new competition's current widget values
 
             for idx, comp in enumerate(results):
+                if comp["already_imported"]:
+                    continue  # shown separately below, in the collapsed "Already imported" section
                 with st.container(border=True):
-                    if comp["already_imported"]:
-                        # --- Already in our database: sync + add-new-events only ---
-                        st.markdown(f"**{comp['name']}** _(already imported)_")
+                    # --- New competition: editable fields + per-event checkboxes ---
+                    st.markdown(f"**{comp['name']}**")
+                    venue = st.text_input("Venue", value=comp["venue"], key=f"e2c_venue_{idx}")
+                    comp_date = st.date_input(
+                        "Competition date", value=comp["date_parsed"], key=f"e2c_date_{idx}"
+                    )
+                    deadline = st.date_input(
+                        "Registration deadline", value=comp["deadline_parsed"], key=f"e2c_deadline_{idx}"
+                    )
+                    incharge = st.text_input(
+                        "Student in-charge", value=comp["student_incharge"], key=f"e2c_incharge_{idx}"
+                    )
+                    if not comp["date_parsed"]:
+                        st.caption(f":material/warning: Couldn't read a clear date from `{comp['date_text']}` — pick one above.")
+                    if comp["links"]:
                         st.caption(
-                            f":material/location_on: {comp['venue'] or '(not found)'}  •  "
-                            f":material/event: {comp['date_text'] or '(not found)'}"
+                            "Links: " + "  •  ".join(f"[{l['label']}]({l['url']})" for l in comp["links"])
                         )
-                        if st.button(
-                            "Update this competition", key=f"e2c_update_{idx}", icon=":material/sync:",
-                            help="Also syncs registered participants for this competition's events",
-                        ):
-                            _sync_competition_from_scan(client, comp)
-                            for e in comp["events"]:
-                                if e.get("existing_event_id"):
-                                    _insert_matched_participants(client, e.get("existing_event_id"), e.get("teams", []))
-                            st.toast(f"Updated {comp['name']}.", icon=":material/check_circle:")
-                            st.rerun()
 
-                        # Lets the host pull in a specific event that wasn't
-                        # auto-detected as robotics (e.g. a borderline AI/IoT
-                        # one) by typing its exact name from the sheet.
-                        extra_key = f"e2c_extra_missing_{idx}"
-                        if extra_key not in st.session_state:
-                            st.session_state[extra_key] = []
-                        add_col1, add_col2 = st.columns([4, 1])
-                        add_name = add_col1.text_input(
-                            "Add another event by name", key=f"e2c_addname_existing_{idx}",
-                            placeholder="Add another event by its exact name (e.g. Vision 2047)",
-                            label_visibility="collapsed",
+                    st.markdown("**Robotics events to import:**")
+
+                    # Lets the host pull in a specific event that wasn't
+                    # auto-detected as robotics (e.g. a borderline AI/IoT
+                    # one) by typing its exact name from the sheet.
+                    extra_key = f"e2c_extra_events_{idx}"
+                    if extra_key not in st.session_state:
+                        st.session_state[extra_key] = []
+                    add_col1, add_col2 = st.columns([4, 1])
+                    add_name = add_col1.text_input(
+                        "Add another event by name", key=f"e2c_addname_{idx}",
+                        placeholder="Add another event by its exact name (e.g. Vision 2047)",
+                        label_visibility="collapsed",
+                    )
+                    if add_col2.button("Add", key=f"e2c_addname_btn_{idx}", icon=":material/add:") and add_name.strip():
+                        shown_names = {
+                            e["name"].strip().lower() for e in comp["events"] + st.session_state[extra_key]
+                        }
+                        match = next(
+                            (e for e in comp.get("all_events", []) if e["name"].strip().lower() == add_name.strip().lower()),
+                            None,
                         )
-                        if add_col2.button(
-                            "Add", key=f"e2c_addname_existing_btn_{idx}", icon=":material/add:"
-                        ) and add_name.strip():
-                            already_listed = {
-                                e["name"].strip().lower()
-                                for e in comp["events"] + st.session_state[extra_key]
-                                if not e["already_imported"]
-                            }
-                            match = next(
-                                (e for e in comp.get("all_events", []) if e["name"].strip().lower() == add_name.strip().lower()),
-                                None,
+                        if not match:
+                            st.session_state[f"e2c_addname_msg_{idx}"] = (
+                                "error", f"No event named \"{add_name}\" found in {comp['name']}."
                             )
-                            if not match:
-                                st.session_state[f"e2c_addname_existing_msg_{idx}"] = (
-                                    "error", f"No event named \"{add_name}\" found in {comp['name']}."
-                                )
-                            elif match["already_imported"]:
-                                st.session_state[f"e2c_addname_existing_msg_{idx}"] = (
-                                    "info", f"\"{match['name']}\" is already imported."
-                                )
-                            elif match["name"].strip().lower() in already_listed:
-                                st.session_state[f"e2c_addname_existing_msg_{idx}"] = (
-                                    "info", f"\"{match['name']}\" is already in the list."
-                                )
-                            else:
-                                st.session_state[extra_key].append(match)
-                                st.session_state[f"e2c_addname_existing_msg_{idx}"] = (
-                                    "success", f"Added \"{match['name']}\"."
-                                )
-                            st.rerun()
-                        addname_msg = st.session_state.pop(f"e2c_addname_existing_msg_{idx}", None)
-                        if addname_msg:
-                            kind, text = addname_msg
-                            st.caption(f"{':material/error:' if kind == 'error' else ':material/info:'} {text}")
-
-                        new_events = [e for e in comp["events"] if not e["already_imported"]] + st.session_state[extra_key]
-                        if new_events:
-                            st.markdown("**New robotics events found on the sheet, not yet added:**")
-                            to_add = []
-                            for e in new_events:
-                                label = (
-                                    f"{e['name']} — {e['team_size']} per team, up to "
-                                    f"{e['max_teams']} team(s), grades {e['min_grade']}–{e['max_grade']}"
-                                )
-                                if e["flagged"]:
-                                    label += " ⚠️ check team size/max teams before adding"
-                                if st.checkbox(label, value=not e["flagged"], key=f"e2c_addevent_{idx}_{e['name']}"):
-                                    to_add.append(e)
-                                teams_caption = _teams_caption(e.get("teams", []))
-                                if teams_caption:
-                                    st.caption(teams_caption)
-                            if st.button("Add selected events", key=f"e2c_addevents_btn_{idx}", icon=":material/add:"):
-                                for e in to_add:
-                                    event_result = client.table("competition_events").insert({
-                                        "competition_id": comp["existing_id"],
-                                        "name": e["name"], "details": e["details"],
-                                        "team_size": e["team_size"], "max_teams": e["max_teams"],
-                                        "min_grade": e["min_grade"], "max_grade": e["max_grade"],
-                                    }).execute()
-                                    new_event_id = event_result.data[0]["event_id"]
-                                    _insert_matched_participants(client, new_event_id, e.get("teams", []))
-                                if to_add:
-                                    st.toast(
-                                        f"Added {len(to_add)} event(s) to {comp['name']}.",
-                                        icon=":material/check_circle:",
-                                    )
-                                    st.rerun()
-
-                    else:
-                        # --- New competition: editable fields + per-event checkboxes ---
-                        st.markdown(f"**{comp['name']}**")
-                        venue = st.text_input("Venue", value=comp["venue"], key=f"e2c_venue_{idx}")
-                        comp_date = st.date_input(
-                            "Competition date", value=comp["date_parsed"], key=f"e2c_date_{idx}"
-                        )
-                        deadline = st.date_input(
-                            "Registration deadline", value=comp["deadline_parsed"], key=f"e2c_deadline_{idx}"
-                        )
-                        incharge = st.text_input(
-                            "Student in-charge", value=comp["student_incharge"], key=f"e2c_incharge_{idx}"
-                        )
-                        if not comp["date_parsed"]:
-                            st.caption(f":material/warning: Couldn't read a clear date from `{comp['date_text']}` — pick one above.")
-                        if comp["links"]:
-                            st.caption(
-                                "Links: " + "  •  ".join(f"[{l['label']}]({l['url']})" for l in comp["links"])
+                        elif match["name"].strip().lower() in shown_names:
+                            st.session_state[f"e2c_addname_msg_{idx}"] = (
+                                "info", f"\"{match['name']}\" is already in the list."
                             )
+                        else:
+                            st.session_state[extra_key].append(match)
+                            st.session_state[f"e2c_addname_msg_{idx}"] = ("success", f"Added \"{match['name']}\".")
+                        st.rerun()
+                    addname_msg = st.session_state.pop(f"e2c_addname_msg_{idx}", None)
+                    if addname_msg:
+                        kind, text = addname_msg
+                        st.caption(f"{':material/error:' if kind == 'error' else ':material/info:'} {text}")
 
-                        st.markdown("**Robotics events to import:**")
-
-                        # Lets the host pull in a specific event that wasn't
-                        # auto-detected as robotics (e.g. a borderline AI/IoT
-                        # one) by typing its exact name from the sheet.
-                        extra_key = f"e2c_extra_events_{idx}"
-                        if extra_key not in st.session_state:
-                            st.session_state[extra_key] = []
-                        add_col1, add_col2 = st.columns([4, 1])
-                        add_name = add_col1.text_input(
-                            "Add another event by name", key=f"e2c_addname_{idx}",
-                            placeholder="Add another event by its exact name (e.g. Vision 2047)",
-                            label_visibility="collapsed",
-                        )
-                        if add_col2.button("Add", key=f"e2c_addname_btn_{idx}", icon=":material/add:") and add_name.strip():
-                            shown_names = {
-                                e["name"].strip().lower() for e in comp["events"] + st.session_state[extra_key]
-                            }
-                            match = next(
-                                (e for e in comp.get("all_events", []) if e["name"].strip().lower() == add_name.strip().lower()),
-                                None,
+                    event_widgets = []
+                    for eidx, e in enumerate(comp["events"] + st.session_state[extra_key]):
+                        with st.container(border=True):
+                            ecol1, ecol2 = st.columns([4, 1])
+                            ecol1.markdown(
+                                f"**{e['name']}**"
+                                + ("  :material/warning: check team size/max teams" if e["flagged"] else "")
                             )
-                            if not match:
-                                st.session_state[f"e2c_addname_msg_{idx}"] = (
-                                    "error", f"No event named \"{add_name}\" found in {comp['name']}."
-                                )
-                            elif match["name"].strip().lower() in shown_names:
-                                st.session_state[f"e2c_addname_msg_{idx}"] = (
-                                    "info", f"\"{match['name']}\" is already in the list."
-                                )
-                            else:
-                                st.session_state[extra_key].append(match)
-                                st.session_state[f"e2c_addname_msg_{idx}"] = ("success", f"Added \"{match['name']}\".")
-                            st.rerun()
-                        addname_msg = st.session_state.pop(f"e2c_addname_msg_{idx}", None)
-                        if addname_msg:
-                            kind, text = addname_msg
-                            st.caption(f"{':material/error:' if kind == 'error' else ':material/info:'} {text}")
+                            include = ecol2.checkbox("Include", value=True, key=f"e2c_incl_{idx}_{eidx}")
+                            c1, c2, c3, c4 = st.columns(4)
+                            team_size = c1.number_input(
+                                "Team size", min_value=1, value=e["team_size"], key=f"e2c_ts_{idx}_{eidx}",
+                            )
+                            max_teams = c2.number_input(
+                                "Max teams", min_value=1, value=e["max_teams"], key=f"e2c_mt_{idx}_{eidx}",
+                            )
+                            min_grade = c3.selectbox(
+                                "Min grade", GRADES, index=GRADES.index(e["min_grade"]),
+                                key=f"e2c_ming_{idx}_{eidx}",
+                            )
+                            max_grade = c4.selectbox(
+                                "Max grade", GRADES, index=GRADES.index(e["max_grade"]),
+                                key=f"e2c_maxg_{idx}_{eidx}",
+                            )
+                            teams_caption = _teams_caption(e.get("teams", []))
+                            if teams_caption:
+                                st.caption(teams_caption)
+                            event_widgets.append({
+                                "include": include, "name": e["name"], "details": e["details"],
+                                "team_size": team_size, "max_teams": max_teams,
+                                "min_grade": min_grade, "max_grade": max_grade,
+                                "teams": e.get("teams", []),
+                            })
 
-                        event_widgets = []
-                        for eidx, e in enumerate(comp["events"] + st.session_state[extra_key]):
-                            with st.container(border=True):
-                                ecol1, ecol2 = st.columns([4, 1])
-                                ecol1.markdown(
-                                    f"**{e['name']}**"
-                                    + ("  :material/warning: check team size/max teams" if e["flagged"] else "")
-                                )
-                                include = ecol2.checkbox("Include", value=True, key=f"e2c_incl_{idx}_{eidx}")
-                                c1, c2, c3, c4 = st.columns(4)
-                                team_size = c1.number_input(
-                                    "Team size", min_value=1, value=e["team_size"], key=f"e2c_ts_{idx}_{eidx}",
-                                )
-                                max_teams = c2.number_input(
-                                    "Max teams", min_value=1, value=e["max_teams"], key=f"e2c_mt_{idx}_{eidx}",
-                                )
-                                min_grade = c3.selectbox(
-                                    "Min grade", GRADES, index=GRADES.index(e["min_grade"]),
-                                    key=f"e2c_ming_{idx}_{eidx}",
-                                )
-                                max_grade = c4.selectbox(
-                                    "Max grade", GRADES, index=GRADES.index(e["max_grade"]),
-                                    key=f"e2c_maxg_{idx}_{eidx}",
-                                )
-                                teams_caption = _teams_caption(e.get("teams", []))
-                                if teams_caption:
-                                    st.caption(teams_caption)
-                                event_widgets.append({
-                                    "include": include, "name": e["name"], "details": e["details"],
-                                    "team_size": team_size, "max_teams": max_teams,
-                                    "min_grade": min_grade, "max_grade": max_grade,
-                                    "teams": e.get("teams", []),
-                                })
-
-                        pending_new.append({
-                            "name": comp["name"], "venue": venue, "competition_date": comp_date,
-                            "registration_deadline": deadline, "student_incharge": incharge,
-                            "links": comp["links"], "events": event_widgets,
-                        })
+                    pending_new.append({
+                        "name": comp["name"], "venue": venue, "competition_date": comp_date,
+                        "registration_deadline": deadline, "student_incharge": incharge,
+                        "links": comp["links"], "events": event_widgets,
+                    })
 
             if pending_new:
                 if st.button("Import selected", type="primary", key="e2c_import_btn", icon=":material/download:"):
@@ -503,7 +424,9 @@ if is_host:
                                 "min_grade": e["min_grade"], "max_grade": e["max_grade"],
                             }).execute()
                             new_event_id = event_result.data[0]["event_id"]
-                            _insert_matched_participants(client, new_event_id, e.get("teams", []))
+                            _insert_matched_participants(
+                                client, new_event_id, e.get("teams", []), e["name"], data["name"]
+                            )
                         imported += 1
 
                     if errors:
@@ -514,6 +437,122 @@ if is_host:
                             "success", f"Imported {imported} competition(s) from E2C."
                         )
                     st.rerun()
+
+            if already_imported:
+                with st.expander(f":material/inventory_2: Already imported ({len(already_imported)})"):
+                    for idx, comp in enumerate(results):
+                        if not comp["already_imported"]:
+                            continue
+                        with st.container(border=True):
+                            # --- Already in our database: sync + add-new-events only ---
+                            st.markdown(f"**{comp['name']}**")
+                            st.caption(
+                                f":material/location_on: {comp['venue'] or '(not found)'}  •  "
+                                f":material/event: {comp['date_text'] or '(not found)'}"
+                            )
+                            if st.button(
+                                "Update this competition", key=f"e2c_update_{idx}", icon=":material/sync:",
+                                help="Also syncs registered participants for this competition's events",
+                            ):
+                                _sync_competition_from_scan(client, comp)
+                                for e in comp["events"]:
+                                    if e.get("existing_event_id"):
+                                        _insert_matched_participants(
+                                            client, e.get("existing_event_id"), e.get("teams", []),
+                                            e["name"], comp["name"],
+                                        )
+                                st.toast(f"Updated {comp['name']}.", icon=":material/check_circle:")
+                                st.rerun()
+
+                            # Lets the host pull in a specific event that wasn't
+                            # auto-detected as robotics (e.g. a borderline AI/IoT
+                            # one) by typing its exact name from the sheet.
+                            extra_key = f"e2c_extra_missing_{idx}"
+                            if extra_key not in st.session_state:
+                                st.session_state[extra_key] = []
+                            add_col1, add_col2 = st.columns([4, 1])
+                            add_name = add_col1.text_input(
+                                "Add another event by name", key=f"e2c_addname_existing_{idx}",
+                                placeholder="Add another event by its exact name (e.g. Vision 2047)",
+                                label_visibility="collapsed",
+                            )
+                            if add_col2.button(
+                                "Add", key=f"e2c_addname_existing_btn_{idx}", icon=":material/add:"
+                            ) and add_name.strip():
+                                already_listed = {
+                                    e["name"].strip().lower()
+                                    for e in comp["events"] + st.session_state[extra_key]
+                                    if not e["already_imported"]
+                                }
+                                match = next(
+                                    (e for e in comp.get("all_events", [])
+                                     if e["name"].strip().lower() == add_name.strip().lower()),
+                                    None,
+                                )
+                                if not match:
+                                    st.session_state[f"e2c_addname_existing_msg_{idx}"] = (
+                                        "error", f"No event named \"{add_name}\" found in {comp['name']}."
+                                    )
+                                elif match["already_imported"]:
+                                    st.session_state[f"e2c_addname_existing_msg_{idx}"] = (
+                                        "info", f"\"{match['name']}\" is already imported."
+                                    )
+                                elif match["name"].strip().lower() in already_listed:
+                                    st.session_state[f"e2c_addname_existing_msg_{idx}"] = (
+                                        "info", f"\"{match['name']}\" is already in the list."
+                                    )
+                                else:
+                                    st.session_state[extra_key].append(match)
+                                    st.session_state[f"e2c_addname_existing_msg_{idx}"] = (
+                                        "success", f"Added \"{match['name']}\"."
+                                    )
+                                st.rerun()
+                            addname_msg = st.session_state.pop(f"e2c_addname_existing_msg_{idx}", None)
+                            if addname_msg:
+                                kind, text = addname_msg
+                                st.caption(f"{':material/error:' if kind == 'error' else ':material/info:'} {text}")
+
+                            new_events = (
+                                [e for e in comp["events"] if not e["already_imported"]]
+                                + st.session_state[extra_key]
+                            )
+                            if new_events:
+                                st.markdown("**New robotics events found on the sheet, not yet added:**")
+                                to_add = []
+                                for e in new_events:
+                                    label = (
+                                        f"{e['name']} — {e['team_size']} per team, up to "
+                                        f"{e['max_teams']} team(s), grades {e['min_grade']}–{e['max_grade']}"
+                                    )
+                                    if e["flagged"]:
+                                        label += " ⚠️ check team size/max teams before adding"
+                                    if st.checkbox(
+                                        label, value=not e["flagged"], key=f"e2c_addevent_{idx}_{e['name']}"
+                                    ):
+                                        to_add.append(e)
+                                    teams_caption = _teams_caption(e.get("teams", []))
+                                    if teams_caption:
+                                        st.caption(teams_caption)
+                                if st.button(
+                                    "Add selected events", key=f"e2c_addevents_btn_{idx}", icon=":material/add:"
+                                ):
+                                    for e in to_add:
+                                        event_result = client.table("competition_events").insert({
+                                            "competition_id": comp["existing_id"],
+                                            "name": e["name"], "details": e["details"],
+                                            "team_size": e["team_size"], "max_teams": e["max_teams"],
+                                            "min_grade": e["min_grade"], "max_grade": e["max_grade"],
+                                        }).execute()
+                                        new_event_id = event_result.data[0]["event_id"]
+                                        _insert_matched_participants(
+                                            client, new_event_id, e.get("teams", []), e["name"], comp["name"]
+                                        )
+                                    if to_add:
+                                        st.toast(
+                                            f"Added {len(to_add)} event(s) to {comp['name']}.",
+                                            icon=":material/check_circle:",
+                                        )
+                                        st.rerun()
 
 # Success pops as a toast; errors stay inline so they can't be missed.
 if st.session_state.competition_message:
