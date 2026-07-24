@@ -496,6 +496,7 @@ with st.sidebar:
 # --- Navigation ------------------------------------------------------------
 
 pages = [
+    st.Page("app_pages/home.py", title="Home", icon=":material/home:"),
     st.Page("app_pages/inventory.py", title="Inventory", icon=":material/inventory_2:"),
     st.Page("app_pages/competitions.py", title="Competitions", icon=":material/emoji_events:"),
     st.Page("app_pages/announcements.py", title="Announcements", icon=":material/campaign:"),

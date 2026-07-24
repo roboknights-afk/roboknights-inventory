@@ -13,6 +13,7 @@ from datetime import date
 
 import streamlit as st
 
+from e2c_import import scan_e2c_sheet
 from shared import get_client, send_email
 
 client = get_client()
@@ -156,6 +157,279 @@ if is_host:
                 st.session_state.new_events = [dict(BLANK_EVENT)]
                 st.rerun()
 
+# --- Host-only: scan the E2C sheet for robotics competitions ---------------
+# Re-scanning always re-reads the live sheet fresh, so a new/unimported
+# competition or event just shows up again next time — there's no "you
+# already saw this and skipped it" memory to fight with. Already-imported
+# competitions instead get a Update button (re-sync their top-level fields
+# from the sheet) and a per-event "add this one" option for any event the
+# sheet has that we don't, so a later addition on the sheet doesn't require
+# re-importing everything about that competition.
+
+E2C_GRADES = [6, 7, 8, 9, 10, 11, 12]  # sheet eligibility can say "6th", unlike our own signup form
+
+
+def _sync_competition_from_scan(client, comp):
+    # Only overwrites a field when the sheet actually gave us something —
+    # a field we couldn't parse (blank venue, unparseable date) leaves
+    # whatever's already stored alone, rather than blanking it out.
+    payload = {}
+    if comp["venue"]:
+        payload["venue"] = comp["venue"]
+    if comp["date_parsed"]:
+        payload["competition_date"] = comp["date_parsed"].isoformat()
+    if comp["deadline_parsed"]:
+        payload["registration_deadline"] = comp["deadline_parsed"].isoformat()
+    if comp["student_incharge"]:
+        payload["student_incharge"] = comp["student_incharge"]
+    if payload:
+        client.table("competitions").update(payload).eq("competition_id", comp["existing_id"]).execute()
+
+    if comp["links"]:
+        client.table("competition_links").delete().eq("competition_id", comp["existing_id"]).execute()
+        client.table("competition_links").insert([
+            {"competition_id": comp["existing_id"], "label": l["label"], "url": l["url"]}
+            for l in comp["links"]
+        ]).execute()
+
+
+def _insert_matched_participants(client, event_id, teams):
+    # teams: list of team-rows, each a list of {"user_id", "name", "selected"}
+    # matched against real members. Re-scanning can only ADD someone or
+    # PROMOTE them from pending to selected — never remove or un-select
+    # anyone, so this can't silently undo a host's own finalize decision.
+    existing = {
+        v["user_id"]: v["selected"]
+        for v in client.table("event_volunteers").select("user_id, selected").eq("event_id", event_id).execute().data
+    }
+    for team_no, team in enumerate(teams, start=1):
+        for p in team:
+            if p["user_id"] in existing:
+                if p["selected"] and not existing[p["user_id"]]:
+                    client.table("event_volunteers").update({"selected": True}).eq(
+                        "event_id", event_id
+                    ).eq("user_id", p["user_id"]).execute()
+                continue
+            client.table("event_volunteers").insert({
+                "event_id": event_id, "user_id": p["user_id"],
+                "team_no": team_no, "selected": p["selected"],
+            }).execute()
+            existing[p["user_id"]] = p["selected"]
+
+
+def _teams_caption(teams):
+    # Small visibility line so the host sees who's about to be added/synced
+    # before actually clicking a write button.
+    people = [p for team in teams for p in team]
+    if not people:
+        return None
+    parts = [f"{p['name']} ({'selected' if p['selected'] else 'pending'})" for p in people]
+    return ":material/group: Registered member(s) found: " + ", ".join(parts)
+
+
+if is_host:
+    with st.expander(":material/travel_explore: Import from E2C sheet"):
+        st.caption("Reads the club's E2C sheet directly — no link to paste.")
+        if st.button("Scan for robotics competitions", icon=":material/search:"):
+            try:
+                st.session_state.e2c_scan_results = scan_e2c_sheet(client)
+                st.session_state.e2c_scan_error = None
+            except Exception as e:
+                st.session_state.e2c_scan_results = None
+                st.session_state.e2c_scan_error = str(e)
+
+        if st.session_state.get("e2c_scan_error"):
+            st.error(f"Couldn't read the E2C sheet: {st.session_state.e2c_scan_error}")
+
+        results = st.session_state.get("e2c_scan_results")
+        if results is not None:
+            if not results:
+                st.caption("No robotics competitions found in the current year's tab.")
+
+            already_imported = [c for c in results if c["already_imported"]]
+            if already_imported:
+                if st.button(
+                    f"Update all {len(already_imported)} already-imported competitions",
+                    key="e2c_update_all", icon=":material/sync:",
+                ):
+                    for comp in already_imported:
+                        _sync_competition_from_scan(client, comp)
+                        for e in comp["events"]:
+                            if e.get("existing_event_id"):
+                                _insert_matched_participants(client, e.get("existing_event_id"), e.get("teams", []))
+                    st.toast(f"Updated {len(already_imported)} competition(s).", icon=":material/check_circle:")
+                    st.rerun()
+
+            pending_new = []  # collects each new competition's current widget values
+
+            for idx, comp in enumerate(results):
+                with st.container(border=True):
+                    if comp["already_imported"]:
+                        # --- Already in our database: sync + add-new-events only ---
+                        st.markdown(f"**{comp['name']}** _(already imported)_")
+                        st.caption(
+                            f":material/location_on: {comp['venue'] or '(not found)'}  •  "
+                            f":material/event: {comp['date_text'] or '(not found)'}"
+                        )
+                        if st.button(
+                            "Update this competition", key=f"e2c_update_{idx}", icon=":material/sync:",
+                            help="Also syncs registered participants for this competition's events",
+                        ):
+                            _sync_competition_from_scan(client, comp)
+                            for e in comp["events"]:
+                                if e.get("existing_event_id"):
+                                    _insert_matched_participants(client, e.get("existing_event_id"), e.get("teams", []))
+                            st.toast(f"Updated {comp['name']}.", icon=":material/check_circle:")
+                            st.rerun()
+
+                        new_events = [e for e in comp["events"] if not e["already_imported"]]
+                        if new_events:
+                            st.markdown("**New robotics events found on the sheet, not yet added:**")
+                            to_add = []
+                            for e in new_events:
+                                label = (
+                                    f"{e['name']} — {e['team_size']} per team, up to "
+                                    f"{e['max_teams']} team(s), grades {e['min_grade']}–{e['max_grade']}"
+                                )
+                                if e["flagged"]:
+                                    label += " ⚠️ check team size/max teams before adding"
+                                if st.checkbox(label, value=not e["flagged"], key=f"e2c_addevent_{idx}_{e['name']}"):
+                                    to_add.append(e)
+                                teams_caption = _teams_caption(e.get("teams", []))
+                                if teams_caption:
+                                    st.caption(teams_caption)
+                            if st.button("Add selected events", key=f"e2c_addevents_btn_{idx}", icon=":material/add:"):
+                                for e in to_add:
+                                    event_result = client.table("competition_events").insert({
+                                        "competition_id": comp["existing_id"],
+                                        "name": e["name"], "details": e["details"],
+                                        "team_size": e["team_size"], "max_teams": e["max_teams"],
+                                        "min_grade": e["min_grade"], "max_grade": e["max_grade"],
+                                    }).execute()
+                                    new_event_id = event_result.data[0]["event_id"]
+                                    _insert_matched_participants(client, new_event_id, e.get("teams", []))
+                                if to_add:
+                                    st.toast(
+                                        f"Added {len(to_add)} event(s) to {comp['name']}.",
+                                        icon=":material/check_circle:",
+                                    )
+                                    st.rerun()
+
+                    else:
+                        # --- New competition: editable fields + per-event checkboxes ---
+                        st.markdown(f"**{comp['name']}**")
+                        venue = st.text_input("Venue", value=comp["venue"], key=f"e2c_venue_{idx}")
+                        comp_date = st.date_input(
+                            "Competition date", value=comp["date_parsed"], key=f"e2c_date_{idx}"
+                        )
+                        deadline = st.date_input(
+                            "Registration deadline", value=comp["deadline_parsed"], key=f"e2c_deadline_{idx}"
+                        )
+                        incharge = st.text_input(
+                            "Student in-charge", value=comp["student_incharge"], key=f"e2c_incharge_{idx}"
+                        )
+                        if not comp["date_parsed"]:
+                            st.caption(f":material/warning: Couldn't read a clear date from `{comp['date_text']}` — pick one above.")
+                        if comp["links"]:
+                            st.caption(
+                                "Links: " + "  •  ".join(f"[{l['label']}]({l['url']})" for l in comp["links"])
+                            )
+
+                        st.markdown("**Robotics events to import:**")
+                        event_widgets = []
+                        for eidx, e in enumerate(comp["events"]):
+                            with st.container(border=True):
+                                ecol1, ecol2 = st.columns([4, 1])
+                                ecol1.markdown(
+                                    f"**{e['name']}**"
+                                    + ("  :material/warning: check team size/max teams" if e["flagged"] else "")
+                                )
+                                include = ecol2.checkbox("Include", value=True, key=f"e2c_incl_{idx}_{eidx}")
+                                c1, c2, c3, c4 = st.columns(4)
+                                team_size = c1.number_input(
+                                    "Team size", min_value=1, value=e["team_size"], key=f"e2c_ts_{idx}_{eidx}",
+                                )
+                                max_teams = c2.number_input(
+                                    "Max teams", min_value=1, value=e["max_teams"], key=f"e2c_mt_{idx}_{eidx}",
+                                )
+                                min_grade = c3.selectbox(
+                                    "Min grade", E2C_GRADES, index=E2C_GRADES.index(e["min_grade"]),
+                                    key=f"e2c_ming_{idx}_{eidx}",
+                                )
+                                max_grade = c4.selectbox(
+                                    "Max grade", E2C_GRADES, index=E2C_GRADES.index(e["max_grade"]),
+                                    key=f"e2c_maxg_{idx}_{eidx}",
+                                )
+                                teams_caption = _teams_caption(e.get("teams", []))
+                                if teams_caption:
+                                    st.caption(teams_caption)
+                                event_widgets.append({
+                                    "include": include, "name": e["name"], "details": e["details"],
+                                    "team_size": team_size, "max_teams": max_teams,
+                                    "min_grade": min_grade, "max_grade": max_grade,
+                                    "teams": e.get("teams", []),
+                                })
+
+                        pending_new.append({
+                            "name": comp["name"], "venue": venue, "competition_date": comp_date,
+                            "registration_deadline": deadline, "student_incharge": incharge,
+                            "links": comp["links"], "events": event_widgets,
+                        })
+
+            if pending_new:
+                if st.button("Import selected", type="primary", key="e2c_import_btn", icon=":material/download:"):
+                    errors = []
+                    imported = 0
+                    for data in pending_new:
+                        valid_events = [e for e in data["events"] if e["include"]]
+                        if not valid_events:
+                            continue  # nothing checked for this competition — skip quietly
+                        if not data["competition_date"]:
+                            errors.append(f"{data['name']}: competition date is required.")
+                            continue
+                        for e in valid_events:
+                            if e["min_grade"] > e["max_grade"]:
+                                errors.append(f"{data['name']} / {e['name']}: min grade can't be higher than max grade.")
+                        if errors:
+                            continue
+
+                        comp_result = client.table("competitions").insert({
+                            "name": data["name"],
+                            "venue": data["venue"].strip(),
+                            "competition_date": data["competition_date"].isoformat(),
+                            "registration_deadline": (
+                                data["registration_deadline"].isoformat() if data["registration_deadline"] else None
+                            ),
+                            "student_incharge": data["student_incharge"].strip(),
+                        }).execute()
+                        competition_id = comp_result.data[0]["competition_id"]
+
+                        if data["links"]:
+                            client.table("competition_links").insert([
+                                {"competition_id": competition_id, "label": l["label"], "url": l["url"]}
+                                for l in data["links"]
+                            ]).execute()
+
+                        for e in valid_events:
+                            event_result = client.table("competition_events").insert({
+                                "competition_id": competition_id,
+                                "name": e["name"], "details": e["details"],
+                                "team_size": e["team_size"], "max_teams": e["max_teams"],
+                                "min_grade": e["min_grade"], "max_grade": e["max_grade"],
+                            }).execute()
+                            new_event_id = event_result.data[0]["event_id"]
+                            _insert_matched_participants(client, new_event_id, e.get("teams", []))
+                        imported += 1
+
+                    if errors:
+                        st.session_state.competition_message = ("error", " ".join(errors))
+                    else:
+                        st.session_state.e2c_scan_results = None  # force a fresh scan next time
+                        st.session_state.competition_message = (
+                            "success", f"Imported {imported} competition(s) from E2C."
+                        )
+                    st.rerun()
+
 # Success pops as a toast; errors stay inline so they can't be missed.
 if st.session_state.competition_message:
     kind, text = st.session_state.competition_message
@@ -170,7 +444,8 @@ if st.session_state.competition_message:
 # eligibility controls whether a "Volunteer" button appears on a given
 # event — mirrors the existing "Request this" pattern on the Inventory page
 # (only shown when you're allowed to act). Hosts additionally get an Edit
-# button on each competition.
+# button on each competition, plus a way to move one to/from "past" — by
+# hand (e.g. it got cancelled), or automatically once its date has gone by.
 
 if "volunteer_message" not in st.session_state:
     st.session_state.volunteer_message = None
@@ -179,18 +454,39 @@ if st.session_state.volunteer_message:
     st.toast(st.session_state.volunteer_message, icon=":material/check_circle:")
     st.session_state.volunteer_message = None
 
+# Auto-flip: anything whose date has already passed and isn't marked past
+# yet gets marked past right now. No scheduled job needed for this one —
+# the page gets viewed often enough that a same-day flip is good enough,
+# unlike the reminder emails which genuinely need a fixed daily time.
+client.table("competitions").update({"is_past": True}).lt(
+    "competition_date", date.today().isoformat()
+).eq("is_past", False).execute()
+
 st.subheader(":material/list_alt: All competitions")
 
 competitions = client.table("competitions").select("*").order("competition_date").execute().data
 
+comp_search = st.text_input(
+    "Search competitions",
+    key="comp_search",
+    placeholder="Search by name or venue",
+    icon=":material/search:",
+    label_visibility="collapsed",
+)
+if comp_search:
+    competitions = [
+        c for c in competitions
+        if comp_search.lower() in (c["name"] + " " + (c.get("venue") or "")).lower()
+    ]
+
 if not competitions:
-    st.caption("No competitions yet.")
+    st.caption("No competitions yet." if not comp_search else "No competitions match your search.")
 else:
     all_links = client.table("competition_links").select("*").execute().data
     all_events = client.table("competition_events").select("*").execute().data
     all_volunteers = client.table("event_volunteers").select("*").execute().data
 
-    for comp in competitions:
+    def render_competition_card(comp):
         cid = comp["competition_id"]
         links = [l for l in all_links if l["competition_id"] == cid]
         events = [e for e in all_events if e["competition_id"] == cid]
@@ -358,9 +654,27 @@ else:
 
             else:
                 # --- Read-only view (everyone) ------------------------------
-                title_col, edit_col = st.columns([5, 1])
+                title_col, past_col, edit_col = st.columns([4, 1, 1])
                 title_col.markdown(f"### {comp['name']}")
                 if is_host:
+                    if comp.get("is_past"):
+                        if past_col.button(
+                            "Restore", key=f"unpast_comp_{cid}", icon=":material/undo:",
+                            help="Move this competition back to the upcoming list",
+                        ):
+                            client.table("competitions").update({"is_past": False}).eq(
+                                "competition_id", cid
+                            ).execute()
+                            st.rerun()
+                    else:
+                        if past_col.button(
+                            "Mark past", key=f"mark_past_comp_{cid}", icon=":material/history:",
+                            help="Move this competition to the Past section",
+                        ):
+                            client.table("competitions").update({"is_past": True}).eq(
+                                "competition_id", cid
+                            ).execute()
+                            st.rerun()
                     if edit_col.button("Edit", key=f"edit_comp_{cid}", icon=":material/edit:"):
                         st.session_state.editing_competition_id = cid
                         st.session_state.edit_comp_links = (
@@ -423,9 +737,6 @@ else:
                             else f"Grades {e['min_grade']}–{e['max_grade']}"
                         )
                         event_volunteers = [v for v in all_volunteers if v["event_id"] == e["event_id"]]
-                        volunteer_names = [
-                            user_name_by_id.get(v["user_id"], "Unknown") for v in event_volunteers
-                        ]
                         selected_names = [
                             user_name_by_id.get(v["user_id"], "Unknown")
                             for v in event_volunteers
@@ -446,17 +757,44 @@ else:
                             if e.get("details"):
                                 st.caption(e["details"])
 
-                            if selected_names:
+                            # Teams (e.g. from the E2C import, where the sheet gave us
+                            # real team rows) get shown grouped by team_no instead of one
+                            # flat name list — makes it obvious who's actually on the
+                            # same team together. Anyone without a team_no yet (regular
+                            # in-app volunteering) falls back to the old flat display.
+                            teamed = [v for v in event_volunteers if v.get("team_no")]
+                            unteamed = [v for v in event_volunteers if not v.get("team_no")]
+
+                            if teamed:
+                                st.markdown("**Teams:**")
+                                teams_by_no = {}
+                                for v in teamed:
+                                    teams_by_no.setdefault(v["team_no"], []).append(v)
+                                for team_no in sorted(teams_by_no):
+                                    members = ", ".join(
+                                        user_name_by_id.get(v["user_id"], "Unknown")
+                                        + ("" if v.get("selected") else " (pending)")
+                                        for v in teams_by_no[team_no]
+                                    )
+                                    st.caption(f":material/group: Team {team_no}: {members}")
+
+                            if unteamed:
+                                unteamed_selected = [
+                                    user_name_by_id.get(v["user_id"], "Unknown") for v in unteamed if v.get("selected")
+                                ]
+                                unteamed_volunteers = [
+                                    user_name_by_id.get(v["user_id"], "Unknown") for v in unteamed
+                                ]
+                                if unteamed_selected:
+                                    st.caption(
+                                        f":material/verified: Selected ({len(unteamed_selected)}/{cap}): "
+                                        + ", ".join(unteamed_selected)
+                                    )
                                 st.caption(
-                                    f":material/verified: Selected ({len(selected_names)}/{cap}): "
-                                    + ", ".join(selected_names)
+                                    f":material/group: Volunteers ({len(unteamed_volunteers)}): "
+                                    + ", ".join(unteamed_volunteers)
                                 )
-                            if volunteer_names:
-                                st.caption(
-                                    f":material/group: Volunteers ({len(volunteer_names)}): "
-                                    + ", ".join(volunteer_names)
-                                )
-                            else:
+                            elif not teamed:
                                 st.caption(":material/group: No volunteers yet")
 
                             # Only shown when eligible — same pattern as the
@@ -569,3 +907,14 @@ else:
                                             ).execute()
                                             st.session_state.volunteer_message = "Bot status updated."
                                             st.rerun()
+
+    upcoming = [c for c in competitions if not c.get("is_past")]
+    past = [c for c in competitions if c.get("is_past")]
+
+    for comp in upcoming:
+        render_competition_card(comp)
+
+    if past:
+        with st.expander(f":material/history: Past competitions ({len(past)})"):
+            for comp in reversed(past):  # most recently past first
+                render_competition_card(comp)

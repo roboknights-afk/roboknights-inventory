@@ -522,14 +522,12 @@ auto-append UI (`school_email_input()` in app.py): every email box takes
 just the username, with a fixed `@dpsrkp.net` label shown alongside it —
 not a validate-and-reject error, the domain literally can't be typed
 differently. **Known consequence, confirmed explicitly by the student
-before shipping:** Naitik and Aryamman are on personal Gmail accounts and
-are now locked out of login entirely, since there's no "change my email"
-feature yet and no admin/service-role Supabase access to fix it for them
-directly (same anon-key limitation noted earlier in this file). Recovery
-needs one of: build a self-service "change my email" field, or re-sign-up
-them fresh on real `@dpsrkp.net` addresses and manually move their
-existing parts/request history to the new account. Neither done yet —
-flag this to the student before it's forgotten.
+before shipping:** Naitik and Aryamman were on personal Gmail accounts and
+were locked out of login entirely, since there's no "change my email"
+feature and no admin/service-role Supabase access to fix it for them
+directly (same anon-key limitation noted earlier in this file). **Resolved
+2026-07-24:** the student handled this manually outside the app (not a
+code change) — no longer an open item.
 
 Also same day: the Admission no. signup field changed from free text to
 a dropdown (R/E/V) + digits box (`admission_no_input()`), matching the

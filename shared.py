@@ -24,6 +24,15 @@ HOST_EMAILS = {
     # teacher's email to be added here once we have it
 }
 
+# The club's real competition-tracking sheet ("E2C"). Always this one sheet,
+# so the host scans it directly instead of pasting a link every time.
+E2C_SHEET_ID = "1RLSXcAJ4t44M_wQ_hKlZqaTVmWjwAXrI8FInjHIZRTw"
+
+# A fast, live alternative to the Queries page for something urgent — a
+# plain wa.me link needs no API, unlike automated WhatsApp notifications
+# (which stay out of scope; see CLAUDE.md).
+WHATSAPP_HELP_NUMBER = "919311259439"
+
 
 @st.cache_resource
 def get_client():
