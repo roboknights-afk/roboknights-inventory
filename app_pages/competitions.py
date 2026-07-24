@@ -746,7 +746,7 @@ else:
                         st.rerun()
 
                 if comp.get("not_attending"):
-                    st.caption(":material/event_busy: RoboKnights is not attending this competition.")
+                    st.error(":material/event_busy: **ROBOKNIGHTS IS NOT ATTENDING THIS COMPETITION**")
 
                 info_bits = []
                 if comp.get("venue"):
