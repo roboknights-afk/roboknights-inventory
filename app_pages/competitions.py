@@ -23,7 +23,7 @@ current_user_grade = st.session_state.current_user_grade
 user_name_by_id = st.session_state.user_name_by_id
 user_email_by_id = st.session_state.user_email_by_id
 
-GRADES = [7, 8, 9, 10, 11, 12]
+GRADES = [6, 7, 8, 9, 10, 11, 12]  # 6 included since E2C-imported events can genuinely be 6th-grade eligible
 BLANK_LINK = {"label": "", "url": ""}
 BLANK_EVENT = {"event_id": None, "name": "", "details": "", "team_size": 1, "max_teams": 1, "min_grade": 7, "max_grade": 12}
 
@@ -43,6 +43,8 @@ if "competition_message" not in st.session_state:
     st.session_state.competition_message = None
 if "editing_competition_id" not in st.session_state:
     st.session_state.editing_competition_id = None
+if "deleting_competition_id" not in st.session_state:
+    st.session_state.deleting_competition_id = None
 
 if is_host:
     with st.expander(":material/add_box: Add a competition"):
@@ -165,8 +167,6 @@ if is_host:
 # from the sheet) and a per-event "add this one" option for any event the
 # sheet has that we don't, so a later addition on the sheet doesn't require
 # re-importing everything about that competition.
-
-E2C_GRADES = [6, 7, 8, 9, 10, 11, 12]  # sheet eligibility can say "6th", unlike our own signup form
 
 
 def _sync_competition_from_scan(client, comp):
@@ -353,11 +353,11 @@ if is_host:
                                     "Max teams", min_value=1, value=e["max_teams"], key=f"e2c_mt_{idx}_{eidx}",
                                 )
                                 min_grade = c3.selectbox(
-                                    "Min grade", E2C_GRADES, index=E2C_GRADES.index(e["min_grade"]),
+                                    "Min grade", GRADES, index=GRADES.index(e["min_grade"]),
                                     key=f"e2c_ming_{idx}_{eidx}",
                                 )
                                 max_grade = c4.selectbox(
-                                    "Max grade", E2C_GRADES, index=E2C_GRADES.index(e["max_grade"]),
+                                    "Max grade", GRADES, index=GRADES.index(e["max_grade"]),
                                     key=f"e2c_maxg_{idx}_{eidx}",
                                 )
                                 teams_caption = _teams_caption(e.get("teams", []))
@@ -654,9 +654,51 @@ else:
 
             else:
                 # --- Read-only view (everyone) ------------------------------
-                title_col, past_col, edit_col = st.columns([4, 1, 1])
+                if is_host and st.session_state.deleting_competition_id == cid:
+                    achievement_count = len(
+                        client.table("achievements").select("achievement_id")
+                        .eq("competition_id", cid).execute().data
+                    )
+                    st.warning(
+                        f"Delete **{comp['name']}**? This also deletes its {len(events)} event(s), "
+                        f"all volunteer signups, and {achievement_count} logged achievement(s) for it. "
+                        f"This can't be undone."
+                    )
+                    confirm_col, cancel_col = st.columns([1, 1])
+                    if confirm_col.button(
+                        "Confirm delete", key=f"confirm_delete_comp_{cid}",
+                        icon=":material/delete_forever:", type="primary",
+                    ):
+                        client.table("competitions").delete().eq("competition_id", cid).execute()
+                        st.session_state.deleting_competition_id = None
+                        st.session_state.competition_message = ("success", f"Deleted {comp['name']}.")
+                        st.rerun()
+                    if cancel_col.button("Cancel", key=f"cancel_delete_comp_{cid}", icon=":material/close:"):
+                        st.session_state.deleting_competition_id = None
+                        st.rerun()
+                    return  # skip the rest of this card while confirming
+
+                title_col, going_col, past_col, edit_col, delete_col = st.columns([3, 1, 1, 1, 1])
                 title_col.markdown(f"### {comp['name']}")
                 if is_host:
+                    if comp.get("not_attending"):
+                        if going_col.button(
+                            "Going after all", key=f"going_comp_{cid}", icon=":material/undo:",
+                            help="Un-mark \"not attending\" for this competition",
+                        ):
+                            client.table("competitions").update({"not_attending": False}).eq(
+                                "competition_id", cid
+                            ).execute()
+                            st.rerun()
+                    else:
+                        if going_col.button(
+                            "Not going", key=f"notgoing_comp_{cid}", icon=":material/event_busy:",
+                            help="Mark that RoboKnights isn't attending this competition",
+                        ):
+                            client.table("competitions").update({"not_attending": True}).eq(
+                                "competition_id", cid
+                            ).execute()
+                            st.rerun()
                     if comp.get("is_past"):
                         if past_col.button(
                             "Restore", key=f"unpast_comp_{cid}", icon=":material/undo:",
@@ -675,6 +717,12 @@ else:
                                 "competition_id", cid
                             ).execute()
                             st.rerun()
+                    if delete_col.button(
+                        "Delete", key=f"delete_comp_{cid}", icon=":material/delete:",
+                        help="Delete this competition (with confirmation)",
+                    ):
+                        st.session_state.deleting_competition_id = cid
+                        st.rerun()
                     if edit_col.button("Edit", key=f"edit_comp_{cid}", icon=":material/edit:"):
                         st.session_state.editing_competition_id = cid
                         st.session_state.edit_comp_links = (
@@ -696,6 +744,9 @@ else:
                             or [dict(BLANK_EVENT)]
                         )
                         st.rerun()
+
+                if comp.get("not_attending"):
+                    st.caption(":material/event_busy: RoboKnights is not attending this competition.")
 
                 info_bits = []
                 if comp.get("venue"):
@@ -744,7 +795,8 @@ else:
                         ]
                         already_volunteered = any(v["user_id"] == current_user_id for v in event_volunteers)
                         is_eligible = (
-                            current_user_grade is not None
+                            not comp.get("not_attending")
+                            and current_user_grade is not None
                             and e["min_grade"] <= current_user_grade <= e["max_grade"]
                         )
                         cap = e["team_size"] * e["max_teams"]
