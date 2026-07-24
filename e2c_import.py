@@ -333,7 +333,10 @@ def _parse_teams(team_rows, user_id_by_name):
     return teams
 
 
-def _parse_robotics_events(block, user_id_by_name):
+def _parse_all_events(block, user_id_by_name):
+    # Every event in the block, not just robotics ones — the host can
+    # still pull in a specific non-robotics event by name (e.g. a
+    # borderline AI/IoT one) even though it's not auto-included by default.
     events = []
     n = len(block)
     i = 0
@@ -359,19 +362,21 @@ def _parse_robotics_events(block, user_id_by_name):
         # mention robo) so a genuinely different category isn't overridden
         # just because of a coincidental name.
         no_note = not category
-        if "robo" in category.lower() or (no_note and "robo" in b_cell["text"].lower()):
-            elig = _parse_eligibility(c_cell["text"])
-            events.append({
-                "name": b_cell["text"],
-                "details": details,
-                "raw_eligibility": c_cell["text"],
-                "team_size": elig["team_size"] or 1,
-                "max_teams": elig["max_teams"] or 1,
-                "min_grade": elig["min_grade"] or 7,
-                "max_grade": elig["max_grade"] or 12,
-                "flagged": elig["flagged"],
-                "teams": _parse_teams(team_rows, user_id_by_name),
-            })
+        is_robotics = "robo" in category.lower() or (no_note and "robo" in b_cell["text"].lower())
+
+        elig = _parse_eligibility(c_cell["text"])
+        events.append({
+            "name": b_cell["text"],
+            "details": details,
+            "raw_eligibility": c_cell["text"],
+            "team_size": elig["team_size"] or 1,
+            "max_teams": elig["max_teams"] or 1,
+            "min_grade": elig["min_grade"] or 7,
+            "max_grade": elig["max_grade"] or 12,
+            "flagged": elig["flagged"],
+            "teams": _parse_teams(team_rows, user_id_by_name),
+            "is_robotics": is_robotics,
+        })
         i = j
     return events
 
@@ -403,18 +408,20 @@ def scan_e2c_sheet(client):
 
     competitions = []
     for block in blocks:
-        events = _parse_robotics_events(block, user_id_by_name)
+        all_events = _parse_all_events(block, user_id_by_name)
+        events = [e for e in all_events if e["is_robotics"]]
         if not events:
             continue  # only competitions with at least one robotics event
         info = _parse_competition_info(block)
         existing_id = existing_id_by_name.get(info["name"].strip().lower())
-        for e in events:
+        for e in all_events:
             e["existing_event_id"] = (
                 existing_event_id_by_comp_and_name.get((existing_id, e["name"].strip().lower()))
                 if existing_id else None
             )
             e["already_imported"] = e["existing_event_id"] is not None
-        info["events"] = events
+        info["events"] = events  # robotics-only, shown by default
+        info["all_events"] = all_events  # every event, for adding a specific one by name
         info["existing_id"] = existing_id
         info["already_imported"] = existing_id is not None
         info["date_parsed"] = _parse_date_best_effort(info["date_text"])

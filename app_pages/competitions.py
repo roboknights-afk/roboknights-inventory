@@ -282,7 +282,54 @@ if is_host:
                             st.toast(f"Updated {comp['name']}.", icon=":material/check_circle:")
                             st.rerun()
 
-                        new_events = [e for e in comp["events"] if not e["already_imported"]]
+                        # Lets the host pull in a specific event that wasn't
+                        # auto-detected as robotics (e.g. a borderline AI/IoT
+                        # one) by typing its exact name from the sheet.
+                        extra_key = f"e2c_extra_missing_{idx}"
+                        if extra_key not in st.session_state:
+                            st.session_state[extra_key] = []
+                        add_col1, add_col2 = st.columns([4, 1])
+                        add_name = add_col1.text_input(
+                            "Add another event by name", key=f"e2c_addname_existing_{idx}",
+                            placeholder="Add another event by its exact name (e.g. Vision 2047)",
+                            label_visibility="collapsed",
+                        )
+                        if add_col2.button(
+                            "Add", key=f"e2c_addname_existing_btn_{idx}", icon=":material/add:"
+                        ) and add_name.strip():
+                            already_listed = {
+                                e["name"].strip().lower()
+                                for e in comp["events"] + st.session_state[extra_key]
+                                if not e["already_imported"]
+                            }
+                            match = next(
+                                (e for e in comp["all_events"] if e["name"].strip().lower() == add_name.strip().lower()),
+                                None,
+                            )
+                            if not match:
+                                st.session_state[f"e2c_addname_existing_msg_{idx}"] = (
+                                    "error", f"No event named \"{add_name}\" found in {comp['name']}."
+                                )
+                            elif match["already_imported"]:
+                                st.session_state[f"e2c_addname_existing_msg_{idx}"] = (
+                                    "info", f"\"{match['name']}\" is already imported."
+                                )
+                            elif match["name"].strip().lower() in already_listed:
+                                st.session_state[f"e2c_addname_existing_msg_{idx}"] = (
+                                    "info", f"\"{match['name']}\" is already in the list."
+                                )
+                            else:
+                                st.session_state[extra_key].append(match)
+                                st.session_state[f"e2c_addname_existing_msg_{idx}"] = (
+                                    "success", f"Added \"{match['name']}\"."
+                                )
+                            st.rerun()
+                        addname_msg = st.session_state.pop(f"e2c_addname_existing_msg_{idx}", None)
+                        if addname_msg:
+                            kind, text = addname_msg
+                            st.caption(f"{':material/error:' if kind == 'error' else ':material/info:'} {text}")
+
+                        new_events = [e for e in comp["events"] if not e["already_imported"]] + st.session_state[extra_key]
                         if new_events:
                             st.markdown("**New robotics events found on the sheet, not yet added:**")
                             to_add = []
@@ -336,8 +383,46 @@ if is_host:
                             )
 
                         st.markdown("**Robotics events to import:**")
+
+                        # Lets the host pull in a specific event that wasn't
+                        # auto-detected as robotics (e.g. a borderline AI/IoT
+                        # one) by typing its exact name from the sheet.
+                        extra_key = f"e2c_extra_events_{idx}"
+                        if extra_key not in st.session_state:
+                            st.session_state[extra_key] = []
+                        add_col1, add_col2 = st.columns([4, 1])
+                        add_name = add_col1.text_input(
+                            "Add another event by name", key=f"e2c_addname_{idx}",
+                            placeholder="Add another event by its exact name (e.g. Vision 2047)",
+                            label_visibility="collapsed",
+                        )
+                        if add_col2.button("Add", key=f"e2c_addname_btn_{idx}", icon=":material/add:") and add_name.strip():
+                            shown_names = {
+                                e["name"].strip().lower() for e in comp["events"] + st.session_state[extra_key]
+                            }
+                            match = next(
+                                (e for e in comp["all_events"] if e["name"].strip().lower() == add_name.strip().lower()),
+                                None,
+                            )
+                            if not match:
+                                st.session_state[f"e2c_addname_msg_{idx}"] = (
+                                    "error", f"No event named \"{add_name}\" found in {comp['name']}."
+                                )
+                            elif match["name"].strip().lower() in shown_names:
+                                st.session_state[f"e2c_addname_msg_{idx}"] = (
+                                    "info", f"\"{match['name']}\" is already in the list."
+                                )
+                            else:
+                                st.session_state[extra_key].append(match)
+                                st.session_state[f"e2c_addname_msg_{idx}"] = ("success", f"Added \"{match['name']}\".")
+                            st.rerun()
+                        addname_msg = st.session_state.pop(f"e2c_addname_msg_{idx}", None)
+                        if addname_msg:
+                            kind, text = addname_msg
+                            st.caption(f"{':material/error:' if kind == 'error' else ':material/info:'} {text}")
+
                         event_widgets = []
-                        for eidx, e in enumerate(comp["events"]):
+                        for eidx, e in enumerate(comp["events"] + st.session_state[extra_key]):
                             with st.container(border=True):
                                 ecol1, ecol2 = st.columns([4, 1])
                                 ecol1.markdown(
