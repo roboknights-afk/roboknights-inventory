@@ -1076,11 +1076,20 @@ else:
                                             "Save status", key=f"save_bot_status_{e['event_id']}",
                                             icon=":material/check:",
                                         ):
-                                            client.table("event_volunteers").update(
-                                                {"bot_status": new_status.strip()}
-                                            ).eq("event_id", e["event_id"]).eq(
-                                                "user_id", current_user_id
-                                            ).execute()
+                                            # Shared across the whole team (same team_no) when
+                                            # one's known — one bot, one status, no need for every
+                                            # teammate to separately type the same update.
+                                            my_team_no = my_row.get("team_no")
+                                            update_query = (
+                                                client.table("event_volunteers")
+                                                .update({"bot_status": new_status.strip()})
+                                                .eq("event_id", e["event_id"])
+                                            )
+                                            if my_team_no:
+                                                update_query = update_query.eq("team_no", my_team_no)
+                                            else:
+                                                update_query = update_query.eq("user_id", current_user_id)
+                                            update_query.execute()
                                             st.session_state.volunteer_message = "Bot status updated."
                                             st.rerun()
 
