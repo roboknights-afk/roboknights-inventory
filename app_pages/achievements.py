@@ -33,7 +33,23 @@ if st.session_state.achievement_message:
 
 competitions = client.table("competitions").select("competition_id, name").order("name").execute().data
 
-with st.expander(":material/add_box: Add my achievement"):
+# --- At-a-glance numbers -----------------------------------------------------
+all_achievements = client.table("achievements").select("*").execute().data
+my_achievement_count = sum(1 for a in all_achievements if a["user_id"] == current_user_id)
+
+m1, m2, m3 = st.columns(3)
+m1.metric("Logged results", len(all_achievements), border=True)
+m2.metric("Mine", my_achievement_count, border=True)
+m3.metric(
+    "Events represented",
+    len({a["event_id"] for a in all_achievements}),
+    border=True,
+    help="Distinct competition events with a result logged",
+)
+
+tab_browse, tab_add = st.tabs(["All achievements", "Log a result"])
+
+with tab_add:
     if not competitions:
         st.caption("No competitions to pick from yet.")
     else:
@@ -137,81 +153,81 @@ with st.expander(":material/add_box: Add my achievement"):
                 del st.session_state["new_achievement_media"]
                 st.rerun()
 
-# --- Browse all achievements -------------------------------------------------
+    # --- Browse all achievements -------------------------------------------------
 
-st.subheader(":material/emoji_events: All achievements")
+    st.subheader(":material/emoji_events: All achievements")
 
-achievements = client.table("achievements").select("*").order("created_at", desc=True).execute().data
+    achievements = client.table("achievements").select("*").order("created_at", desc=True).execute().data
 
-achievement_search = st.text_input(
-    "Search achievements",
-    key="achievement_search",
-    placeholder="Search by member, competition, event, or position",
-    icon=":material/search:",
-    label_visibility="collapsed",
-)
+    achievement_search = st.text_input(
+        "Search achievements",
+        key="achievement_search",
+        placeholder="Search by member, competition, event, or position",
+        icon=":material/search:",
+        label_visibility="collapsed",
+    )
 
-if not achievements:
-    st.caption("No achievements logged yet.")
-else:
-    all_events = client.table("competition_events").select("event_id, name").execute().data
-    event_name_by_id_all = {e["event_id"]: e["name"] for e in all_events}
-    comp_name_by_id_all = {c["competition_id"]: c["name"] for c in competitions}
+    if not achievements:
+        st.caption("No achievements logged yet.")
+    else:
+        all_events = client.table("competition_events").select("event_id, name").execute().data
+        event_name_by_id_all = {e["event_id"]: e["name"] for e in all_events}
+        comp_name_by_id_all = {c["competition_id"]: c["name"] for c in competitions}
 
-    # Teammates (same team_no on the same event, from the E2C import) get
-    # grouped into one shared card instead of one card per person — since
-    # they're the same result, logged for each of them automatically.
-    # Anyone without a team_no (a manually-added competition, or before
-    # Chunk 3) just gets their own card, same as before.
-    team_no_by_event_user = {
-        (v["event_id"], v["user_id"]): v["team_no"]
-        for v in client.table("event_volunteers").select("event_id, user_id, team_no").execute().data
-    }
-
-    groups = {}
-    for a in achievements:
-        team_no = team_no_by_event_user.get((a["event_id"], a["user_id"]))
-        key = (a["event_id"], team_no) if team_no else ("solo", a["achievement_id"])
-        groups.setdefault(key, []).append(a)
-
-    if achievement_search:
-        needle = achievement_search.lower()
-        groups = {
-            key: group for key, group in groups.items()
-            if any(
-                needle in " ".join([
-                    user_name_by_id.get(a["user_id"], ""),
-                    comp_name_by_id_all.get(a["competition_id"], ""),
-                    event_name_by_id_all.get(a["event_id"], ""),
-                    a.get("position") or "",
-                ]).lower()
-                for a in group
-            )
+        # Teammates (same team_no on the same event, from the E2C import) get
+        # grouped into one shared card instead of one card per person — since
+        # they're the same result, logged for each of them automatically.
+        # Anyone without a team_no (a manually-added competition, or before
+        # Chunk 3) just gets their own card, same as before.
+        team_no_by_event_user = {
+            (v["event_id"], v["user_id"]): v["team_no"]
+            for v in client.table("event_volunteers").select("event_id, user_id, team_no").execute().data
         }
 
-    if not groups:
-        st.caption("No achievements match your search.")
+        groups = {}
+        for a in achievements:
+            team_no = team_no_by_event_user.get((a["event_id"], a["user_id"]))
+            key = (a["event_id"], team_no) if team_no else ("solo", a["achievement_id"])
+            groups.setdefault(key, []).append(a)
 
-    for group in groups.values():
-        first = group[0]
-        with st.container(border=True, key=f"rkcard_achievement_{first['achievement_id']}"):
-            col1, col2 = st.columns([5, 1], vertical_alignment="center")
-            member_names = ", ".join(user_name_by_id.get(a["user_id"], "Unknown") for a in group)
-            comp_name = comp_name_by_id_all.get(first["competition_id"], "Unknown competition")
-            event_name = event_name_by_id_all.get(first["event_id"], "Unknown event")
-            col1.markdown(f"**{member_names}** — {comp_name} ({event_name})")
+        if achievement_search:
+            needle = achievement_search.lower()
+            groups = {
+                key: group for key, group in groups.items()
+                if any(
+                    needle in " ".join([
+                        user_name_by_id.get(a["user_id"], ""),
+                        comp_name_by_id_all.get(a["competition_id"], ""),
+                        event_name_by_id_all.get(a["event_id"], ""),
+                        a.get("position") or "",
+                    ]).lower()
+                    for a in group
+                )
+            }
 
-            if first.get("position"):
-                st.write(first["position"])
-            if first.get("media_link"):
-                st.markdown(f"[View attachment]({first['media_link']})")
+        if not groups:
+            st.caption("No achievements match your search.")
 
-            # Only a host, or anyone actually in this result, can remove it
-            # — removing it takes out every teammate's entry together.
-            can_delete = is_host or any(a["user_id"] == current_user_id for a in group)
-            if can_delete:
-                if col2.button("Delete", key=f"delete_achievement_{first['achievement_id']}", icon=":material/delete:"):
-                    for a in group:
-                        client.table("achievements").delete().eq("achievement_id", a["achievement_id"]).execute()
-                    st.session_state.achievement_message = "Deleted."
-                    st.rerun()
+        for group in groups.values():
+            first = group[0]
+            with st.container(border=True, key=f"rkcard_achievement_{first['achievement_id']}"):
+                col1, col2 = st.columns([5, 1], vertical_alignment="center")
+                member_names = ", ".join(user_name_by_id.get(a["user_id"], "Unknown") for a in group)
+                comp_name = comp_name_by_id_all.get(first["competition_id"], "Unknown competition")
+                event_name = event_name_by_id_all.get(first["event_id"], "Unknown event")
+                col1.markdown(f"**{member_names}** — {comp_name} ({event_name})")
+
+                if first.get("position"):
+                    st.write(first["position"])
+                if first.get("media_link"):
+                    st.markdown(f"[View attachment]({first['media_link']})")
+
+                # Only a host, or anyone actually in this result, can remove it
+                # — removing it takes out every teammate's entry together.
+                can_delete = is_host or any(a["user_id"] == current_user_id for a in group)
+                if can_delete:
+                    if col2.button("Delete", key=f"delete_achievement_{first['achievement_id']}", icon=":material/delete:"):
+                        for a in group:
+                            client.table("achievements").delete().eq("achievement_id", a["achievement_id"]).execute()
+                        st.session_state.achievement_message = "Deleted."
+                        st.rerun()
