@@ -170,12 +170,20 @@ with tab_parts:
         st.caption("No parts match your search or filter.")
     else:
         # Column headers, lined up with the same widths as the data rows below.
+        # "Days" only appears when something in view is actually requestable —
+        # the days input is hidden on your own parts and on anything already
+        # on loan, so otherwise the header sits above a permanently empty
+        # column and reads like a bug.
+        any_requestable = any(
+            p["status"] == "available" and p["owner_id"] != current_user_id for p in visible_parts
+        )
         head1, head2, head3, head4, head5, head6 = st.columns([1, 2, 2, 2, 1, 2])
         head1.markdown("**Serial no**")
         head2.markdown("**Name**")
         head3.markdown("**Owned by**")
         head4.markdown("**Status**")
-        head5.markdown("**Days**")
+        if any_requestable:
+            head5.markdown("**Days**")
 
     # One row of columns per part, so each row can have its own button.
     for part in visible_parts:
