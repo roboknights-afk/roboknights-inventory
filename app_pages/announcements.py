@@ -53,17 +53,27 @@ announcements = (
 if not announcements:
     st.caption("No announcements yet.")
 else:
+    st.subheader(":material/feed: Recent announcements")
     for a in announcements:
         # key= gives the card a stable "st-key-rkcard_..." CSS class, which
         # the hover animation in app.py targets.
         with st.container(border=True, key=f"rkcard_ann_{a['announcement_id']}"):
-            col1, col2 = st.columns([5, 1])
-            col1.markdown(f"**{a['subject']}**")
-            st.write(a["body"])
-            st.caption(format_ist(a["created_at"]))
+            head_col, del_col = st.columns([5, 1], vertical_alignment="center")
+            head_col.markdown(f"### {a['subject']}")
 
             if is_host:
-                if col2.button("Delete", key=f"delete_announcement_{a['announcement_id']}", icon=":material/delete:"):
+                if del_col.button(
+                    "Delete", key=f"delete_announcement_{a['announcement_id']}", icon=":material/delete:"
+                ):
                     client.table("announcements").delete().eq("announcement_id", a["announcement_id"]).execute()
                     st.session_state.announcement_message = ("success", f"Deleted \"{a['subject']}\".")
                     st.rerun()
+
+            # Announcements can only be sent by a host, and the table doesn't
+            # record which one, so the tag says the role rather than inventing
+            # a name for it.
+            badge_col, date_col = st.columns([1, 4], vertical_alignment="center")
+            badge_col.badge("Host", color="primary", icon=":material/shield_person:")
+            date_col.caption(f":material/schedule: {format_ist(a['created_at'])}")
+
+            st.write(a["body"])

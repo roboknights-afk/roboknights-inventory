@@ -42,10 +42,13 @@ def render_thread(query_id, all_messages, notify_email=None):
     # message in an ongoing conversation.
     thread_messages = [m for m in all_messages if m["query_id"] == query_id]
     for msg in thread_messages:
-        sender_name = "You" if msg["sender_id"] == current_user_id else user_name_by_id.get(
-            msg["sender_id"], "Unknown"
-        )
-        with st.container(border=True):
+        mine = msg["sender_id"] == current_user_id
+        sender_name = "You" if mine else user_name_by_id.get(msg["sender_id"], "Unknown")
+        # st.chat_message gives real conversation bubbles for free, so the
+        # back-and-forth reads like a chat rather than a stack of boxes.
+        # Your own messages sit on the "user" side, the other person's on
+        # the "assistant" side, whichever way round host/student happens to be.
+        with st.chat_message("user" if mine else "assistant"):
             if st.session_state.editing_message_id == msg["message_id"]:
                 edited_body = st.text_area(
                     "Edit message", value=msg["body"], key=f"edit_msg_{msg['message_id']}",
@@ -69,35 +72,35 @@ def render_thread(query_id, all_messages, notify_email=None):
                     label += " _(edited)_"
                 col1.markdown(label)
                 st.write(msg["body"])
-                st.caption(format_ist(msg["created_at"]))
+                st.caption(f":material/schedule: {format_ist(msg['created_at'])}")
                 # You can only edit your own messages, not the other side's.
-                if msg["sender_id"] == current_user_id:
+                if mine:
                     if col2.button("Edit", key=f"edit_btn_{msg['message_id']}", icon=":material/edit:"):
                         st.session_state.editing_message_id = msg["message_id"]
                         st.rerun()
 
-    reply_text = st.text_input(
-        "Reply", key=f"reply_{query_id}", label_visibility="collapsed", placeholder="Type a reply...",
-    )
-    if st.button("Reply", key=f"send_reply_{query_id}", icon=":material/send:"):
-        if reply_text.strip():
-            client.table("query_messages").insert({
-                "query_id": query_id,
-                "sender_id": current_user_id,
-                "body": reply_text.strip(),
-            }).execute()
+    # st.chat_input submits on Enter and clears itself afterwards, so there's
+    # no separate send button and no need to reset the field by hand the way
+    # the old text_input did.
+    reply_text = st.chat_input("Type a reply...", key=f"reply_{query_id}")
+    if reply_text and reply_text.strip():
+        client.table("query_messages").insert({
+            "query_id": query_id,
+            "sender_id": current_user_id,
+            "body": reply_text.strip(),
+        }).execute()
 
-            if notify_email:
-                send_email(
-                    notify_email,
-                    "New reply to your question",
-                    f"{current_user_name} replied:\n\n{reply_text.strip()}\n\n"
-                    f"Log in to the app to see it: {APP_URL}",
-                )
+        if notify_email:
+            send_email(
+                notify_email,
+                "New reply to your question",
+                f"{current_user_name} replied:\n\n{reply_text.strip()}\n\n"
+                f"Log in to the app to see it: {APP_URL}",
+            )
 
-            st.session_state.query_message = "Reply sent."
-            del st.session_state[f"reply_{query_id}"]
-            st.rerun()
+        st.session_state.query_message = "Reply sent."
+        # Rerun so the thread re-fetches and shows the message just sent.
+        st.rerun()
 
 
 if is_host:
@@ -181,8 +184,12 @@ else:
         )
         for q in my_queries:
             first_message = next(
-                (m["body"] for m in all_messages if m["query_id"] == q["query_id"]), "Your question"
-            )
+                (m["body"] for m in all_messages if m["query_id"] == q["query_id"]), ""
+            ).strip()
+            # A thread with no messages, or whose first one is blank, would
+            # otherwise give the expander an empty title and look broken.
+            if not first_message:
+                first_message = "Your question"
             preview = first_message if len(first_message) <= 50 else first_message[:47] + "..."
             with st.expander(preview, expanded=len(my_queries) == 1):
                 render_thread(q["query_id"], all_messages)
