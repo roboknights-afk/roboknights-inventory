@@ -117,12 +117,13 @@ st.html("""
 
     /* "Requests for me" pulses gold while there's something to act on.
        The rkpulse container is only rendered when the count is non-zero
-       (see inventory.py), and :has() lights up its surrounding column. */
+       (see inventory.py); the pulse lands on the bordered metric tile
+       inside it, which is the element actually drawing a border. */
     @keyframes rk-pulse {
         0%, 100% { box-shadow: 0 0 0 0 rgba(232, 179, 61, 0); }
         50%      { box-shadow: 0 0 14px 1px rgba(232, 179, 61, 0.35); border-color: rgba(232, 179, 61, 0.8); }
     }
-    div[data-testid="stColumn"]:has(div[class*="st-key-rkpulse"]) {
+    div[class*="st-key-rkpulse"] div[data-testid="stMetric"] {
         animation: rk-pulse 2.2s ease-in-out infinite;
     }
 
