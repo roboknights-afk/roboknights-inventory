@@ -61,6 +61,24 @@ if st.session_state.part_edited_message:
 parts = client.table("parts").select("*").order("part_number").execute().data
 part_by_id = {p["part_id"]: p for p in parts}
 
+# For bulk items, how many are currently out on loan — derived from the
+# outstanding approved requests rather than stored on the part, so the count
+# can't drift out of sync with reality. Everyone needs this (it's what makes
+# "12 of 50 available" true), so it isn't filtered to my own parts.
+# select("*") rather than naming the quantity column, so this still works on
+# a database where the bulk columns haven't been added yet — a missing column
+# then just reads as "1 unit" instead of failing the whole page load.
+on_loan_qty_by_part_id = {}
+for r in client.table("requests").select("*").eq("status", "approved").execute().data:
+    on_loan_qty_by_part_id[r["part_id"]] = (
+        on_loan_qty_by_part_id.get(r["part_id"], 0) + (r.get("quantity") or 1)
+    )
+
+
+def bulk_available(part):
+    # Total owned minus whatever's currently lent out.
+    return (part.get("quantity") or 1) - on_loan_qty_by_part_id.get(part["part_id"], 0)
+
 # Owners can see who their own on-loan part is with, right in the main
 # list (not just buried in "Parts I've lent out"). Hosts can see this for
 # every part, not just ones they own. Only ever one active "approved"
@@ -97,11 +115,16 @@ my_requests = (
 
 # --- At-a-glance numbers -----------------------------------------------------
 
-available_count = sum(1 for p in parts if p["status"] == "available")
-on_loan_count = sum(1 for p in parts if p["status"] == "on loan")
+# Counted in units, not rows — a bulk row of 50 XT60s is 50 parts, not 1.
+total_count = sum((p.get("quantity") or 1) if p.get("is_bulk") else 1 for p in parts)
+available_count = sum(
+    bulk_available(p) if p.get("is_bulk") else (1 if p["status"] == "available" else 0)
+    for p in parts
+)
+on_loan_count = total_count - available_count
 
 m1, m2, m3, m4 = st.columns(4)
-m1.metric("Total parts", len(parts), border=True)
+m1.metric("Total parts", total_count, border=True)
 m2.metric("Available", available_count, border=True)
 m3.metric("On loan", on_loan_count, border=True)
 # The one number that means "you need to do something" pulses gold while
@@ -157,10 +180,20 @@ with tab_parts:
     for p in parts:
         if search_text and search_text.lower() not in (p["part_number"] + " " + p["name"]).lower():
             continue
-        if status_filter == "Available" and p["status"] != "available":
-            continue
-        if status_filter == "On loan" and p["status"] != "on loan":
-            continue
+        # A bulk row can be partly out, so its availability comes from the
+        # derived count rather than the single status field serialised parts use.
+        if p.get("is_bulk"):
+            free = bulk_available(p)
+            out = (p.get("quantity") or 1) - free
+            if status_filter == "Available" and free <= 0:
+                continue
+            if status_filter == "On loan" and out <= 0:
+                continue
+        else:
+            if status_filter == "Available" and p["status"] != "available":
+                continue
+            if status_filter == "On loan" and p["status"] != "on loan":
+                continue
         if status_filter == "Mine" and p["owner_id"] != current_user_id:
             continue
         visible_parts.append(p)
@@ -179,9 +212,15 @@ with tab_parts:
     # rows. Under the hood each physical unit is still its own row with its
     # own serial, so two people can borrow two different motors and each is
     # returned independently; the grouping is purely how it's presented.
+    # Bulk rows are already a stack of their own, so they're shown one card
+    # per row; only serialised units get collapsed by (name, owner).
     part_groups = {}
+    bulk_parts = []
     for p in visible_parts:
-        part_groups.setdefault((p["name"], p["owner_id"]), []).append(p)
+        if p.get("is_bulk"):
+            bulk_parts.append(p)
+        else:
+            part_groups.setdefault((p["name"], p["owner_id"]), []).append(p)
 
     if not parts:
         st.caption("No parts yet — add one from the **Add & manage** tab.")
@@ -194,7 +233,9 @@ with tab_parts:
         # loan, so otherwise the headers sit above permanently empty columns
         # and read like a bug.
         any_requestable = any(
-            p["status"] == "available" and p["owner_id"] != current_user_id for p in visible_parts
+            p["owner_id"] != current_user_id
+            and (bulk_available(p) > 0 if p.get("is_bulk") else p["status"] == "available")
+            for p in visible_parts
         )
         head1, head2, head3, head4, head5, head6 = st.columns([2, 2, 2, 1, 1, 2])
         head1.markdown("**Name**")
@@ -402,6 +443,109 @@ with tab_parts:
                                     st.session_state.editing_part_id = part["part_id"]
                                     st.rerun()
 
+    # --- Bulk / loose items ---------------------------------------------------
+    # One row, one card, a count instead of serial numbers. There's no
+    # per-unit lifecycle here: 12 of 50 being out is just 12 units spoken
+    # for, which is why availability is derived from the loans rather than
+    # from the single status field serialised parts use.
+    for part in bulk_parts:
+        total_qty = part.get("quantity") or 1
+        free_qty = bulk_available(part)
+        out_qty = total_qty - free_qty
+        is_mine = part["owner_id"] == current_user_id
+
+        owner_name = user_name_by_id.get(part["owner_id"], "Unknown")
+        if is_mine:
+            owner_name += " (yours)"
+
+        with st.container(border=True, key=f"rkcard_bulk_{part['part_id']}"):
+            col1, col2, col3, col4, col5, col6 = st.columns([2, 2, 2, 1, 1, 2], vertical_alignment="center")
+            col1.markdown(f"**{part['name']}**")
+            col2.write(owner_name)
+            with col3:
+                st.badge(
+                    f"{free_qty} of {total_qty} free",
+                    icon=":material/check_circle:" if free_qty else ":material/block:",
+                    color="green" if free_qty else "red",
+                )
+                if out_qty:
+                    st.badge(f"{out_qty} on loan", icon=":material/schedule:", color="orange")
+
+            if free_qty > 0 and not is_mine:
+                qty_wanted = col4.number_input(
+                    "Qty", min_value=1, max_value=free_qty, value=1,
+                    key=f"bulkqty_{part['part_id']}", label_visibility="collapsed",
+                )
+                days_wanted = col5.number_input(
+                    "Days", min_value=1, value=7,
+                    key=f"bulkdays_{part['part_id']}", label_visibility="collapsed",
+                )
+                if col6.button("Request", key=f"bulkrequest_{part['part_id']}", icon=":material/send:"):
+                    # A single request row carrying the quantity — unlike
+                    # serialised parts there are no individual units to point at.
+                    client.table("requests").insert({
+                        "part_id": part["part_id"],
+                        "requester_id": current_user_id,
+                        "owner_id": part["owner_id"],
+                        "status": "pending",
+                        "requested_days": days_wanted,
+                        "quantity": qty_wanted,
+                    }).execute()
+                    send_email(
+                        user_email_by_id.get(part["owner_id"]),
+                        f"New request for {qty_wanted} × {part['name']}",
+                        f"{current_user_name} wants to borrow {qty_wanted} × {part['name']} "
+                        f"({part['part_number']}) for {days_wanted} day(s).\n\n"
+                        f"Approve or reject it here: {APP_URL}/?tab=requests",
+                    )
+                    st.session_state.request_message = (
+                        f"Requested {qty_wanted} × {part['name']} — waiting for {owner_name} to approve."
+                    )
+                    st.rerun()
+
+            st.caption(f":material/inventory_2: Loose item · {part['part_number']}")
+
+            # Who's holding what, for the owner and hosts.
+            if is_mine or is_host:
+                out_loans = [
+                    r for r in client.table("requests").select("*")
+                    .eq("part_id", part["part_id"]).eq("status", "approved").execute().data
+                ]
+                for loan in out_loans:
+                    borrower = user_name_by_id.get(loan["requester_id"], "Unknown")
+                    st.caption(f":material/person: {loan.get('quantity') or 1} with {borrower}")
+
+                with st.expander("Manage stock"):
+                    new_total = st.number_input(
+                        "Total quantity owned", min_value=out_qty, value=total_qty,
+                        key=f"bulktotal_{part['part_id']}",
+                        help="Can't go below the number currently on loan.",
+                    )
+                    save_col, del_col = st.columns([1, 1])
+                    if save_col.button(
+                        "Save quantity", key=f"bulksave_{part['part_id']}",
+                        icon=":material/check:", type="primary",
+                    ):
+                        client.table("parts").update({"quantity": new_total}).eq(
+                            "part_id", part["part_id"]
+                        ).execute()
+                        st.session_state.part_edited_message = (
+                            f"{part['name']} now shows {new_total} in stock."
+                        )
+                        st.rerun()
+                    # Same rule as serialised parts: nothing gets deleted while
+                    # any of it is still out with someone.
+                    if out_qty == 0:
+                        if del_col.button(
+                            "Delete", key=f"bulkdelete_{part['part_id']}", icon=":material/delete:"
+                        ):
+                            client.table("requests").delete().eq("part_id", part["part_id"]).execute()
+                            client.table("parts").delete().eq("part_id", part["part_id"]).execute()
+                            st.session_state.deleted_part_message = f"Deleted {part['name']}."
+                            st.rerun()
+                    else:
+                        del_col.caption("Can't delete while some are on loan.")
+
 
 # --- Tab 2: everything about loans involving me -------------------------------
 # "Parts I've lent out" and "What I've borrowed" both read from the same
@@ -475,10 +619,13 @@ with tab_loans:
         requester_name = user_name_by_id.get(first["requester_id"], "Unknown")
         # Older requests made before loan durations existed won't have this set.
         requested_days = first.get("requested_days") or 7
+        # Units asked for. A serialised batch is N rows of 1; a bulk request is
+        # one row carrying N — summing the quantities covers both.
+        unit_count = sum(r.get("quantity") or 1 for r in group_reqs)
 
         with st.container(border=True, key=f"rkcard_req_{gid}"):
             col1, col2, col3, col4 = st.columns([2, 2, 1, 1], vertical_alignment="center")
-            col1.markdown(f"**{len(group_parts)} × {part_name}**")
+            col1.markdown(f"**{unit_count} × {part_name}**")
             col2.write(f"Requested by {requester_name} for {requested_days} day(s)")
 
             # Approving is two steps: click Approve, then confirm (optionally
@@ -499,19 +646,23 @@ with tab_loans:
                             "status": "approved",
                             "due_date": due_date.isoformat(),
                         }).eq("request_id", r["request_id"]).execute()
-                        client.table("parts").update({"status": "on loan"}).eq(
-                            "part_id", r["part_id"]
-                        ).execute()
+                        # A serialised unit is wholly lent out, so its status
+                        # flips. A bulk row isn't — only part of the stack goes
+                        # out — so its availability stays derived from the loans.
+                        if not part_by_id[r["part_id"]].get("is_bulk"):
+                            client.table("parts").update({"status": "on loan"}).eq(
+                                "part_id", r["part_id"]
+                            ).execute()
                     send_email(
                         user_email_by_id.get(first["requester_id"]),
-                        f"Request approved: {len(group_parts)} × {part_name}",
-                        f"{current_user_name} approved your request for {len(group_parts)} × {part_name} "
+                        f"Request approved: {unit_count} × {part_name}",
+                        f"{current_user_name} approved your request for {unit_count} × {part_name} "
                         f"({serial_list}) for {approve_days} day(s) "
                         f"(until {due_date.strftime('%d %b %Y')}).\n\n"
                         f"Get in touch with them to arrange collection.",
                     )
                     st.session_state.decision_message = (
-                        f"Approved. {len(group_parts)} × {part_name} on loan until "
+                        f"Approved. {unit_count} × {part_name} on loan until "
                         f"{due_date.strftime('%d %b %Y')}."
                     )
                     st.session_state.approving_request_id = None
@@ -531,12 +682,12 @@ with tab_loans:
                         ).execute()
                     send_email(
                         user_email_by_id.get(first["requester_id"]),
-                        f"Request rejected: {len(group_parts)} × {part_name}",
-                        f"{current_user_name} rejected your request for {len(group_parts)} × {part_name} "
+                        f"Request rejected: {unit_count} × {part_name}",
+                        f"{current_user_name} rejected your request for {unit_count} × {part_name} "
                         f"({serial_list}).",
                     )
                     st.session_state.decision_message = (
-                        f"Rejected the request for {len(group_parts)} × {part_name}."
+                        f"Rejected the request for {unit_count} × {part_name}."
                     )
                     st.rerun()
 
@@ -563,12 +714,30 @@ with tab_loans:
             if not group_parts:
                 continue
             borrower_name = user_name_by_id.get(first["requester_id"], "Unknown")
+            unit_count = sum(r.get("quantity") or 1 for r in group_reqs)
+            is_bulk_loan = group_parts[0].get("is_bulk")
             with st.container(border=True, key=f"rkcard_lent_{gid}"):
-                col1, col2, col3 = st.columns([2, 2, 2], vertical_alignment="center")
-                col1.markdown(f"**{len(group_parts)} × {group_parts[0]['name']}**")
+                col1, col2, col3, col4 = st.columns([2, 2, 2, 2], vertical_alignment="center")
+                col1.markdown(f"**{unit_count} × {group_parts[0]['name']}**")
                 col2.write(f"Lent to {borrower_name}")
                 due_badge(col3, first)
                 col3.caption(f"Due {format_due(first)}")
+                # Serialised units are returned one at a time from "Manage units"
+                # on the part card. A bulk loan has no per-unit rows to go to, so
+                # it's closed out from here instead.
+                if is_bulk_loan:
+                    if col4.button(
+                        "Mark returned", key=f"bulkreturn_{gid}",
+                        icon=":material/assignment_return:",
+                    ):
+                        for r in group_reqs:
+                            client.table("requests").update({"status": "returned"}).eq(
+                                "request_id", r["request_id"]
+                            ).execute()
+                        st.session_state.returned_message = (
+                            f"{unit_count} × {group_parts[0]['name']} returned — back in stock."
+                        )
+                        st.rerun()
                 st.caption(f":material/tag: {', '.join(p['part_number'] for p in group_parts)}")
 
     st.subheader(":material/login: What I've borrowed")
@@ -592,9 +761,10 @@ with tab_loans:
             if not group_parts:
                 continue
             owner_name = user_name_by_id.get(first["owner_id"], "Unknown")
+            unit_count = sum(r.get("quantity") or 1 for r in group_reqs)
             with st.container(border=True, key=f"rkcard_borrowed_{gid}"):
                 col1, col2, col3 = st.columns([2, 2, 2], vertical_alignment="center")
-                col1.markdown(f"**{len(group_parts)} × {group_parts[0]['name']}**")
+                col1.markdown(f"**{unit_count} × {group_parts[0]['name']}**")
                 col2.write(f"Borrowed from {owner_name}")
                 due_badge(col3, first)
                 col3.caption(f"Due {format_due(first)}")
@@ -609,33 +779,48 @@ with tab_manage:
     with st.container(border=True):
         new_part_name = st.text_input("Part name (e.g. N20 gear motor)", key="new_part_name")
         new_part_qty = st.number_input("Quantity", min_value=1, value=1, key="new_part_qty")
-        st.caption(
-            "Serial numbers are assigned automatically (RK-0001, RK-0002, …) — "
-            "nothing to type in by hand."
+        new_part_is_bulk = st.checkbox(
+            "Loose item — count them, don't number them individually",
+            key="new_part_is_bulk",
+            help="For things like XT60 connectors, screws or wire, where nobody "
+                 "tracks an individual one. Leave unticked for motors, batteries "
+                 "and anything else you'd label with a serial.",
         )
+        if new_part_is_bulk:
+            st.caption(
+                "Kept as one entry with a running count — people ask for however "
+                "many they need."
+            )
+        else:
+            st.caption(
+                "Each unit gets its own serial (RK-0001, RK-0002, …) so they're "
+                "lent and returned separately. Nothing to type in by hand."
+            )
         if st.button("Add part", icon=":material/add:", type="primary"):
             if not new_part_name.strip():
                 st.session_state.part_added_message = ("error", "Part name is required.")
             else:
-                # Quantity 3 means three separate rows, each with its own serial —
-                # so every physical unit can be requested, lent, and returned
-                # independently (a single row with a qty number would put the
-                # whole batch on loan the moment one person borrows).
+                # For serialised parts, quantity 3 means three separate rows,
+                # each with its own serial — so every physical unit can be
+                # requested, lent, and returned independently. A loose item is
+                # the opposite: ONE row carrying the count, because nobody
+                # tracks an individual XT60.
                 #
-                # No typing part numbers by hand — that's how we once got two
-                # different parts both called "2". Serials are the LOWEST RK-####
-                # numbers not currently in use, so numbers freed up by deleted
-                # parts get recycled. Existing parts never get renumbered (their
-                # serial may be written on the physical part, or quoted in old
-                # emails — it has to stay stable).
+                # Either way no typing part numbers by hand — that's how we once
+                # got two different parts both called "2". Serials are the LOWEST
+                # RK-#### numbers not currently in use, so numbers freed up by
+                # deleted parts get recycled. Existing parts never get renumbered
+                # (their serial may be written on the physical part, or quoted in
+                # old emails — it has to stay stable).
                 used_numbers = {
                     int(p["part_number"][3:])
                     for p in client.table("parts").select("part_number").execute().data
                     if p["part_number"].startswith("RK-") and p["part_number"][3:].isdigit()
                 }
+                rows_needed = 1 if new_part_is_bulk else new_part_qty
                 serials = []
                 candidate = 1
-                while len(serials) < new_part_qty:
+                while len(serials) < rows_needed:
                     if candidate not in used_numbers:
                         serials.append(f"RK-{candidate:04d}")
                     candidate += 1
@@ -646,11 +831,18 @@ with tab_manage:
                         "name": new_part_name.strip(),
                         "owner_id": current_user_id,
                         "status": "available",
+                        "is_bulk": new_part_is_bulk,
+                        "quantity": new_part_qty if new_part_is_bulk else 1,
                     }
                     for serial in serials
                 ]).execute()
 
-                if len(serials) == 1:
+                if new_part_is_bulk:
+                    st.session_state.part_added_message = (
+                        "success",
+                        f"Added {new_part_qty} × {new_part_name.strip()} as a loose item ({serials[0]}).",
+                    )
+                elif len(serials) == 1:
                     st.session_state.part_added_message = ("success", f"Added {serials[0]} — {new_part_name.strip()}.")
                 else:
                     st.session_state.part_added_message = (
