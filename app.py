@@ -67,14 +67,29 @@ st.html("""
     button[data-testid="stBaseButton-primary"] * { color: #1E1E1E !important; }
 
     /* List cards (parts, competitions, announcements) lift slightly on
-       hover, with a soft gold glow tying into the accent color */
+       hover, with a soft gold glow tying into the accent color. Targets the
+       stable st-key-rkcard_* class Streamlit generates from
+       st.container(key="rkcard_..."). Deliberately NOT scoped under
+       stVerticalBlock: that assumes a fixed nesting depth Streamlit doesn't
+       guarantee, and the border-wrapper testid doesn't exist in 1.60. */
     div[class*="st-key-rkcard_"] {
         transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease;
     }
     div[class*="st-key-rkcard_"]:hover {
         transform: translateY(-2px);
-        box-shadow: 0 6px 14px rgba(0, 0, 0, 0.3), 0 0 10px 1px rgba(232, 179, 61, 0.25);
-        border-color: rgba(232, 179, 61, 0.6);
+        box-shadow: 0 4px 12px rgba(232, 179, 61, 0.15);
+        border-color: rgba(232, 179, 61, 0.45);
+    }
+
+    /* Metric tiles (st.metric with border=True) get the same treatment, so
+       a summary strip reads as part of the same card system as the lists. */
+    div[data-testid="stMetric"] {
+        transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease;
+    }
+    div[data-testid="stMetric"]:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 4px 12px rgba(232, 179, 61, 0.15);
+        border-color: rgba(232, 179, 61, 0.45);
     }
 
     /* Cards stagger in one after another. "backwards" fill (NOT forwards)
@@ -485,8 +500,22 @@ st.session_state.is_host = st.session_state.auth_user["email"] in HOST_EMAILS
 # the active one.
 with st.sidebar:
     with st.container(border=True):
-        st.markdown(f":material/person: Logged in as\n\n**{st.session_state.current_user_name}**")
-        if st.button("Log out", icon=":material/logout:"):
+        st.caption(":material/person: Logged in as")
+        st.markdown(f"**{st.session_state.current_user_name}**")
+
+        # Role + grade at a glance, so it's obvious which account you're on
+        # (easy to lose track when testing with more than one).
+        if st.session_state.is_host:
+            st.badge("Host", color="primary", icon=":material/shield_person:")
+        else:
+            grade = st.session_state.current_user_grade
+            st.badge(
+                f"Member • Grade {grade}" if grade else "Member",
+                color="grey", icon=":material/badge:",
+            )
+
+        st.divider()
+        if st.button("Log out", icon=":material/logout:", width="stretch"):
             client.auth.sign_out()
             st.session_state.auth_user = None
             # Tells the login screen to play the gear spin-DOWN once.
