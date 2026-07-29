@@ -333,6 +333,9 @@ def _parse_teams(team_rows, user_id_by_name):
     return teams
 
 
+SR_JR_SUFFIX_RE = re.compile(r"\s*Sr\.?\s*&\s*Jr\.?\s*$", re.IGNORECASE)
+
+
 def _parse_all_events(block, user_id_by_name):
     # Every event in the block, not just robotics ones — the host can
     # still pull in a specific non-robotics event by name (e.g. a
@@ -341,7 +344,7 @@ def _parse_all_events(block, user_id_by_name):
     n = len(block)
     i = 0
     while i < n:
-        b_cell, c_cell = block[i][1], block[i][2]
+        b_cell = block[i][1]
         if not b_cell["text"]:
             i += 1
             continue
@@ -352,7 +355,22 @@ def _parse_all_events(block, user_id_by_name):
         j = i + 1
         while j < n and not block[j][1]["text"]:
             j += 1
-        team_rows = block[i:j]
+        event_rows = block[i:j]
+
+        # One event name can still cover more than one grade bracket (e.g.
+        # "RoboWar Sr. & Jr." — a 6th-8th row, then a further-down row with
+        # its own 9th-12th eligibility but a blank name cell, which would
+        # otherwise look like just more team rows for the first bracket).
+        # Each row with its own eligibility text starts a new bracket; team
+        # rows in between belong to whichever bracket precedes them.
+        bracket_starts = [0] + [
+            k for k in range(1, len(event_rows)) if event_rows[k][2]["text"]
+        ]
+        bracket_row_groups = [
+            event_rows[start:(bracket_starts[bi + 1] if bi + 1 < len(bracket_starts) else len(event_rows))]
+            for bi, start in enumerate(bracket_starts)
+        ]
+        bracket_eligs = [_parse_eligibility(rows[0][2]["text"]) for rows in bracket_row_groups]
 
         category, details = _split_note(b_cell["note"])
         # "robo" (not "robotics") so compound/short categories like
@@ -362,21 +380,44 @@ def _parse_all_events(block, user_id_by_name):
         # mention robo) so a genuinely different category isn't overridden
         # just because of a coincidental name.
         no_note = not category
-        is_robotics = "robo" in category.lower() or (no_note and "robo" in b_cell["text"].lower())
+        keyword_robotics = "robo" in category.lower() or (no_note and "robo" in b_cell["text"].lower())
 
-        elig = _parse_eligibility(c_cell["text"])
-        events.append({
-            "name": b_cell["text"],
-            "details": details,
-            "raw_eligibility": c_cell["text"],
-            "team_size": elig["team_size"] or 1,
-            "max_teams": elig["max_teams"] or 1,
-            "min_grade": elig["min_grade"] or 7,
-            "max_grade": elig["max_grade"] or 12,
-            "flagged": elig["flagged"],
-            "teams": _parse_teams(team_rows, user_id_by_name),
-            "is_robotics": is_robotics,
-        })
+        multi_bracket = len(bracket_row_groups) > 1
+        if multi_bracket:
+            base_name = SR_JR_SUFFIX_RE.sub("", b_cell["text"]).strip()
+            # Label by actual grade order rather than assuming the sheet
+            # always lists the junior bracket first.
+            order = sorted(
+                range(len(bracket_eligs)), key=lambda idx: bracket_eligs[idx]["min_grade"] or 7,
+            )
+            suffix_by_index = {}
+            for rank, idx in enumerate(order):
+                suffix_by_index[idx] = (
+                    "(Jr.)" if rank == 0 else "(Sr.)" if rank == 1 else f"(Bracket {rank + 1})"
+                )
+
+        for bi, rows in enumerate(bracket_row_groups):
+            elig = bracket_eligs[bi]
+            teams = _parse_teams(rows, user_id_by_name)
+            # A real member already on the roster is itself strong evidence
+            # this is a RoboKnights event, even with no note/keyword to say
+            # so — this is what catches oddly-named events like "Rescue
+            # Maze" that the keyword check alone would miss.
+            is_robotics = keyword_robotics or bool(teams)
+            name = f"{base_name} {suffix_by_index[bi]}" if multi_bracket else b_cell["text"]
+
+            events.append({
+                "name": name,
+                "details": details,
+                "raw_eligibility": rows[0][2]["text"],
+                "team_size": elig["team_size"] or 1,
+                "max_teams": elig["max_teams"] or 1,
+                "min_grade": elig["min_grade"] or 7,
+                "max_grade": elig["max_grade"] or 12,
+                "flagged": elig["flagged"],
+                "teams": teams,
+                "is_robotics": is_robotics,
+            })
         i = j
     return events
 
