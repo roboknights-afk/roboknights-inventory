@@ -399,11 +399,16 @@ def _parse_all_events(block, user_id_by_name):
         for bi, rows in enumerate(bracket_row_groups):
             elig = bracket_eligs[bi]
             teams = _parse_teams(rows, user_id_by_name)
-            # A real member already on the roster is itself strong evidence
-            # this is a RoboKnights event, even with no note/keyword to say
-            # so — this is what catches oddly-named events like "Rescue
-            # Maze" that the keyword check alone would miss.
-            is_robotics = keyword_robotics or bool(teams)
+            matched_member_ids = {p["user_id"] for team in teams for p in team}
+            # One matched name could be a coincidence (a common name shared
+            # with someone unrelated), so that alone doesn't auto-include an
+            # event with no note/keyword. Two or more distinct real members
+            # already on the roster is a much stronger signal — still not
+            # auto-included, but surfaced for the host to confirm by hand,
+            # which is what actually catches oddly-named events like
+            # "Rescue Maze" without silently importing a false positive.
+            is_robotics = keyword_robotics
+            needs_review = not keyword_robotics and len(matched_member_ids) >= 2
             name = f"{base_name} {suffix_by_index[bi]}" if multi_bracket else b_cell["text"]
 
             events.append({
@@ -417,6 +422,7 @@ def _parse_all_events(block, user_id_by_name):
                 "flagged": elig["flagged"],
                 "teams": teams,
                 "is_robotics": is_robotics,
+                "needs_review": needs_review,
             })
         i = j
     return events
@@ -450,9 +456,14 @@ def scan_e2c_sheet(client):
     competitions = []
     for block in blocks:
         all_events = _parse_all_events(block, user_id_by_name)
-        events = [e for e in all_events if e["is_robotics"]]
+        # Shown by default: real keyword-detected robotics events, PLUS
+        # events that weren't keyword-detected but have 2+ real members
+        # already on the roster — those are pre-unchecked in the UI and
+        # need the host's confirmation, not silently imported (see
+        # needs_review in _parse_all_events).
+        events = [e for e in all_events if e["is_robotics"] or e["needs_review"]]
         if not events:
-            continue  # only competitions with at least one robotics event
+            continue  # nothing robotics-related, and nothing worth a manual look
         info = _parse_competition_info(block)
         existing_id = existing_id_by_name.get(info["name"].strip().lower())
         for e in all_events:
@@ -461,7 +472,7 @@ def scan_e2c_sheet(client):
                 if existing_id else None
             )
             e["already_imported"] = e["existing_event_id"] is not None
-        info["events"] = events  # robotics-only, shown by default
+        info["events"] = events  # robotics-only + needs_review, shown by default
         info["all_events"] = all_events  # every event, for adding a specific one by name
         info["existing_id"] = existing_id
         info["already_imported"] = existing_id is not None

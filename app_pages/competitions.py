@@ -378,8 +378,13 @@ def render_e2c_import():
                             ecol1.markdown(
                                 f"**{e['name']}**"
                                 + ("  :material/warning: check team size/max teams" if e["flagged"] else "")
+                                + ("  :material/help: not auto-detected as robotics — RoboKnights members "
+                                   "are already on the roster, confirm before including"
+                                   if e.get("needs_review") else "")
                             )
-                            include = ecol2.checkbox("Include", value=True, key=f"e2c_incl_{idx}_{eidx}")
+                            include = ecol2.checkbox(
+                                "Include", value=not e.get("needs_review"), key=f"e2c_incl_{idx}_{eidx}",
+                            )
                             c1, c2, c3, c4 = st.columns(4)
                             team_size = c1.number_input(
                                 "Team size", min_value=1, value=e["team_size"], key=f"e2c_ts_{idx}_{eidx}",
@@ -588,8 +593,14 @@ def render_e2c_import():
                                     )
                                     if e["flagged"]:
                                         label += " ⚠️ check team size/max teams before adding"
+                                    if e.get("needs_review"):
+                                        label += (
+                                            " — not auto-detected as robotics, RoboKnights members are "
+                                            "already on the roster, confirm before adding"
+                                        )
                                     if st.checkbox(
-                                        label, value=not e["flagged"], key=f"e2c_addevent_{idx}_{e['name']}"
+                                        label, value=not e["flagged"] and not e.get("needs_review"),
+                                        key=f"e2c_addevent_{idx}_{e['name']}",
                                     ):
                                         to_add.append(e)
                                     teams_caption = _teams_caption(e.get("teams", []))
