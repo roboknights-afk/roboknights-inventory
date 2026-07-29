@@ -33,7 +33,16 @@ def send_email(to_email, subject, body):
 
 today = date.today().isoformat()
 
-competitions = client.table("competitions").select("*").eq("competition_date", today).execute().data
+# not_attending competitions are explicitly skipped — nobody should be
+# nudged to log a result for something the club isn't actually attending.
+competitions = (
+    client.table("competitions")
+    .select("*")
+    .eq("competition_date", today)
+    .eq("not_attending", False)
+    .execute()
+    .data
+)
 if not competitions:
     print("No competitions today.")
 else:

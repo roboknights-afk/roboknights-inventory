@@ -925,6 +925,24 @@ def render_competition_card(comp):
                             "competition_id", cid
                         ).execute()
                         invalidate_cache()
+                        # Anyone already selected for one of its events gets told
+                        # directly — they'd otherwise still be expecting to go,
+                        # and the day-before/day-of reminder emails now skip this
+                        # competition entirely, so this is the only notice they get.
+                        event_ids_here = {e["event_id"] for e in events}
+                        selected_uids = {
+                            v["user_id"] for v in all_volunteers
+                            if v["event_id"] in event_ids_here and v.get("selected")
+                        }
+                        for uid in selected_uids:
+                            send_email(
+                                user_email_by_id.get(uid),
+                                f"RoboKnights is not attending {comp['name']}",
+                                f"You were selected to represent RoboKnights at {comp['name']}, "
+                                f"but due to unforeseen circumstances the club won't be attending "
+                                f"after all. Sorry for the change of plans — you don't need to do "
+                                f"anything further for this one.",
+                            )
                         st.rerun()
                 if comp.get("is_past"):
                     if past_col.button(

@@ -6,7 +6,7 @@
 # is_host, same as the Add-a-competition pattern (no separate host-only
 # page needed since students need this page too).
 
-from datetime import datetime
+from datetime import datetime, timezone
 from urllib.parse import quote
 
 import streamlit as st
@@ -35,7 +35,7 @@ if st.session_state.query_message:
     st.session_state.query_message = None
 
 
-def render_thread(query_id, all_messages, notify_email=None):
+def render_thread(query, all_messages, notify_email=None):
     # Shared by both the host and student views — a thread looks the same
     # either way, just filtered to different threads before this is called.
     # notify_email: who to email when the CURRENT viewer sends a reply here.
@@ -43,7 +43,28 @@ def render_thread(query_id, all_messages, notify_email=None):
     # follow-up doesn't email the host, since the host is checking this
     # page directly rather than waiting on a notification for every
     # message in an ongoing conversation.
+    query_id = query["query_id"]
     thread_messages = [m for m in all_messages if m["query_id"] == query_id]
+
+    # Read receipts: host and student each have their own "last read" column,
+    # since they read the thread independently. Only WRITE when there's
+    # something new from the other side to acknowledge — not on every rerun
+    # of an already-read thread — so opening a stale thread doesn't spam
+    # updates + cache invalidations for no reason.
+    my_read_field = "host_read_at" if is_host else "student_read_at"
+    other_read_field = "student_read_at" if is_host else "host_read_at"
+    my_read_at = query.get(my_read_field)
+    other_read_at = query.get(other_read_field)
+    latest_from_other = max(
+        (m["created_at"] for m in thread_messages if m["sender_id"] != current_user_id),
+        default=None,
+    )
+    if latest_from_other and (not my_read_at or latest_from_other > my_read_at):
+        client.table("queries").update({
+            my_read_field: datetime.now(timezone.utc).isoformat(),
+        }).eq("query_id", query_id).execute()
+        invalidate_cache()
+
     for msg in thread_messages:
         mine = msg["sender_id"] == current_user_id
         sender_name = "You" if mine else user_name_by_id.get(msg["sender_id"], "Unknown")
@@ -76,7 +97,16 @@ def render_thread(query_id, all_messages, notify_email=None):
                     label += " _(edited)_"
                 col1.markdown(label)
                 st.write(msg["body"])
-                st.caption(f":material/schedule: {format_ist(msg['created_at'])}")
+                timestamp_line = f":material/schedule: {format_ist(msg['created_at'])}"
+                # Blue ticks, WhatsApp-style — only shown on your OWN messages
+                # (there's no such thing as a read receipt on a message you
+                # received), comparing against the other side's read_at.
+                if mine:
+                    if other_read_at and msg["created_at"] <= other_read_at:
+                        timestamp_line += "  •  :blue[✓✓ Read]"
+                    else:
+                        timestamp_line += "  •  ✓ Sent"
+                st.caption(timestamp_line)
                 # You can only edit your own messages, not the other side's.
                 if mine:
                     if col2.button("Edit", key=f"edit_btn_{msg['message_id']}", icon=":material/edit:"):
@@ -122,8 +152,22 @@ if is_host:
     else:
         for q in all_queries:
             asker_name = user_name_by_id.get(q["student_id"], "Unknown")
-            with st.expander(asker_name):
-                render_thread(q["query_id"], all_messages, notify_email=user_email_by_id.get(q["student_id"]))
+            thread_messages = [m for m in all_messages if m["query_id"] == q["query_id"]]
+            latest_from_student = max(
+                (m["created_at"] for m in thread_messages if m["sender_id"] == q["student_id"]),
+                default=None,
+            )
+            # Same student can have several threads, which used to all show
+            # up with the identical expander label ("Naitik Jindal", say) —
+            # making it impossible to tell which one still needs a look. This
+            # badge is what actually fixes that, not just the read-column math.
+            label = asker_name
+            if latest_from_student and (
+                not q.get("host_read_at") or latest_from_student > q["host_read_at"]
+            ):
+                label += "  🔵 New"
+            with st.expander(label):
+                render_thread(q, all_messages, notify_email=user_email_by_id.get(q["student_id"]))
 else:
     # --- Student view: start a thread, see your own past ones ----------
     # A faster, live option for something urgent — asking below still works,
@@ -192,4 +236,4 @@ else:
                 first_message = "Your question"
             preview = first_message if len(first_message) <= 50 else first_message[:47] + "..."
             with st.expander(preview, expanded=len(my_queries) == 1):
-                render_thread(q["query_id"], all_messages)
+                render_thread(q, all_messages)

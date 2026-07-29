@@ -154,6 +154,7 @@ with tab_add:
                 del st.session_state["new_achievement_media"]
                 st.rerun()
 
+with tab_browse:
     # --- Browse all achievements -------------------------------------------------
 
     st.subheader(":material/emoji_events: All achievements")

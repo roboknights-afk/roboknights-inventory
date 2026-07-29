@@ -77,8 +77,16 @@ def send_competition_reminders():
     # own column since this is a different kind of reminder.
     tomorrow = (date.today() + timedelta(days=1)).isoformat()
 
+    # not_attending competitions are explicitly skipped — nobody should get
+    # a "get ready for tomorrow" reminder for something the club isn't
+    # actually sending anyone to.
     competitions = (
-        client.table("competitions").select("*").eq("competition_date", tomorrow).execute().data
+        client.table("competitions")
+        .select("*")
+        .eq("competition_date", tomorrow)
+        .eq("not_attending", False)
+        .execute()
+        .data
     )
     if not competitions:
         print("No competitions tomorrow.")

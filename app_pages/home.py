@@ -1,9 +1,9 @@
 # Landing page after login — a quick "what's relevant to you right now"
 # instead of making everyone click through every one of the app's other
 # pages just to check for anything new. Every section here only reads data
-# those pages already write; nothing new is tracked to get this. In
-# particular, a query thread's "new reply" isn't a stored read/unread flag
-# — it's just whether the thread's last message wasn't sent by you.
+# those pages already write; nothing new is tracked to get this. A query
+# thread's "new reply" uses the real host_read_at/student_read_at columns
+# queries.py maintains (see _threads_awaiting_me below).
 #
 # Layout: a metrics strip across the top (the "how many things want me?"
 # glance), then a wide left column for things needing action and a narrow
@@ -33,20 +33,29 @@ today_iso = today.isoformat()
 # can count the same things the cards below list, without asking Supabase
 # for any of it twice.
 
-def _threads_awaiting_me(query_ids):
-    # A thread "wants" you when its most recent message came from the other
-    # side — the host waiting to reply, or a student with an unread answer.
-    # No read/unread column needed for this; who sent last is enough.
-    if not query_ids:
+def _threads_awaiting_me(queries_for_me):
+    # A thread "wants" you when the other side has sent something since you
+    # last actually opened it — using the real host_read_at/student_read_at
+    # read-receipt columns, not just "who sent the last message" (that older
+    # heuristic couldn't tell an already-read thread from a genuinely new one
+    # once you'd replied and the other side hadn't come back yet).
+    if not queries_for_me:
         return 0
+    query_ids = {q["query_id"] for q in queries_for_me}
     messages = sorted(
         (m for m in cached_table("query_messages") if m["query_id"] in query_ids),
         key=lambda m: m["created_at"],
     )
+    read_field = "host_read_at" if is_host else "student_read_at"
     waiting = 0
-    for qid in query_ids:
-        thread_messages = [m for m in messages if m["query_id"] == qid]
-        if thread_messages and thread_messages[-1]["sender_id"] != current_user_id:
+    for q in queries_for_me:
+        thread_messages = [m for m in messages if m["query_id"] == q["query_id"]]
+        others_messages = [m for m in thread_messages if m["sender_id"] != current_user_id]
+        if not others_messages:
+            continue
+        latest_other = others_messages[-1]["created_at"]
+        my_read_at = q.get(read_field)
+        if not my_read_at or latest_other > my_read_at:
             waiting += 1
     return waiting
 
@@ -64,10 +73,10 @@ part_by_id = {p["part_id"]: p for p in cached_table("parts")}
 # Queries: the host sees every thread, a student only their own.
 all_queries = cached_table("queries")
 if is_host:
-    my_query_ids = [q["query_id"] for q in all_queries]
+    my_queries = all_queries
 else:
-    my_query_ids = [q["query_id"] for q in all_queries if q["student_id"] == current_user_id]
-queries_waiting = _threads_awaiting_me(my_query_ids)
+    my_queries = [q for q in all_queries if q["student_id"] == current_user_id]
+queries_waiting = _threads_awaiting_me(my_queries)
 
 # Meetings: upcoming ones for the list, plus any already-happened ones I
 # never checked into — check-in unlocks on the meeting's own day (see
