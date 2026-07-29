@@ -15,9 +15,11 @@ from datetime import date
 
 import streamlit as st
 
-from shared import format_ist, get_client
+from shared import cached_table, format_ist
 
-client = get_client()
+# Read-only page — every table it needs goes through the shared 8-second
+# cache instead of a fresh Supabase round trip per query, so landing here
+# doesn't cost 11 network calls every time.
 current_user_id = st.session_state.current_user_id
 current_user_name = st.session_state.current_user_name
 is_host = st.session_state.is_host
@@ -37,13 +39,9 @@ def _threads_awaiting_me(query_ids):
     # No read/unread column needed for this; who sent last is enough.
     if not query_ids:
         return 0
-    messages = (
-        client.table("query_messages")
-        .select("query_id, sender_id, created_at")
-        .in_("query_id", query_ids)
-        .order("created_at")
-        .execute()
-        .data
+    messages = sorted(
+        (m for m in cached_table("query_messages") if m["query_id"] in query_ids),
+        key=lambda m: m["created_at"],
     )
     waiting = 0
     for qid in query_ids:
@@ -54,57 +52,35 @@ def _threads_awaiting_me(query_ids):
 
 
 # Part requests sitting on my approval, and parts I've borrowed from others.
-pending_for_me = (
-    client.table("requests")
-    .select("*")
-    .eq("owner_id", current_user_id)
-    .eq("status", "pending")
-    .execute()
-    .data
-)
-my_borrowed = (
-    client.table("requests")
-    .select("*")
-    .eq("requester_id", current_user_id)
-    .eq("status", "approved")
-    .execute()
-    .data
-)
-part_by_id = {}
-if my_borrowed or pending_for_me:
-    part_ids = [r["part_id"] for r in my_borrowed + pending_for_me]
-    part_by_id = {
-        p["part_id"]: p
-        for p in client.table("parts")
-        .select("part_id, name, part_number")
-        .in_("part_id", part_ids)
-        .execute()
-        .data
-    }
+all_requests = cached_table("requests")
+pending_for_me = [
+    r for r in all_requests if r["owner_id"] == current_user_id and r["status"] == "pending"
+]
+my_borrowed = [
+    r for r in all_requests if r["requester_id"] == current_user_id and r["status"] == "approved"
+]
+part_by_id = {p["part_id"]: p for p in cached_table("parts")}
 
 # Queries: the host sees every thread, a student only their own.
+all_queries = cached_table("queries")
 if is_host:
-    my_query_ids = [q["query_id"] for q in client.table("queries").select("query_id").execute().data]
+    my_query_ids = [q["query_id"] for q in all_queries]
 else:
-    my_query_ids = [
-        q["query_id"]
-        for q in client.table("queries").select("query_id").eq("student_id", current_user_id).execute().data
-    ]
+    my_query_ids = [q["query_id"] for q in all_queries if q["student_id"] == current_user_id]
 queries_waiting = _threads_awaiting_me(my_query_ids)
 
 # Meetings: upcoming ones for the list, plus any already-happened ones I
 # never checked into — check-in unlocks on the meeting's own day (see
 # meetings.py), so "today" counts as both upcoming and checkable.
-upcoming_meetings = (
-    client.table("meetings").select("*").gte("meeting_date", today_iso).order("meeting_date").execute().data
+upcoming_meetings = sorted(
+    (m for m in cached_table("meetings") if m["meeting_date"] >= today_iso),
+    key=lambda m: (m["meeting_date"], m["meeting_id"]),
 )
 my_rsvp_ids = {
-    r["meeting_id"]
-    for r in client.table("meeting_rsvps").select("meeting_id").eq("user_id", current_user_id).execute().data
+    r["meeting_id"] for r in cached_table("meeting_rsvps") if r["user_id"] == current_user_id
 }
 my_attended_ids = {
-    a["meeting_id"]
-    for a in client.table("meeting_attendance").select("meeting_id").eq("user_id", current_user_id).execute().data
+    a["meeting_id"] for a in cached_table("meeting_attendance") if a["user_id"] == current_user_id
 }
 meetings_today = [
     m for m in upcoming_meetings
@@ -112,17 +88,14 @@ meetings_today = [
 ]
 
 # Competitions I've put my hand up for that haven't happened yet.
-my_volunteer_rows = (
-    client.table("event_volunteers").select("*").eq("user_id", current_user_id).execute().data
-)
+my_volunteer_rows = [v for v in cached_table("event_volunteers") if v["user_id"] == current_user_id]
 upcoming_competitions = []
 if my_volunteer_rows:
-    event_ids = [v["event_id"] for v in my_volunteer_rows]
-    my_events = client.table("competition_events").select("*").in_("event_id", event_ids).execute().data
-    comp_ids = [e["competition_id"] for e in my_events]
+    event_ids = {v["event_id"] for v in my_volunteer_rows}
+    my_events = [e for e in cached_table("competition_events") if e["event_id"] in event_ids]
+    comp_ids = {e["competition_id"] for e in my_events}
     comp_by_id = {
-        c["competition_id"]: c
-        for c in client.table("competitions").select("*").in_("competition_id", comp_ids).execute().data
+        c["competition_id"]: c for c in cached_table("competitions") if c["competition_id"] in comp_ids
     }
     for v in my_volunteer_rows:
         event = next((e for e in my_events if e["event_id"] == v["event_id"]), None)
@@ -131,11 +104,13 @@ if my_volunteer_rows:
         if not comp or comp.get("is_past") or comp.get("not_attending"):
             continue
         upcoming_competitions.append((comp, event, v))
-    upcoming_competitions.sort(key=lambda row: row[0].get("competition_date") or "9999-99-99")
+    upcoming_competitions.sort(
+        key=lambda row: (row[0].get("competition_date") or "9999-99-99", row[0]["competition_id"])
+    )
 
-latest_announcements = (
-    client.table("announcements").select("*").order("created_at", desc=True).limit(3).execute().data
-)
+latest_announcements = sorted(
+    cached_table("announcements"), key=lambda a: a["created_at"], reverse=True
+)[:3]
 
 
 # --- Header + metrics strip ---------------------------------------------------
@@ -176,7 +151,7 @@ with feed_col:
     # then approvals blocking someone else, then your own follow-ups.
     nothing_pending = True
 
-    for r in sorted(my_borrowed, key=lambda r: r.get("due_date") or "9999-99-99"):
+    for r in sorted(my_borrowed, key=lambda r: (r.get("due_date") or "9999-99-99", r["request_id"])):
         due = r.get("due_date")
         if not due:
             continue  # no due date set — nothing to be late for
@@ -249,7 +224,7 @@ with feed_col:
 
     if my_borrowed:
         st.subheader(":material/inventory_2: Parts you've borrowed")
-        for r in sorted(my_borrowed, key=lambda r: r.get("due_date") or "9999-99-99"):
+        for r in sorted(my_borrowed, key=lambda r: (r.get("due_date") or "9999-99-99", r["request_id"])):
             part = part_by_id.get(r["part_id"], {})
             due = r.get("due_date")
             due_label = (

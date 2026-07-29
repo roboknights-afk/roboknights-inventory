@@ -13,7 +13,7 @@ from datetime import date, time
 
 import streamlit as st
 
-from shared import get_client
+from shared import cached_table, get_client, invalidate_cache
 
 client = get_client()
 is_host = st.session_state.is_host
@@ -60,6 +60,7 @@ if is_host:
                     "meeting_id_code": meeting_id_code.strip() or None,
                     "meeting_password": meeting_password.strip() or None,
                 }).execute()
+                invalidate_cache()
                 st.session_state.meeting_message = ("success", f"Scheduled {title.strip()}.")
                 del st.session_state["new_meeting_title"]
                 del st.session_state["new_meeting_agenda"]
@@ -77,9 +78,11 @@ if st.session_state.meeting_message:
         st.error(text)
     st.session_state.meeting_message = None
 
-meetings = client.table("meetings").select("*").order("meeting_date").execute().data
-all_rsvps = client.table("meeting_rsvps").select("*").execute().data
-all_attendance = client.table("meeting_attendance").select("*").execute().data
+# meeting_id as a tiebreak alongside meeting_date, so two meetings on the
+# same day sort deterministically rather than by undefined storage order.
+meetings = sorted(cached_table("meetings"), key=lambda m: (m["meeting_date"], m["meeting_id"]))
+all_rsvps = cached_table("meeting_rsvps")
+all_attendance = cached_table("meeting_attendance")
 today_iso = date.today().isoformat()
 
 # --- At-a-glance numbers -----------------------------------------------------
@@ -153,6 +156,7 @@ def render_meeting_card(m):
                         "meeting_id_code": edit_id_code.strip() or None,
                         "meeting_password": edit_password.strip() or None,
                     }).eq("meeting_id", m["meeting_id"]).execute()
+                    invalidate_cache()
                     st.session_state.meeting_message = ("success", f"Updated {edit_title.strip()}.")
                     st.session_state.editing_meeting_id = None
                 st.rerun()
@@ -180,6 +184,7 @@ def render_meeting_card(m):
                     "Delete", key=f"delete_meeting_{m['meeting_id']}", icon=":material/delete:"
                 ):
                     client.table("meetings").delete().eq("meeting_id", m["meeting_id"]).execute()
+                    invalidate_cache()
                     st.session_state.meeting_message = ("success", f"Deleted {m['title']}.")
                     st.rerun()
 
@@ -223,6 +228,7 @@ def render_meeting_card(m):
                     client.table("meeting_rsvps").delete().eq(
                         "meeting_id", m["meeting_id"]
                     ).eq("user_id", current_user_id).execute()
+                    invalidate_cache()
                     st.session_state.meeting_message = ("success", "RSVP withdrawn.")
                     st.rerun()
             else:
@@ -233,6 +239,7 @@ def render_meeting_card(m):
                     client.table("meeting_rsvps").insert({
                         "meeting_id": m["meeting_id"], "user_id": current_user_id,
                     }).execute()
+                    invalidate_cache()
                     st.session_state.meeting_message = ("success", "RSVP'd!")
                     st.rerun()
 
@@ -248,6 +255,7 @@ def render_meeting_card(m):
                         client.table("meeting_attendance").insert({
                             "meeting_id": m["meeting_id"], "user_id": current_user_id,
                         }).execute()
+                        invalidate_cache()
                         st.session_state.meeting_message = ("success", "Checked in!")
                         st.rerun()
 
@@ -277,6 +285,8 @@ def render_meeting_card(m):
                         client.table("meeting_attendance").delete().eq(
                             "meeting_id", m["meeting_id"]
                         ).eq("user_id", uid).execute()
+                    if newly_added or newly_removed:
+                        invalidate_cache()
                     st.session_state.meeting_message = ("success", "Attendance saved.")
                     st.rerun()
 

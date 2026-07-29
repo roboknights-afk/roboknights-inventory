@@ -14,7 +14,7 @@ from datetime import date
 import streamlit as st
 
 from e2c_import import scan_e2c_sheet
-from shared import get_client, send_email
+from shared import cached_table, get_client, invalidate_cache, send_email
 
 client = get_client()
 is_host = st.session_state.is_host
@@ -153,6 +153,7 @@ def render_add_competition():
                     }
                     for e in valid_events
                 ]).execute()
+                invalidate_cache()
 
                 st.session_state.competition_message = ("success", f"Added {name.strip()}.")
                 # Reset the form's lists back to one blank row each.
@@ -193,6 +194,9 @@ def _sync_competition_from_scan(client, comp):
             for l in comp["links"]
         ]).execute()
 
+    if payload or comp["links"]:
+        invalidate_cache()
+
 
 def _insert_matched_participants(client, event_id, teams, event_name, comp_name):
     # teams: list of team-rows, each a list of {"user_id", "name", "selected"}
@@ -202,10 +206,16 @@ def _insert_matched_participants(client, event_id, teams, event_name, comp_name)
     # Anyone newly added or promoted as selected gets the same "You're
     # selected" email the manual finalize flow sends — being confirmed on
     # the real sheet is no different from being finalized by the host.
+    #
+    # This read is deliberately NOT cached_table: it decides insert-vs-
+    # promote, so it needs the true current state, not up to 8s old (this
+    # function is also called repeatedly in a loop across many events in one
+    # sync, where stale data would risk a duplicate insert on the same event).
     existing = {
         v["user_id"]: v["selected"]
         for v in client.table("event_volunteers").select("user_id, selected").eq("event_id", event_id).execute().data
     }
+    changed = False
     for team_no, team in enumerate(teams, start=1):
         for p in team:
             if p["user_id"] in existing:
@@ -213,6 +223,7 @@ def _insert_matched_participants(client, event_id, teams, event_name, comp_name)
                     client.table("event_volunteers").update({"selected": True}).eq(
                         "event_id", event_id
                     ).eq("user_id", p["user_id"]).execute()
+                    changed = True
                     _send_selected_email(p["user_id"], event_name, comp_name)
                 continue
             client.table("event_volunteers").insert({
@@ -220,8 +231,11 @@ def _insert_matched_participants(client, event_id, teams, event_name, comp_name)
                 "team_no": team_no, "selected": p["selected"],
             }).execute()
             existing[p["user_id"]] = p["selected"]
+            changed = True
             if p["selected"]:
                 _send_selected_email(p["user_id"], event_name, comp_name)
+    if changed:
+        invalidate_cache()
 
 
 def _send_selected_email(user_id, event_name, comp_name):
@@ -460,6 +474,10 @@ def render_e2c_import():
                             _insert_matched_participants(
                                 client, new_event_id, fresh_event.get("teams", []), e["name"], data["name"]
                             )
+                        # _insert_matched_participants already invalidates when IT
+                        # changes something; this covers the competition/links/
+                        # events inserts just above, which it doesn't know about.
+                        invalidate_cache()
                         imported += 1
 
                     if errors:
@@ -610,6 +628,7 @@ def render_e2c_import():
                                             client, new_event_id, fresh_event.get("teams", []), e["name"], comp["name"]
                                         )
                                     if to_add:
+                                        invalidate_cache()  # covers the competition_events inserts above
                                         st.toast(
                                             f"Added {len(to_add)} event(s) to {comp['name']}.",
                                             icon=":material/check_circle:",
@@ -643,19 +662,27 @@ if st.session_state.volunteer_message:
 # Auto-flip: anything whose date has already passed and isn't marked past
 # yet gets marked past right now. No scheduled job needed for this one —
 # the page gets viewed often enough that a same-day flip is good enough,
-# unlike the reminder emails which genuinely need a fixed daily time.
-client.table("competitions").update({"is_past": True}).lt(
+# unlike the reminder emails which genuinely need a fixed daily time. This
+# runs on every single page load (not gated behind a button), so it only
+# invalidates the cache when it actually changed a row — otherwise every
+# ordinary visit would clear the cache for nothing and defeat the point.
+_flip_result = client.table("competitions").update({"is_past": True}).lt(
     "competition_date", date.today().isoformat()
 ).eq("is_past", False).execute()
+if _flip_result.data:
+    invalidate_cache()
 
-competitions = client.table("competitions").select("*").order("competition_date").execute().data
+competitions = sorted(
+    cached_table("competitions"),
+    key=lambda c: (c.get("competition_date") or "9999-99-99", c["competition_id"]),
+)
 # Whether anything exists at all, as opposed to "nothing matched the search" —
 # they need different empty messages.
 competitions_exist = bool(competitions)
 
-all_links = client.table("competition_links").select("*").execute().data
-all_events = client.table("competition_events").select("*").execute().data
-all_volunteers = client.table("event_volunteers").select("*").execute().data
+all_links = cached_table("competition_links")
+all_events = cached_table("competition_events")
+all_volunteers = cached_table("event_volunteers")
 
 # --- At-a-glance numbers -----------------------------------------------------
 # Counted before the search filter, so the totals don't shift while you type.
@@ -842,6 +869,7 @@ def render_competition_card(comp):
                                 "event_id", e["event_id"]
                             ).execute()
 
+                    invalidate_cache()
                     st.session_state.competition_message = ("success", f"Updated {edit_name.strip()}.")
                     st.session_state.editing_competition_id = None
                     st.rerun()
@@ -852,9 +880,8 @@ def render_competition_card(comp):
         else:
             # --- Read-only view (everyone) ------------------------------
             if is_host and st.session_state.deleting_competition_id == cid:
-                achievement_count = len(
-                    client.table("achievements").select("achievement_id")
-                    .eq("competition_id", cid).execute().data
+                achievement_count = sum(
+                    1 for a in cached_table("achievements") if a["competition_id"] == cid
                 )
                 st.warning(
                     f"Delete **{comp['name']}**? This also deletes its {len(events)} event(s), "
@@ -867,6 +894,7 @@ def render_competition_card(comp):
                     icon=":material/delete_forever:", type="primary",
                 ):
                     client.table("competitions").delete().eq("competition_id", cid).execute()
+                    invalidate_cache()
                     st.session_state.deleting_competition_id = None
                     st.session_state.competition_message = ("success", f"Deleted {comp['name']}.")
                     st.rerun()
@@ -886,6 +914,7 @@ def render_competition_card(comp):
                         client.table("competitions").update({"not_attending": False}).eq(
                             "competition_id", cid
                         ).execute()
+                        invalidate_cache()
                         st.rerun()
                 else:
                     if going_col.button(
@@ -895,6 +924,7 @@ def render_competition_card(comp):
                         client.table("competitions").update({"not_attending": True}).eq(
                             "competition_id", cid
                         ).execute()
+                        invalidate_cache()
                         st.rerun()
                 if comp.get("is_past"):
                     if past_col.button(
@@ -904,6 +934,7 @@ def render_competition_card(comp):
                         client.table("competitions").update({"is_past": False}).eq(
                             "competition_id", cid
                         ).execute()
+                        invalidate_cache()
                         st.rerun()
                 else:
                     if past_col.button(
@@ -913,6 +944,7 @@ def render_competition_card(comp):
                         client.table("competitions").update({"is_past": True}).eq(
                             "competition_id", cid
                         ).execute()
+                        invalidate_cache()
                         st.rerun()
                 if delete_col.button(
                     "Delete", key=f"delete_comp_{cid}", icon=":material/delete:",
@@ -1058,6 +1090,7 @@ def render_competition_card(comp):
                                     client.table("event_volunteers").delete().eq(
                                         "event_id", e["event_id"]
                                     ).eq("user_id", current_user_id).execute()
+                                    invalidate_cache()
                                     st.session_state.volunteer_message = f"Withdrew from {e['name']}."
                                     st.rerun()
                             else:
@@ -1071,6 +1104,7 @@ def render_competition_card(comp):
                                         "event_id": e["event_id"],
                                         "user_id": current_user_id,
                                     }).execute()
+                                    invalidate_cache()
                                     st.session_state.volunteer_message = f"You volunteered for {e['name']}!"
                                     st.rerun()
 
@@ -1113,6 +1147,8 @@ def render_competition_card(comp):
                                         "event_id", e["event_id"]
                                     ).eq("user_id", uid).execute()
 
+                                if newly_selected or newly_deselected:
+                                    invalidate_cache()
                                 st.session_state.volunteer_message = f"Saved selection for {e['name']}."
                                 st.rerun()
 
@@ -1163,6 +1199,7 @@ def render_competition_card(comp):
                                         else:
                                             update_query = update_query.eq("user_id", current_user_id)
                                         update_query.execute()
+                                        invalidate_cache()
                                         st.session_state.volunteer_message = "Bot status updated."
                                         st.rerun()
 

@@ -4,7 +4,7 @@
 
 import streamlit as st
 
-from shared import format_ist, get_client, send_email
+from shared import cached_table, format_ist, get_client, invalidate_cache, send_email
 
 client = get_client()
 is_host = st.session_state.is_host
@@ -27,6 +27,7 @@ if is_host:
                     "subject": announcement_subject.strip(),
                     "body": announcement_body.strip(),
                 }).execute()
+                invalidate_cache()
 
                 all_emails = [email for email in user_email_by_id.values() if email]
                 for email in all_emails:
@@ -47,9 +48,9 @@ if st.session_state.announcement_message:
         st.error(text)
     st.session_state.announcement_message = None
 
-announcements = (
-    client.table("announcements").select("*").order("created_at", desc=True).limit(20).execute().data
-)
+announcements = sorted(
+    cached_table("announcements"), key=lambda a: a["created_at"], reverse=True
+)[:20]
 if not announcements:
     st.caption("No announcements yet.")
 else:
@@ -66,6 +67,7 @@ else:
                     "Delete", key=f"delete_announcement_{a['announcement_id']}", icon=":material/delete:"
                 ):
                     client.table("announcements").delete().eq("announcement_id", a["announcement_id"]).execute()
+                    invalidate_cache()
                     st.session_state.announcement_message = ("success", f"Deleted \"{a['subject']}\".")
                     st.rerun()
 

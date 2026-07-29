@@ -4,7 +4,7 @@ from pathlib import Path
 import streamlit as st
 from dotenv import load_dotenv
 
-from shared import HOST_EMAILS, get_client
+from shared import HOST_EMAILS, cached_table, get_client, invalidate_cache
 
 # Secrets (the Supabase URL and key) live in a local .env file, not in this
 # file, so they never get accidentally shared or committed.
@@ -343,6 +343,7 @@ def show_login_signup(client):
                                     "admission_no": admission_no.strip(),
                                     "phone_no": phone_no.strip(),
                                 }).execute()
+                                invalidate_cache()
 
                                 try:
                                     # Only succeeds right away if "Confirm email" is
@@ -483,7 +484,12 @@ if st.session_state.pop("just_signed_up", False):
 # Supabase Auth session, not a guess. Computed once here (not per-page) and
 # stashed in session_state, since each page in app_pages/ runs as its own
 # script and can't see plain local variables from this file.
-users = client.table("users").select("user_id, name, email, grade").order("name").execute().data
+#
+# This runs on EVERY page load across the whole app (app.py re-executes
+# before routing to whichever page is open), so this is the single highest-
+# value read to cache — cached_table means most clicks anywhere in the app
+# read this from memory instead of a fresh Supabase round trip.
+users = sorted(cached_table("users"), key=lambda u: u["name"])
 st.session_state.user_name_by_id = {u["user_id"]: u["name"] for u in users}
 st.session_state.user_email_by_id = {u["user_id"]: u["email"] for u in users}
 st.session_state.user_grade_by_id = {u["user_id"]: u.get("grade") for u in users}

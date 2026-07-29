@@ -11,7 +11,7 @@
 
 import streamlit as st
 
-from shared import get_client
+from shared import cached_table, get_client, invalidate_cache
 
 client = get_client()
 is_host = st.session_state.is_host
@@ -31,10 +31,10 @@ if st.session_state.achievement_message:
 # Pick a competition, then an event under it — same two-level structure as
 # browsing on the Competitions page.
 
-competitions = client.table("competitions").select("competition_id, name").order("name").execute().data
+competitions = sorted(cached_table("competitions"), key=lambda c: (c["name"], c["competition_id"]))
 
 # --- At-a-glance numbers -----------------------------------------------------
-all_achievements = client.table("achievements").select("*").execute().data
+all_achievements = cached_table("achievements")
 my_achievement_count = sum(1 for a in all_achievements if a["user_id"] == current_user_id)
 
 m1, m2, m3 = st.columns(3)
@@ -62,13 +62,9 @@ with tab_add:
             key="new_achievement_comp",
         )
 
-        events = (
-            client.table("competition_events")
-            .select("event_id, name")
-            .eq("competition_id", chosen_comp_id)
-            .order("name")
-            .execute()
-            .data
+        events = sorted(
+            (e for e in cached_table("competition_events") if e["competition_id"] == chosen_comp_id),
+            key=lambda e: (e["name"], e["event_id"]),
         )
         if not events:
             st.caption("This competition has no events yet.")
@@ -107,6 +103,10 @@ with tab_add:
                 # reporting a team result doesn't mean everyone has to
                 # separately do the same thing. Nothing to do if this
                 # person isn't grouped into a team at all yet.
+                #
+                # These reads are deliberately NOT cached_table: they decide
+                # who to skip as already-logged, so they need the true
+                # current state rather than up to 8s old.
                 my_row = (
                     client.table("event_volunteers")
                     .select("team_no")
@@ -145,6 +145,7 @@ with tab_add:
                         }).execute()
                         auto_logged += 1
 
+                invalidate_cache()
                 msg = "Achievement added!"
                 if auto_logged:
                     msg += f" Also logged for {auto_logged} teammate(s)."
@@ -157,7 +158,7 @@ with tab_add:
 
     st.subheader(":material/emoji_events: All achievements")
 
-    achievements = client.table("achievements").select("*").order("created_at", desc=True).execute().data
+    achievements = sorted(all_achievements, key=lambda a: a["created_at"], reverse=True)
 
     achievement_search = st.text_input(
         "Search achievements",
@@ -170,8 +171,7 @@ with tab_add:
     if not achievements:
         st.caption("No achievements logged yet.")
     else:
-        all_events = client.table("competition_events").select("event_id, name").execute().data
-        event_name_by_id_all = {e["event_id"]: e["name"] for e in all_events}
+        event_name_by_id_all = {e["event_id"]: e["name"] for e in cached_table("competition_events")}
         comp_name_by_id_all = {c["competition_id"]: c["name"] for c in competitions}
 
         # Teammates (same team_no on the same event, from the E2C import) get
@@ -180,8 +180,7 @@ with tab_add:
         # Anyone without a team_no (a manually-added competition, or before
         # Chunk 3) just gets their own card, same as before.
         team_no_by_event_user = {
-            (v["event_id"], v["user_id"]): v["team_no"]
-            for v in client.table("event_volunteers").select("event_id, user_id, team_no").execute().data
+            (v["event_id"], v["user_id"]): v["team_no"] for v in cached_table("event_volunteers")
         }
 
         groups = {}
@@ -229,5 +228,6 @@ with tab_add:
                     if col2.button("Delete", key=f"delete_achievement_{first['achievement_id']}", icon=":material/delete:"):
                         for a in group:
                             client.table("achievements").delete().eq("achievement_id", a["achievement_id"]).execute()
+                        invalidate_cache()
                         st.session_state.achievement_message = "Deleted."
                         st.rerun()

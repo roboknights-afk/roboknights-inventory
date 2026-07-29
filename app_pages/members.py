@@ -5,7 +5,7 @@
 
 import streamlit as st
 
-from shared import get_client
+from shared import cached_table, get_client, invalidate_cache
 
 is_host = st.session_state.is_host
 
@@ -24,13 +24,11 @@ if st.session_state.member_edit_message:
     st.toast(st.session_state.member_edit_message, icon=":material/check_circle:")
     st.session_state.member_edit_message = None
 
-users = (
-    client.table("users")
-    .select("user_id, name, email, grade, section, admission_no, phone_no")
-    .order("name")
-    .execute()
-    .data
-)
+# Sorted by name with user_id as a tiebreak — two members can share a name
+# (there are duplicates in the real data), and without a deterministic
+# secondary key which one shows first would be an unreliable storage-order
+# artifact rather than something predictable.
+users = sorted(cached_table("users"), key=lambda u: (u["name"], u["user_id"]))
 
 # --- At-a-glance numbers -----------------------------------------------------
 GRADE_OPTIONS = [7, 8, 9, 10, 11, 12]
@@ -150,6 +148,8 @@ else:
                 client.table("users").update(updates).eq("user_id", original["user_id"]).execute()
                 changed += 1
 
+        if changed:
+            invalidate_cache()
         st.session_state.member_edit_message = (
             f"Updated {changed} member(s)." if changed else "No changes to save."
         )

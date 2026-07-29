@@ -11,7 +11,10 @@ from urllib.parse import quote
 
 import streamlit as st
 
-from shared import APP_URL, HOST_EMAILS, WHATSAPP_HELP_NUMBER, format_ist, get_client, send_email
+from shared import (
+    APP_URL, HOST_EMAILS, WHATSAPP_HELP_NUMBER, cached_table, format_ist, get_client,
+    invalidate_cache, send_email,
+)
 
 client = get_client()
 is_host = st.session_state.is_host
@@ -60,6 +63,7 @@ def render_thread(query_id, all_messages, notify_email=None):
                         "body": edited_body.strip(),
                         "edited_at": datetime.now().isoformat(),
                     }).eq("message_id", msg["message_id"]).execute()
+                    invalidate_cache()
                     st.session_state.editing_message_id = None
                     st.rerun()
                 if cancel_col.button("Cancel", key=f"cancel_msg_{msg['message_id']}", icon=":material/close:"):
@@ -89,6 +93,7 @@ def render_thread(query_id, all_messages, notify_email=None):
             "sender_id": current_user_id,
             "body": reply_text.strip(),
         }).execute()
+        invalidate_cache()
 
         if notify_email:
             send_email(
@@ -107,8 +112,10 @@ if is_host:
     # --- Host view: every thread from every student ---------------------
     st.caption("Only you can see who asked what — students only see their own threads.")
 
-    all_queries = client.table("queries").select("*").order("created_at", desc=True).execute().data
-    all_messages = client.table("query_messages").select("*").order("created_at").execute().data
+    all_queries = sorted(
+        cached_table("queries"), key=lambda q: q["created_at"], reverse=True
+    )
+    all_messages = sorted(cached_table("query_messages"), key=lambda m: m["created_at"])
 
     if not all_queries:
         st.caption("No queries yet.")
@@ -144,6 +151,7 @@ else:
                     "sender_id": current_user_id,
                     "body": new_question.strip(),
                 }).execute()
+                invalidate_cache()
 
                 host_emails = [
                     email for uid, email in user_email_by_id.items()
@@ -162,25 +170,17 @@ else:
                 st.rerun()
 
     st.subheader(":material/list_alt: Your questions")
-    my_queries = (
-        client.table("queries")
-        .select("*")
-        .eq("student_id", current_user_id)
-        .order("created_at", desc=True)
-        .execute()
-        .data
+    my_queries = sorted(
+        (q for q in cached_table("queries") if q["student_id"] == current_user_id),
+        key=lambda q: q["created_at"], reverse=True,
     )
     if not my_queries:
         st.caption("You haven't asked anything yet.")
     else:
-        my_query_ids = [q["query_id"] for q in my_queries]
-        all_messages = (
-            client.table("query_messages")
-            .select("*")
-            .in_("query_id", my_query_ids)
-            .order("created_at")
-            .execute()
-            .data
+        my_query_ids = {q["query_id"] for q in my_queries}
+        all_messages = sorted(
+            (m for m in cached_table("query_messages") if m["query_id"] in my_query_ids),
+            key=lambda m: m["created_at"],
         )
         for q in my_queries:
             first_message = next(

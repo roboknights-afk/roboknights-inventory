@@ -15,7 +15,7 @@ from datetime import date, timedelta
 
 import streamlit as st
 
-from shared import APP_URL, get_client, send_email
+from shared import APP_URL, cached_table, get_client, invalidate_cache, send_email
 
 client = get_client()
 current_user_id = st.session_state.current_user_id
@@ -58,18 +58,23 @@ if st.session_state.part_edited_message:
     st.toast(st.session_state.part_edited_message, icon=":material/edit:")
     st.session_state.part_edited_message = None
 
-parts = client.table("parts").select("*").order("part_number").execute().data
+# Every read on this page goes through the shared 8-second cache, and
+# "requests" specifically was being fetched 4 separate times with different
+# filters right here alone — one fetch + Python filtering replaces all of
+# them. select("*") (not naming the quantity column) so this still works on
+# a database where the bulk columns haven't been added yet — a missing
+# column then just reads as "1 unit" instead of failing the whole page load.
+parts = sorted(cached_table("parts"), key=lambda p: p["part_number"])
 part_by_id = {p["part_id"]: p for p in parts}
+all_requests = cached_table("requests")
+approved_requests = [r for r in all_requests if r["status"] == "approved"]
 
 # For bulk items, how many are currently out on loan — derived from the
 # outstanding approved requests rather than stored on the part, so the count
 # can't drift out of sync with reality. Everyone needs this (it's what makes
 # "12 of 50 available" true), so it isn't filtered to my own parts.
-# select("*") rather than naming the quantity column, so this still works on
-# a database where the bulk columns haven't been added yet — a missing column
-# then just reads as "1 unit" instead of failing the whole page load.
 on_loan_qty_by_part_id = {}
-for r in client.table("requests").select("*").eq("status", "approved").execute().data:
+for r in approved_requests:
     on_loan_qty_by_part_id[r["part_id"]] = (
         on_loan_qty_by_part_id.get(r["part_id"], 0) + (r.get("quantity") or 1)
     )
@@ -85,32 +90,18 @@ def bulk_available(part):
 # request per part, since the Request button already disappears once a
 # part is on loan.
 if is_host:
-    active_loan_by_part_id = {
-        r["part_id"]: r
-        for r in client.table("requests").select("*").eq("status", "approved").execute().data
-    }
+    active_loan_by_part_id = {r["part_id"]: r for r in approved_requests}
 else:
     active_loan_by_part_id = {
-        r["part_id"]: r
-        for r in client.table("requests")
-        .select("*")
-        .eq("owner_id", current_user_id)
-        .eq("status", "approved")
-        .execute()
-        .data
+        r["part_id"]: r for r in approved_requests if r["owner_id"] == current_user_id
     }
 
 # Fetched here (not inside the tab where it's displayed) so the metric row
 # can show the pending count. Only the pending ones — approved and rejected
 # requests don't need action anymore.
-my_requests = (
-    client.table("requests")
-    .select("*")
-    .eq("owner_id", current_user_id)
-    .eq("status", "pending")
-    .order("request_id")
-    .execute()
-    .data
+my_requests = sorted(
+    (r for r in all_requests if r["owner_id"] == current_user_id and r["status"] == "pending"),
+    key=lambda r: r["request_id"],
 )
 
 # --- At-a-glance numbers -----------------------------------------------------
@@ -303,6 +294,7 @@ with tab_parts:
                         }
                         for u in chosen
                     ]).execute()
+                    invalidate_cache()
                     serial_list = ", ".join(u["part_number"] for u in chosen)
                     send_email(
                         user_email_by_id.get(group_owner_id),
@@ -363,6 +355,7 @@ with tab_parts:
                                 client.table("requests").update({"status": "returned"}).eq(
                                     "part_id", part["part_id"]
                                 ).eq("status", "approved").execute()
+                                invalidate_cache()
                                 st.session_state.returned_message = (
                                     f"Marked {part['part_number']} as returned — it's available again."
                                 )
@@ -381,6 +374,7 @@ with tab_parts:
                                 # isn't in our inventory anymore," so nor is its history.
                                 client.table("requests").delete().eq("part_id", part["part_id"]).execute()
                                 client.table("parts").delete().eq("part_id", part["part_id"]).execute()
+                                invalidate_cache()
                                 st.session_state.deleted_part_message = (
                                     f"Deleted {part['part_number']} — {part['name']}."
                                 )
@@ -428,6 +422,7 @@ with tab_parts:
                                         client.table("requests").update({"status": "returned"}).eq(
                                             "part_id", part["part_id"]
                                         ).eq("status", "approved").execute()
+                                    invalidate_cache()
                                     st.session_state.part_edited_message = f"Updated {part['part_number']}."
                                     st.session_state.editing_part_id = None
                                     st.rerun()
@@ -491,6 +486,7 @@ with tab_parts:
                         "requested_days": days_wanted,
                         "quantity": qty_wanted,
                     }).execute()
+                    invalidate_cache()
                     send_email(
                         user_email_by_id.get(part["owner_id"]),
                         f"New request for {qty_wanted} × {part['name']}",
@@ -508,8 +504,7 @@ with tab_parts:
             # Who's holding what, for the owner and hosts.
             if is_mine or is_host:
                 out_loans = [
-                    r for r in client.table("requests").select("*")
-                    .eq("part_id", part["part_id"]).eq("status", "approved").execute().data
+                    r for r in approved_requests if r["part_id"] == part["part_id"]
                 ]
                 for loan in out_loans:
                     borrower = user_name_by_id.get(loan["requester_id"], "Unknown")
@@ -529,6 +524,7 @@ with tab_parts:
                         client.table("parts").update({"quantity": new_total}).eq(
                             "part_id", part["part_id"]
                         ).execute()
+                        invalidate_cache()
                         st.session_state.part_edited_message = (
                             f"{part['name']} now shows {new_total} in stock."
                         )
@@ -541,6 +537,7 @@ with tab_parts:
                         ):
                             client.table("requests").delete().eq("part_id", part["part_id"]).execute()
                             client.table("parts").delete().eq("part_id", part["part_id"]).execute()
+                            invalidate_cache()
                             st.session_state.deleted_part_message = f"Deleted {part['name']}."
                             st.rerun()
                     else:
@@ -653,6 +650,7 @@ with tab_loans:
                             client.table("parts").update({"status": "on loan"}).eq(
                                 "part_id", r["part_id"]
                             ).execute()
+                    invalidate_cache()
                     send_email(
                         user_email_by_id.get(first["requester_id"]),
                         f"Request approved: {unit_count} × {part_name}",
@@ -680,6 +678,7 @@ with tab_loans:
                         client.table("requests").update({"status": "rejected"}).eq(
                             "request_id", r["request_id"]
                         ).execute()
+                    invalidate_cache()
                     send_email(
                         user_email_by_id.get(first["requester_id"]),
                         f"Request rejected: {unit_count} × {part_name}",
@@ -695,14 +694,9 @@ with tab_loans:
 
     st.subheader(":material/logout: Parts I've lent out")
 
-    lent_out = (
-        client.table("requests")
-        .select("*")
-        .eq("owner_id", current_user_id)
-        .eq("status", "approved")
-        .order("due_date")
-        .execute()
-        .data
+    lent_out = sorted(
+        (r for r in approved_requests if r["owner_id"] == current_user_id),
+        key=lambda r: (r.get("due_date") or "9999-99-99", r["request_id"]),
     )
 
     if not lent_out:
@@ -734,6 +728,7 @@ with tab_loans:
                             client.table("requests").update({"status": "returned"}).eq(
                                 "request_id", r["request_id"]
                             ).execute()
+                        invalidate_cache()
                         st.session_state.returned_message = (
                             f"{unit_count} × {group_parts[0]['name']} returned — back in stock."
                         )
@@ -742,14 +737,9 @@ with tab_loans:
 
     st.subheader(":material/login: What I've borrowed")
 
-    borrowed = (
-        client.table("requests")
-        .select("*")
-        .eq("requester_id", current_user_id)
-        .eq("status", "approved")
-        .order("due_date")
-        .execute()
-        .data
+    borrowed = sorted(
+        (r for r in approved_requests if r["requester_id"] == current_user_id),
+        key=lambda r: (r.get("due_date") or "9999-99-99", r["request_id"]),
     )
 
     if not borrowed:
@@ -812,6 +802,13 @@ with tab_manage:
                 # deleted parts get recycled. Existing parts never get renumbered
                 # (their serial may be written on the physical part, or quoted in
                 # old emails — it has to stay stable).
+                #
+                # Deliberately NOT cached_table here, unlike everywhere else on
+                # this page: two people adding parts within the same cache
+                # window could otherwise both read the same "next free number"
+                # and collide on one serial. A fresh, uncached read every time
+                # is worth the one extra query for something used to generate
+                # a supposedly-unique id.
                 used_numbers = {
                     int(p["part_number"][3:])
                     for p in client.table("parts").select("part_number").execute().data
@@ -836,6 +833,7 @@ with tab_manage:
                     }
                     for serial in serials
                 ]).execute()
+                invalidate_cache()
 
                 if new_part_is_bulk:
                     st.session_state.part_added_message = (

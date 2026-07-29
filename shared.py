@@ -42,6 +42,36 @@ def get_client():
     return create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
 
 
+# Every page was re-fetching whole tables from Supabase on every single
+# click (Streamlit reruns the entire script per interaction), often the
+# same table several times over with different filters — 35 round trips on
+# one Competitions render, measured directly. This is what actually made
+# the app feel slow, not Streamlit itself.
+#
+# Fix: fetch a whole table ONCE per short window (ttl below) and filter it
+# in Python instead — the same pattern several pages already used for their
+# own "all_events"/"all_volunteers" style lookups, just applied everywhere
+# and cached. A short ttl (not "forever") means even if a write forgets to
+# invalidate, the page self-corrects within a few seconds rather than
+# staying wrong indefinitely.
+CACHE_TTL = 8  # seconds
+
+
+@st.cache_data(ttl=CACHE_TTL)
+def cached_table(table_name):
+    return get_client().table(table_name).select("*").execute().data
+
+
+def invalidate_cache():
+    # Called right after any insert/update/delete, so YOUR OWN action shows
+    # up immediately on the rerun that follows — never waiting out the ttl
+    # for your own change. Clears every table's cache, not just the one
+    # just written to, since most actions touch more than one table anyway
+    # (e.g. approving a request updates both requests and parts) and a
+    # blanket clear can't miss one by mistake.
+    cached_table.clear()
+
+
 IST = timezone(timedelta(hours=5, minutes=30))
 
 
