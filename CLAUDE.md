@@ -413,11 +413,28 @@ scoped and prioritized with that deadline in mind. Agreed build order:
 (1) private student queries, (2) meeting scheduler, (3) WhatsApp "help me"
 link, (4) induction task tracker. Two ideas were discussed and explicitly
 NOT built:
-- **WhatsApp automated notifications** — stays out of scope (already was,
-  per "Explicitly NOT in v1" below). Discussed real numbers: per-message
-  cost in India is actually cheap (roughly ₹0.10–₹1/message), but DLT
-  registration requires a registered business entity (GST/company), which
-  a school club doesn't have — that's the real blocker, not price.
+- **WhatsApp automated notifications** — originally scoped out on
+  2026-07-13 for needing "DLT registration," but that conflated WhatsApp
+  with the SMS-specific TRAI/DLT rule; WhatsApp doesn't need DLT at all.
+  Re-researched 2026-07-31, and the real picture is much more workable:
+  Meta's WhatsApp Cloud API is free to use directly at an unverified tier
+  (up to 1,000 conversations/day — far more than this club needs), with
+  NO GST/company registration required at that tier. Formal Business
+  Verification (which accepts GST OR alternatives like a trust/Udyam
+  certificate — a school-affiliated trust's own docs could work) is only
+  needed to raise the daily cap higher, not to send messages at all. The
+  real remaining requirements: (1) a phone number that's never been used
+  for a personal/regular WhatsApp account — needs its own dedicated
+  number; (2) every outbound template (e.g. "your part is due tomorrow")
+  needs a one-time Meta approval before it can be sent automatically; (3)
+  a genuinely proactive message (nobody messaged the club first) is
+  billed per conversation outside an open 24h window, though rates are
+  low (~₹0.10–₹1). Student wants this built AFTER Mr. Ajith Kumar's
+  teacher/host account is set up — not started yet. Next concrete step
+  when picked back up: get a dedicated number, then decide between
+  calling Meta's Cloud API directly (free, more setup work) or a managed
+  layer like AiSensy's free tier (easier template/dashboard management,
+  same underlying Meta requirements underneath).
 - **Razorpay for merch payments** — deferred. Real payment gateways need
   KYC tied to an adult-owned bank account; the student is a minor and
   can't open that account himself. Recommended a free, no-registration
@@ -590,8 +607,11 @@ garbage rows getting imported.
 
 ## Explicitly NOT in v1
 
-No SMS/WhatsApp (India needs DLT registration / paid business API), no
-PDF-to-spreadsheet feature.
+No PDF-to-spreadsheet feature. (WhatsApp notifications used to be listed
+here too, ruled out over a DLT-registration concern that turned out not to
+actually apply to WhatsApp — see the corrected research note in the
+Post-Competitions feature ideas section above. It's a planned, deferred
+feature now, not ruled out.)
 
 ## How to work with this student — most important part
 
