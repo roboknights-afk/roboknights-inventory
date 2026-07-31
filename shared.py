@@ -4,10 +4,12 @@
 # the whole login screen, so shared code lives here instead.
 
 import os
+import re
 import smtplib
 from datetime import datetime, timedelta, timezone
 from email.mime.text import MIMEText
 
+import requests
 import streamlit as st
 from supabase import create_client
 
@@ -100,5 +102,65 @@ def send_email(to_email, subject, body):
             server.starttls()
             server.login(os.environ["SMTP_USERNAME"], os.environ["SMTP_PASSWORD"])
             server.send_message(msg)
+    except Exception:
+        pass
+
+
+WHATSAPP_API_VERSION = "v22.0"
+
+
+def _normalize_india_phone(raw):
+    # Members typed a plain 10-digit local number at signup, not the
+    # country-code'd format WhatsApp's API needs (e.g. "9876543210" ->
+    # "919876543210"). Handles the common variants people actually type
+    # (with a leading 0, spaces/dashes, or already having "91"/"+91").
+    digits = re.sub(r"\D", "", raw or "")
+    if not digits:
+        return None
+    if digits.startswith("91") and len(digits) == 12:
+        return digits
+    if digits.startswith("0") and len(digits) == 11:
+        digits = digits[1:]
+    if len(digits) == 10:
+        return "91" + digits
+    return None  # not a recognizable Indian mobile number — don't guess
+
+
+def send_whatsapp(to_phone, template_name, params=None, language_code="en_US"):
+    # WhatsApp Cloud API, template-based (the only kind Meta allows for a
+    # message the business sends first, rather than a reply). Silently does
+    # nothing — same best-effort spirit as send_email — if the WhatsApp
+    # credentials aren't set up yet (still a manual, human-only step in
+    # Meta's own console; see CLAUDE.md) or the recipient has no usable
+    # phone number on file, so this can be wired in everywhere before the
+    # Meta side is finished without breaking anything.
+    phone_number_id = os.environ.get("WHATSAPP_PHONE_NUMBER_ID")
+    access_token = os.environ.get("WHATSAPP_ACCESS_TOKEN")
+    if not phone_number_id or not access_token:
+        return
+
+    to = _normalize_india_phone(to_phone)
+    if not to:
+        return
+
+    payload = {
+        "messaging_product": "whatsapp",
+        "recipient_type": "individual",
+        "to": to,
+        "type": "template",
+        "template": {"name": template_name, "language": {"code": language_code}},
+    }
+    if params:
+        payload["template"]["components"] = [
+            {"type": "body", "parameters": [{"type": "text", "text": str(p)} for p in params]}
+        ]
+
+    try:
+        requests.post(
+            f"https://graph.facebook.com/{WHATSAPP_API_VERSION}/{phone_number_id}/messages",
+            headers={"Authorization": f"Bearer {access_token}"},
+            json=payload,
+            timeout=10,
+        )
     except Exception:
         pass

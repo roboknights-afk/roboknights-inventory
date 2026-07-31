@@ -9,10 +9,12 @@
 # (needs the same .env file app.py uses).
 
 import os
+import re
 import smtplib
 from datetime import date, timedelta
 from email.mime.text import MIMEText
 
+import requests
 from dotenv import load_dotenv
 from supabase import create_client
 
@@ -33,6 +35,65 @@ def send_email(to_email, subject, body):
         server.send_message(msg)
 
 
+WHATSAPP_API_VERSION = "v22.0"
+
+
+def _normalize_india_phone(raw):
+    # Members typed a plain 10-digit local number at signup, not the
+    # country-code'd format WhatsApp's API needs — see the matching
+    # helper (and why) in shared.py, duplicated here since this cron
+    # script deliberately doesn't import shared.py (no Streamlit
+    # dependency needed for a scheduled job).
+    digits = re.sub(r"\D", "", raw or "")
+    if not digits:
+        return None
+    if digits.startswith("91") and len(digits) == 12:
+        return digits
+    if digits.startswith("0") and len(digits) == 11:
+        digits = digits[1:]
+    if len(digits) == 10:
+        return "91" + digits
+    return None
+
+
+def send_whatsapp(to_phone, template_name, params=None, language_code="en_US"):
+    # Best-effort, same spirit as send_email above not being allowed to
+    # take down the whole run — except this ALSO no-ops quietly whenever
+    # the WhatsApp credentials simply aren't set up yet (a manual step in
+    # Meta's console; see CLAUDE.md), so this can be wired in now and just
+    # starts working the day those two secrets are added.
+    phone_number_id = os.environ.get("WHATSAPP_PHONE_NUMBER_ID")
+    access_token = os.environ.get("WHATSAPP_ACCESS_TOKEN")
+    if not phone_number_id or not access_token:
+        return
+
+    to = _normalize_india_phone(to_phone)
+    if not to:
+        return
+
+    payload = {
+        "messaging_product": "whatsapp",
+        "recipient_type": "individual",
+        "to": to,
+        "type": "template",
+        "template": {"name": template_name, "language": {"code": language_code}},
+    }
+    if params:
+        payload["template"]["components"] = [
+            {"type": "body", "parameters": [{"type": "text", "text": str(p)} for p in params]}
+        ]
+
+    try:
+        requests.post(
+            f"https://graph.facebook.com/{WHATSAPP_API_VERSION}/{phone_number_id}/messages",
+            headers={"Authorization": f"Bearer {access_token}"},
+            json=payload,
+            timeout=10,
+        )
+    except Exception:
+        pass
+
+
 def send_reminders_for(days_before, sent_column):
     # e.g. days_before=2 finds every loan due exactly 2 days from today
     # that hasn't had its 2-day reminder sent yet.
@@ -51,7 +112,10 @@ def send_reminders_for(days_before, sent_column):
         print(f"No {days_before}-day reminders to send.")
         return
 
-    users = {u["user_id"]: u for u in client.table("users").select("user_id, name, email").execute().data}
+    users = {
+        u["user_id"]: u
+        for u in client.table("users").select("user_id, name, email, phone_no").execute().data
+    }
     parts = {p["part_id"]: p for p in client.table("parts").select("part_id, part_number, name").execute().data}
 
     for req in due_requests:
@@ -65,6 +129,14 @@ def send_reminders_for(days_before, sent_column):
             f"Reminder: {part['part_number']} due back in {days_before} day(s)",
             f"Just a reminder — {part['part_number']} ({part['name']}) is due back "
             f"in {days_before} day(s), on {req['due_date']}.",
+        )
+        # First WhatsApp template — see CLAUDE.md for the exact wording to
+        # submit for approval in Meta's console: "part_due_reminder",
+        # Utility category, body "Reminder: {{1}} is due back in {{2}}
+        # day(s), on {{3}}." No-ops until WHATSAPP_* secrets exist.
+        send_whatsapp(
+            requester.get("phone_no"), "part_due_reminder",
+            [f"{part['part_number']} ({part['name']})", days_before, req["due_date"]],
         )
         client.table("requests").update({sent_column: True}).eq("request_id", req["request_id"]).execute()
         print(f"Sent {days_before}-day reminder for request {req['request_id']} ({part['part_number']})")

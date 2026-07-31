@@ -447,12 +447,51 @@ NOT built:
   wiring into the existing reminder scripts — against a handful of
   manually-added test recipients. Switch to a real dedicated number (once
   one becomes available) only when going live to the full member list;
-  that swap is just a number-registration step, not a rebuild. Next
-  concrete step whenever this is picked back up: create the free Meta
-  developer app + test WABA, decide between calling the Cloud API
-  directly (free, more setup work) or a managed layer like AiSensy's free
-  tier (easier template/dashboard management, same Meta requirements
-  underneath either way).
+  that swap is just a number-registration step, not a rebuild.
+
+  Code side built 2026-07-31 (student said "do it"): `send_whatsapp()` in
+  shared.py (Cloud API POST to `/{phone_number_id}/messages`, template-
+  based since Meta requires an approved template for any business-
+  initiated message) plus a duplicate copy in send_due_reminders.py,
+  matching how it already duplicates send_email instead of importing
+  shared.py (keeps the cron script Streamlit-free). Both silently no-op
+  if `WHATSAPP_PHONE_NUMBER_ID`/`WHATSAPP_ACCESS_TOKEN` aren't set yet —
+  safe to leave wired in while the Meta side doesn't exist. Wired into
+  exactly ONE flow as the first proof of concept: the existing 2-day/
+  1-day due-date reminder in send_due_reminders.py, right after its
+  send_email call. Phone numbers normalize a plain 10-digit signup number
+  to the "91XXXXXXXXXX" format the API needs (`_normalize_india_phone`).
+  `WHATSAPP_PHONE_NUMBER_ID`/`WHATSAPP_ACCESS_TOKEN` added to DEPLOY.md's
+  secrets template, marked optional.
+
+  What still needs the student's own hands (I can't do these — they
+  require logging into a real Meta/Facebook account, which is account
+  creation + third-party ToS acceptance, both outside what I can do on
+  someone's behalf):
+  1. Go to developers.facebook.com, create a free Meta developer account
+     + a new App (type: Business).
+  2. Add the "WhatsApp" product to that app — this auto-creates a free
+     test WABA + test phone number, no SIM needed.
+  3. In the API Setup panel, add your own phone number as a verified test
+     recipient (up to 5, enter the code WhatsApp sends you).
+  4. Copy the test **Phone number ID** and a **temporary access token**
+     (24h; a permanent one needs a System User, a later step) from that
+     same panel into `.env` as `WHATSAPP_PHONE_NUMBER_ID` /
+     `WHATSAPP_ACCESS_TOKEN`, and as GitHub Actions repo secrets (same as
+     the SMTP/Supabase ones) once ready to test the real cron job.
+  5. In the app's WhatsApp > Message Templates screen, create a template
+     named exactly `part_due_reminder`, category **Utility**, language
+     **English (US)**, body text exactly:
+     `Reminder: {{1}} is due back in {{2}} day(s), on {{3}}.`
+     Submit it — approval is usually within a day for a plain utility
+     template like this.
+  6. Once approved, run `python send_due_reminders.py` locally with a due
+     request on a test account to confirm a real WhatsApp message arrives.
+
+  Not done yet, deliberately deferred: wiring WhatsApp into any other
+  notification (new query, competition selection, achievement reminders,
+  announcements) — this first chunk was scoped to proving the pipeline
+  works end to end on one flow before expanding to the rest.
 - **Razorpay for merch payments** — deferred. Real payment gateways need
   KYC tied to an adult-owned bank account; the student is a minor and
   can't open that account himself. Recommended a free, no-registration

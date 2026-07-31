@@ -25,7 +25,13 @@ file or from a hosting platform's secrets manager.
    SMTP_PASSWORD = "..."
    SMTP_SENDER = "..."
    APP_URL = "https://your-app-name.streamlit.app"
+   WHATSAPP_PHONE_NUMBER_ID = "..."
+   WHATSAPP_ACCESS_TOKEN = "..."
    ```
+
+   The last two are optional — WhatsApp notifications silently do nothing
+   until both are set (see CLAUDE.md for how to get them from Meta's
+   developer console).
 
    You won't know the exact `APP_URL` until after the first deploy (Streamlit
    picks or lets you choose a subdomain) — deploy once, see the URL, then
