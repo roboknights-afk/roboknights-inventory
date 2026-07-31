@@ -216,8 +216,9 @@ def _insert_matched_participants(client, event_id, teams, event_name, comp_name)
         for v in client.table("event_volunteers").select("user_id, selected").eq("event_id", event_id).execute().data
     }
     changed = False
-    for team_no, team in enumerate(teams, start=1):
-        for p in team:
+    for team in teams:
+        team_no = team["team_no"]
+        for p in team["participants"]:
             if p["user_id"] in existing:
                 if p["selected"] and not existing[p["user_id"]]:
                     client.table("event_volunteers").update({"selected": True}).eq(
@@ -251,7 +252,7 @@ def _send_selected_email(user_id, event_name, comp_name):
 def _teams_caption(teams):
     # Small visibility line so the host sees who's about to be added/synced
     # before actually clicking a write button.
-    people = [p for team in teams for p in team]
+    people = [p for team in teams for p in team["participants"]]
     if not people:
         return None
     parts = [f"{p['name']} ({'selected' if p['selected'] else 'pending'})" for p in people]

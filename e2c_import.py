@@ -318,8 +318,19 @@ def _parse_teams(team_rows, user_id_by_name):
     # One team per row; columns D onward are that team's participants.
     # Only names that match a real member end up here at all — an ad-hoc
     # guest or a name we can't match just isn't ours to add.
+    #
+    # team_no is the row's OWN position within team_rows, not a position
+    # within the (filtered) list this function returns. It has to be —
+    # different members of the same event often get matched across
+    # SEPARATE sync calls as people sign up over time, and rows with zero
+    # matches at a given scan are silently skipped. Numbering off the
+    # filtered list would let a newly-matched row land on whatever index a
+    # completely different row happened to occupy the first time it was
+    # matched, merging two real teams into one team_no (confirmed live:
+    # this is exactly how Kyraan and Arhaan — different rows on the sheet
+    # — ended up sharing team_no 2 on Acon's "Kinetic Chaos").
     teams = []
-    for row in team_rows:
+    for row_no, row in enumerate(team_rows, start=1):
         participants = []
         for cell in row[3:]:
             if not cell["text"]:
@@ -329,7 +340,7 @@ def _parse_teams(team_rows, user_id_by_name):
             if user_id:
                 participants.append({"user_id": user_id, "name": cleaned, "selected": cell["is_green"]})
         if participants:
-            teams.append(participants)
+            teams.append({"team_no": row_no, "participants": participants})
     return teams
 
 
@@ -399,7 +410,7 @@ def _parse_all_events(block, user_id_by_name):
         for bi, rows in enumerate(bracket_row_groups):
             elig = bracket_eligs[bi]
             teams = _parse_teams(rows, user_id_by_name)
-            matched_member_ids = {p["user_id"] for team in teams for p in team}
+            matched_member_ids = {p["user_id"] for team in teams for p in team["participants"]}
             # One matched name could be a coincidence (a common name shared
             # with someone unrelated), so that alone doesn't auto-include an
             # event with no note/keyword. Two or more distinct real members
