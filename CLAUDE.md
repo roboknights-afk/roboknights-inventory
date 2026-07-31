@@ -430,11 +430,29 @@ NOT built:
   a genuinely proactive message (nobody messaged the club first) is
   billed per conversation outside an open 24h window, though rates are
   low (~₹0.10–₹1). Student wants this built AFTER Mr. Ajith Kumar's
-  teacher/host account is set up — not started yet. Next concrete step
-  when picked back up: get a dedicated number, then decide between
-  calling Meta's Cloud API directly (free, more setup work) or a managed
-  layer like AiSensy's free tier (easier template/dashboard management,
-  same underlying Meta requirements underneath).
+  teacher/host account is set up — not started yet. Hard budget
+  constraint stated 2026-07-31: zero cost, no exceptions.
+
+  On the dedicated-number requirement: it does NOT need to be bought —
+  any existing number works as long as it can receive one OTP and isn't
+  currently logged into WhatsApp on a phone (an old/spare SIM, exactly
+  the kind of number that's free). The real tradeoff: whoever's number
+  this is permanently loses normal WhatsApp app access on it (the number
+  becomes API-only), so it needs to be a number nobody minds giving up
+  personal WhatsApp on. As of 2026-07-31 no spare number is available yet.
+
+  Agreed path: start with Meta's free sandbox/test number (built into the
+  WhatsApp Cloud API setup, genuinely free, no SIM at all) to build and
+  verify the whole pipeline — template approval, the API call itself,
+  wiring into the existing reminder scripts — against a handful of
+  manually-added test recipients. Switch to a real dedicated number (once
+  one becomes available) only when going live to the full member list;
+  that swap is just a number-registration step, not a rebuild. Next
+  concrete step whenever this is picked back up: create the free Meta
+  developer app + test WABA, decide between calling the Cloud API
+  directly (free, more setup work) or a managed layer like AiSensy's free
+  tier (easier template/dashboard management, same Meta requirements
+  underneath either way).
 - **Razorpay for merch payments** — deferred. Real payment gateways need
   KYC tied to an adult-owned bank account; the student is a minor and
   can't open that account himself. Recommended a free, no-registration
