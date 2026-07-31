@@ -1143,12 +1143,27 @@ def render_competition_card(comp):
                         # selected people (not already-selected ones
                         # re-saved unchanged) get an email.
                         if is_host and event_volunteers:
+                            already_selected_ids = [
+                                v["user_id"] for v in event_volunteers if v.get("selected")
+                            ]
+                            if len(already_selected_ids) > cap:
+                                st.caption(
+                                    f":material/warning: {len(already_selected_ids)} people are "
+                                    f"marked selected, over the {cap}-person cap for this event "
+                                    f"(likely from the E2C sheet sync, which doesn't check the cap) "
+                                    f"— remove some below and save to fix it."
+                                )
                             finalize_ids = st.multiselect(
                                 "Finalize volunteers",
                                 options=[v["user_id"] for v in event_volunteers],
-                                default=[v["user_id"] for v in event_volunteers if v.get("selected")],
+                                default=already_selected_ids,
                                 format_func=lambda uid: user_name_by_id.get(uid, "Unknown"),
-                                max_selections=cap,
+                                # Never below however many are ALREADY selected — Streamlit
+                                # refuses to render a multiselect whose own default exceeds
+                                # max_selections, which is exactly what crashed this page
+                                # (E2C sync can push someone selected past the cap with no
+                                # check, since that path doesn't go through this widget at all).
+                                max_selections=max(cap, len(already_selected_ids)),
                                 key=f"finalize_{e['event_id']}",
                             )
                             if st.button(
