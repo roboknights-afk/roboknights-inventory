@@ -199,42 +199,74 @@ def _sync_competition_from_scan(client, comp):
 
 
 def _insert_matched_participants(client, event_id, teams, event_name, comp_name):
-    # teams: list of team-rows, each a list of {"user_id", "name", "selected"}
-    # matched against real members. Re-scanning can only ADD someone or
-    # PROMOTE them from pending to selected — never remove or un-select
-    # anyone, so this can't silently undo a host's own finalize decision.
-    # Anyone newly added or promoted as selected gets the same "You're
-    # selected" email the manual finalize flow sends — being confirmed on
-    # the real sheet is no different from being finalized by the host.
+    # teams: list of team-rows, each {"team_no", "participants": [{"user_id",
+    # "name", "selected"}]} matched against real members off the sheet's
+    # green cells. A row's presence here can ADD someone, PROMOTE them from
+    # pending to selected, and now also REMOVE someone who's been swapped
+    # out of the green cell on the real sheet — but that removal only ever
+    # touches a row THIS sync itself put there (synced_from_sheet=True).
+    # A row from someone clicking Volunteer directly in the app is never
+    # touched, so this can't silently undo an in-app action, only ever a
+    # sheet-sourced one going stale. Anyone newly added or promoted as
+    # selected gets the same "You're selected" email the manual finalize
+    # flow sends — being confirmed on the real sheet is no different from
+    # being finalized by the host.
     #
     # This read is deliberately NOT cached_table: it decides insert-vs-
-    # promote, so it needs the true current state, not up to 8s old (this
-    # function is also called repeatedly in a loop across many events in one
-    # sync, where stale data would risk a duplicate insert on the same event).
+    # promote-vs-remove, so it needs the true current state, not up to 8s
+    # old (this function is also called repeatedly in a loop across many
+    # events in one sync, where stale data would risk a duplicate insert).
     existing = {
-        v["user_id"]: v["selected"]
-        for v in client.table("event_volunteers").select("user_id, selected").eq("event_id", event_id).execute().data
+        v["user_id"]: v
+        for v in client.table("event_volunteers")
+        .select("user_id, selected, synced_from_sheet")
+        .eq("event_id", event_id)
+        .execute()
+        .data
     }
     changed = False
+    matched_user_ids = set()
+
     for team in teams:
         team_no = team["team_no"]
         for p in team["participants"]:
+            matched_user_ids.add(p["user_id"])
             if p["user_id"] in existing:
-                if p["selected"] and not existing[p["user_id"]]:
-                    client.table("event_volunteers").update({"selected": True}).eq(
+                row = existing[p["user_id"]]
+                updates = {}
+                if not row.get("synced_from_sheet"):
+                    # Confirmed present on the sheet right now — safe for a
+                    # FUTURE sync to remove this row if they're ever swapped
+                    # out later, same as any other sheet-sourced entry.
+                    updates["synced_from_sheet"] = True
+                if p["selected"] and not row["selected"]:
+                    updates["selected"] = True
+                if updates:
+                    client.table("event_volunteers").update(updates).eq(
                         "event_id", event_id
                     ).eq("user_id", p["user_id"]).execute()
                     changed = True
-                    _send_selected_email(p["user_id"], event_name, comp_name)
+                    if updates.get("selected"):
+                        _send_selected_email(p["user_id"], event_name, comp_name)
                 continue
             client.table("event_volunteers").insert({
                 "event_id": event_id, "user_id": p["user_id"],
                 "team_no": team_no, "selected": p["selected"],
+                "synced_from_sheet": True,
             }).execute()
-            existing[p["user_id"]] = p["selected"]
+            existing[p["user_id"]] = {"selected": p["selected"], "synced_from_sheet": True}
             changed = True
             if p["selected"]:
                 _send_selected_email(p["user_id"], event_name, comp_name)
+
+    stale_ids = [
+        uid for uid, row in existing.items()
+        if row.get("synced_from_sheet") and uid not in matched_user_ids
+    ]
+    if stale_ids:
+        client.table("event_volunteers").delete().eq("event_id", event_id).in_("user_id", stale_ids).execute()
+        changed = True
+
     if changed:
         invalidate_cache()
 

@@ -228,6 +228,13 @@ alter table requests add column if not exists quantity integer not null default 
 alter table queries add column if not exists host_read_at timestamptz;
 alter table queries add column if not exists student_read_at timestamptz;
 
+-- Tracks whether a volunteer row's PRESENCE on this team came from the E2C
+-- sheet sync (matched off a real team row) versus someone clicking
+-- Volunteer directly in the app. Lets a re-sync safely remove someone the
+-- real sheet has swapped out, without ever touching a row that came from
+-- an actual in-app click — that boundary is what makes auto-removal safe.
+alter table event_volunteers add column if not exists synced_from_sheet boolean not null default false;
+
 -- A staff/teacher account (e.g. the teacher in-charge) signs up through the
 -- same form as everyone else, but grade/section/admission_no genuinely
 -- don't apply to them — this flag lets signup skip those fields instead of
