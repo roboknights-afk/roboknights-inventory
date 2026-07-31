@@ -305,11 +305,20 @@ def show_login_signup(client):
                 # This IS the login email too — just the username half, the
                 # @dpsrkp.net suffix is fixed and appended automatically.
                 email = school_email_input("Institutional email", key="signup_username")
-                # Individual grade, not a band — competitions later filter who
-                # can volunteer for a given event by exactly this number.
-                grade = st.selectbox("Your grade", [7, 8, 9, 10, 11, 12], key="signup_grade")
-                section = st.text_input("Section", key="signup_section")
-                admission_no = admission_no_input("signup_admission_no")
+                # Grade/section/admission no. only mean anything for a
+                # student — a staff account (the teacher in-charge) skips
+                # them entirely rather than being asked for placeholder
+                # values that don't describe them.
+                is_staff = st.checkbox("I'm a staff member (not a student)", key="signup_is_staff")
+                if is_staff:
+                    grade, section, admission_no = None, "", ""
+                else:
+                    # Individual grade, not a band — competitions later
+                    # filter who can volunteer for a given event by exactly
+                    # this number.
+                    grade = st.selectbox("Your grade", [7, 8, 9, 10, 11, 12], key="signup_grade")
+                    section = st.text_input("Section", key="signup_section")
+                    admission_no = admission_no_input("signup_admission_no")
                 phone_no = st.text_input("Phone no.", key="signup_phone_no")
                 password = st.text_input("Password", type="password", key="signup_password")
                 if st.button("Sign up", icon=":material/person_add:", type="primary", width="stretch"):
@@ -338,6 +347,7 @@ def show_login_signup(client):
                                     "user_id": result.user.id,
                                     "name": name,
                                     "email": email,
+                                    "is_staff": is_staff,
                                     "grade": grade,
                                     "section": section.strip(),
                                     "admission_no": admission_no.strip(),
@@ -493,12 +503,14 @@ users = sorted(cached_table("users"), key=lambda u: u["name"])
 st.session_state.user_name_by_id = {u["user_id"]: u["name"] for u in users}
 st.session_state.user_email_by_id = {u["user_id"]: u["email"] for u in users}
 st.session_state.user_grade_by_id = {u["user_id"]: u.get("grade") for u in users}
+st.session_state.user_is_staff_by_id = {u["user_id"]: u.get("is_staff", False) for u in users}
 
 st.session_state.current_user_id = st.session_state.auth_user["id"]
 st.session_state.current_user_name = st.session_state.user_name_by_id.get(
     st.session_state.current_user_id, st.session_state.auth_user["email"]
 )
 st.session_state.current_user_grade = st.session_state.user_grade_by_id.get(st.session_state.current_user_id)
+st.session_state.current_user_is_staff = st.session_state.user_is_staff_by_id.get(st.session_state.current_user_id, False)
 st.session_state.is_host = st.session_state.auth_user["email"] in HOST_EMAILS
 
 # --- Sidebar: account card -------------------------------------------------
@@ -514,6 +526,8 @@ with st.sidebar:
         # (easy to lose track when testing with more than one).
         if st.session_state.is_host:
             st.badge("Host", color="primary", icon=":material/shield_person:")
+        elif st.session_state.current_user_is_staff:
+            st.badge("Staff", color="grey", icon=":material/badge:")
         else:
             grade = st.session_state.current_user_grade
             st.badge(

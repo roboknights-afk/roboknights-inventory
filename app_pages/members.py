@@ -41,10 +41,11 @@ m3.metric(
     "Missing details",
     sum(
         1 for u in users
-        if not (u.get("grade") and u.get("section") and u.get("admission_no") and u.get("phone_no"))
+        if not u.get("is_staff")
+        and not (u.get("grade") and u.get("section") and u.get("admission_no") and u.get("phone_no"))
     ),
     border=True,
-    help="Members with at least one blank field",
+    help="Students with at least one blank field (staff accounts aren't expected to have grade/section/admission no.)",
 )
 
 with st.expander(":material/info: About this page"):
@@ -100,6 +101,7 @@ else:
         [
             {
                 "Name": u["name"],
+                "Role": "Staff" if u.get("is_staff") else "Student",
                 "Institutional email": u["email"],
                 "Grade": u.get("grade"),
                 "Section": u.get("section") or "",
@@ -113,6 +115,7 @@ else:
         num_rows="fixed",
         column_config={
             "Name": st.column_config.TextColumn("Name", width="medium"),
+            "Role": st.column_config.TextColumn("Role", width="small", disabled=True),
             "Institutional email": st.column_config.TextColumn("Institutional email", width="medium"),
             "Grade": st.column_config.SelectboxColumn("Grade", options=GRADE_OPTIONS, width="small"),
             "Section": st.column_config.TextColumn("Section", width="small"),
