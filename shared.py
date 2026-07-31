@@ -21,7 +21,7 @@ APP_URL = os.environ.get("APP_URL", "http://localhost:8501")
 # ever, so a plain list is simpler than building role-management UI for it.
 HOST_EMAILS = {
     "roboknights@dpsrkp.net",
-    # teacher's email to be added here once we have it
+    "ajithkumar@dpsrkp.net",  # Mr Ajith Kumar KG, teacher in-charge
 }
 
 # The club's real competition-tracking sheet ("E2C"). Always this one sheet,
