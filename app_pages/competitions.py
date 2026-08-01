@@ -9,12 +9,13 @@
 # instead, since those need to run on a schedule, not a page view.
 # Announcements moved to their own page (app_pages/announcements.py).
 
-from datetime import date
+from contextlib import contextmanager
+from datetime import date, datetime
 
 import streamlit as st
 
 from e2c_import import scan_e2c_sheet
-from shared import cached_table, get_client, invalidate_cache, send_email
+from shared import HOST_EMAILS, IST, cached_table, get_client, invalidate_cache, send_email
 
 client = get_client()
 is_host = st.session_state.is_host
@@ -26,6 +27,37 @@ user_email_by_id = st.session_state.user_email_by_id
 GRADES = [6, 7, 8, 9, 10, 11, 12]  # 6 included since E2C-imported events can genuinely be 6th-grade eligible
 BLANK_LINK = {"label": "", "url": ""}
 BLANK_EVENT = {"event_id": None, "name": "", "details": "", "team_size": 1, "max_teams": 1, "min_grade": 7, "max_grade": 12}
+
+
+@contextmanager
+def _safe_write(action_description):
+    # Wraps a block of Supabase writes so a transient failure (network
+    # blip, a Supabase hiccup) shows a clean inline error instead of
+    # crashing the whole page for whoever's using it right then — the same
+    # crash class as the DMMITS multiselect bug, just triggered by an API
+    # failure instead of a bad widget default.
+    try:
+        yield
+    except Exception as e:
+        st.error(f"Couldn't {action_description}: {e}")
+
+
+def _validate_competition_form(name, comp_date, events):
+    # Shared by the create form, the edit form, and the E2C-import form —
+    # all three were repeating the same four checks separately, which made
+    # it easy to update one and forget another.
+    errors = []
+    if not name.strip():
+        errors.append("Competition name is required.")
+    if not comp_date:
+        errors.append("Competition date is required.")
+    if not events:
+        errors.append("At least one event is required.")
+    for e in events:
+        if e["min_grade"] > e["max_grade"]:
+            errors.append(f"Event '{e['name']}': min grade can't be higher than max grade.")
+    return errors
+
 
 st.title("Competitions")
 
@@ -103,63 +135,56 @@ def render_add_competition():
             st.rerun()
 
         if st.button("Create competition", type="primary", icon=":material/check:"):
-            errors = []
-            if not name.strip():
-                errors.append("Competition name is required.")
-            if not comp_date:
-                errors.append("Competition date is required.")
             valid_events = [e for e in st.session_state.new_events if e["name"].strip()]
-            if not valid_events:
-                errors.append("At least one event is required.")
-            for e in valid_events:
-                if e["min_grade"] > e["max_grade"]:
-                    errors.append(f"Event '{e['name']}': min grade can't be higher than max grade.")
+            errors = _validate_competition_form(name, comp_date, valid_events)
 
             if errors:
                 st.session_state.competition_message = ("error", " ".join(errors))
+                st.rerun()
             else:
-                comp_result = client.table("competitions").insert({
-                    "name": name.strip(),
-                    "venue": venue.strip(),
-                    "competition_date": comp_date.isoformat(),
-                    "registration_deadline": reg_deadline.isoformat() if reg_deadline else None,
-                    "student_incharge": student_incharge.strip(),
-                }).execute()
-                competition_id = comp_result.data[0]["competition_id"]
+                with _safe_write("create the competition"):
+                    comp_result = client.table("competitions").insert({
+                        "name": name.strip(),
+                        "venue": venue.strip(),
+                        "competition_date": comp_date.isoformat(),
+                        "registration_deadline": reg_deadline.isoformat() if reg_deadline else None,
+                        "student_incharge": student_incharge.strip(),
+                    }).execute()
+                    competition_id = comp_result.data[0]["competition_id"]
 
-                valid_links = [l for l in st.session_state.new_links if l["url"].strip()]
-                if valid_links:
-                    client.table("competition_links").insert([
+                    valid_links = [l for l in st.session_state.new_links if l["url"].strip()]
+                    if valid_links:
+                        client.table("competition_links").insert([
+                            {
+                                "competition_id": competition_id,
+                                "label": l["label"].strip() or "Link",
+                                # Add https:// if they typed a bare domain, so the
+                                # stored URL is always clickable as-is.
+                                "url": l["url"].strip() if l["url"].strip().startswith(("http://", "https://"))
+                                else "https://" + l["url"].strip(),
+                            }
+                            for l in valid_links
+                        ]).execute()
+
+                    client.table("competition_events").insert([
                         {
                             "competition_id": competition_id,
-                            "label": l["label"].strip() or "Link",
-                            # Add https:// if they typed a bare domain, so the
-                            # stored URL is always clickable as-is.
-                            "url": l["url"].strip() if l["url"].strip().startswith(("http://", "https://"))
-                            else "https://" + l["url"].strip(),
+                            "name": e["name"].strip(),
+                            "details": e["details"].strip(),
+                            "team_size": e["team_size"],
+                            "max_teams": e["max_teams"],
+                            "min_grade": e["min_grade"],
+                            "max_grade": e["max_grade"],
                         }
-                        for l in valid_links
+                        for e in valid_events
                     ]).execute()
+                    invalidate_cache()
 
-                client.table("competition_events").insert([
-                    {
-                        "competition_id": competition_id,
-                        "name": e["name"].strip(),
-                        "details": e["details"].strip(),
-                        "team_size": e["team_size"],
-                        "max_teams": e["max_teams"],
-                        "min_grade": e["min_grade"],
-                        "max_grade": e["max_grade"],
-                    }
-                    for e in valid_events
-                ]).execute()
-                invalidate_cache()
-
-                st.session_state.competition_message = ("success", f"Added {name.strip()}.")
-                # Reset the form's lists back to one blank row each.
-                st.session_state.new_links = [dict(BLANK_LINK)]
-                st.session_state.new_events = [dict(BLANK_EVENT)]
-                st.rerun()
+                    st.session_state.competition_message = ("success", f"Added {name.strip()}.")
+                    # Reset the form's lists back to one blank row each.
+                    st.session_state.new_links = [dict(BLANK_LINK)]
+                    st.session_state.new_events = [dict(BLANK_EVENT)]
+                    st.rerun()
 
 # --- Host-only: scan the E2C sheet for robotics competitions ---------------
 # Re-scanning always re-reads the live sheet fresh, so a new/unimported
@@ -266,6 +291,12 @@ def _insert_matched_participants(client, event_id, teams, event_name, comp_name)
     if stale_ids:
         client.table("event_volunteers").delete().eq("event_id", event_id).in_("user_id", stale_ids).execute()
         changed = True
+        # Only tell people who'd actually been confirmed selected — a
+        # pending volunteer going stale was never told they were "on the
+        # team" in the first place, so there's nothing to un-notify them of.
+        for uid in stale_ids:
+            if existing[uid].get("selected"):
+                _send_removed_email(uid, event_name, comp_name)
 
     if changed:
         invalidate_cache()
@@ -278,6 +309,19 @@ def _send_selected_email(user_id, event_name, comp_name):
         f"You've been selected to represent RoboKnights in "
         f"{event_name} at {comp_name}.\n\n"
         f"Log in to the app for full details.",
+    )
+
+
+def _send_removed_email(user_id, event_name, comp_name):
+    # Sync can now remove someone who's been swapped out on the real
+    # sheet (see _insert_matched_participants) — without this, they'd only
+    # find out by happening to check the app again themselves.
+    send_email(
+        user_email_by_id.get(user_id),
+        f"Team change: {event_name} at {comp_name}",
+        f"You're no longer listed for {event_name} at {comp_name} — the "
+        f"team roster on the registration sheet has changed. If this "
+        f"looks wrong, check with your student in-charge or a host.",
     )
 
 
@@ -328,17 +372,18 @@ def render_e2c_import():
                         st.error(f"Couldn't re-read the E2C sheet: {e}")
                         fresh_by_name = {}
                     if fresh_by_name:
-                        for comp in already_imported:
-                            fresh_comp = fresh_by_name.get(comp["name"].strip().lower(), comp)
-                            _sync_competition_from_scan(client, fresh_comp)
-                            for e in fresh_comp["events"]:
-                                if e.get("existing_event_id"):
-                                    _insert_matched_participants(
-                                        client, e.get("existing_event_id"), e.get("teams", []),
-                                        e["name"], fresh_comp["name"],
-                                    )
-                        st.toast(f"Synced {len(already_imported)} competition(s).", icon=":material/check_circle:")
-                        st.rerun()
+                        with _safe_write("sync the already-imported competitions"):
+                            for comp in already_imported:
+                                fresh_comp = fresh_by_name.get(comp["name"].strip().lower(), comp)
+                                _sync_competition_from_scan(client, fresh_comp)
+                                for e in fresh_comp["events"]:
+                                    if e.get("existing_event_id"):
+                                        _insert_matched_participants(
+                                            client, e.get("existing_event_id"), e.get("teams", []),
+                                            e["name"], fresh_comp["name"],
+                                        )
+                            st.toast(f"Synced {len(already_imported)} competition(s).", icon=":material/check_circle:")
+                            st.rerun()
 
             pending_new = []  # collects each new competition's current widget values
 
@@ -466,66 +511,67 @@ def render_e2c_import():
 
                     errors = []
                     imported = 0
-                    for data in pending_new:
-                        valid_events = [e for e in data["events"] if e["include"]]
-                        if not valid_events:
-                            continue  # nothing checked for this competition — skip quietly
-                        if not data["competition_date"]:
-                            errors.append(f"{data['name']}: competition date is required.")
-                            continue
-                        for e in valid_events:
-                            if e["min_grade"] > e["max_grade"]:
-                                errors.append(f"{data['name']} / {e['name']}: min grade can't be higher than max grade.")
-                        if errors:
-                            continue
+                    with _safe_write("import the selected competitions"):
+                        for data in pending_new:
+                            valid_events = [e for e in data["events"] if e["include"]]
+                            if not valid_events:
+                                continue  # nothing checked for this competition — skip quietly
+                            if not data["competition_date"]:
+                                errors.append(f"{data['name']}: competition date is required.")
+                                continue
+                            for e in valid_events:
+                                if e["min_grade"] > e["max_grade"]:
+                                    errors.append(f"{data['name']} / {e['name']}: min grade can't be higher than max grade.")
+                            if errors:
+                                continue
 
-                        comp_result = client.table("competitions").insert({
-                            "name": data["name"],
-                            "venue": data["venue"].strip(),
-                            "competition_date": data["competition_date"].isoformat(),
-                            "registration_deadline": (
-                                data["registration_deadline"].isoformat() if data["registration_deadline"] else None
-                            ),
-                            "student_incharge": data["student_incharge"].strip(),
-                        }).execute()
-                        competition_id = comp_result.data[0]["competition_id"]
-
-                        if data["links"]:
-                            client.table("competition_links").insert([
-                                {"competition_id": competition_id, "label": l["label"], "url": l["url"]}
-                                for l in data["links"]
-                            ]).execute()
-
-                        fresh_events_here = fresh_all_events_by_comp.get(data["name"].strip().lower(), [])
-                        for e in valid_events:
-                            event_result = client.table("competition_events").insert({
-                                "competition_id": competition_id,
-                                "name": e["name"], "details": e["details"],
-                                "team_size": e["team_size"], "max_teams": e["max_teams"],
-                                "min_grade": e["min_grade"], "max_grade": e["max_grade"],
+                            comp_result = client.table("competitions").insert({
+                                "name": data["name"],
+                                "venue": data["venue"].strip(),
+                                "competition_date": data["competition_date"].isoformat(),
+                                "registration_deadline": (
+                                    data["registration_deadline"].isoformat() if data["registration_deadline"] else None
+                                ),
+                                "student_incharge": data["student_incharge"].strip(),
                             }).execute()
-                            new_event_id = event_result.data[0]["event_id"]
-                            fresh_event = next(
-                                (fe for fe in fresh_events_here if fe["name"].strip().lower() == e["name"].strip().lower()),
-                                e,
-                            )
-                            _insert_matched_participants(
-                                client, new_event_id, fresh_event.get("teams", []), e["name"], data["name"]
-                            )
-                        # _insert_matched_participants already invalidates when IT
-                        # changes something; this covers the competition/links/
-                        # events inserts just above, which it doesn't know about.
-                        invalidate_cache()
-                        imported += 1
+                            competition_id = comp_result.data[0]["competition_id"]
 
-                    if errors:
-                        st.session_state.competition_message = ("error", " ".join(errors))
-                    else:
-                        st.session_state.e2c_scan_results = None  # force a fresh scan next time
-                        st.session_state.competition_message = (
-                            "success", f"Imported {imported} competition(s) from E2C."
-                        )
-                    st.rerun()
+                            if data["links"]:
+                                client.table("competition_links").insert([
+                                    {"competition_id": competition_id, "label": l["label"], "url": l["url"]}
+                                    for l in data["links"]
+                                ]).execute()
+
+                            fresh_events_here = fresh_all_events_by_comp.get(data["name"].strip().lower(), [])
+                            for e in valid_events:
+                                event_result = client.table("competition_events").insert({
+                                    "competition_id": competition_id,
+                                    "name": e["name"], "details": e["details"],
+                                    "team_size": e["team_size"], "max_teams": e["max_teams"],
+                                    "min_grade": e["min_grade"], "max_grade": e["max_grade"],
+                                }).execute()
+                                new_event_id = event_result.data[0]["event_id"]
+                                fresh_event = next(
+                                    (fe for fe in fresh_events_here if fe["name"].strip().lower() == e["name"].strip().lower()),
+                                    e,
+                                )
+                                _insert_matched_participants(
+                                    client, new_event_id, fresh_event.get("teams", []), e["name"], data["name"]
+                                )
+                            # _insert_matched_participants already invalidates when IT
+                            # changes something; this covers the competition/links/
+                            # events inserts just above, which it doesn't know about.
+                            invalidate_cache()
+                            imported += 1
+
+                        if errors:
+                            st.session_state.competition_message = ("error", " ".join(errors))
+                        else:
+                            st.session_state.e2c_scan_results = None  # force a fresh scan next time
+                            st.session_state.competition_message = (
+                                "success", f"Imported {imported} competition(s) from E2C."
+                            )
+                        st.rerun()
 
             if already_imported:
                 with st.expander(f":material/inventory_2: Already imported ({len(already_imported)})"):
@@ -554,15 +600,16 @@ def render_e2c_import():
                                     st.error(f"Couldn't re-read the E2C sheet: {e}")
                                     fresh_comp = None
                                 if fresh_comp:
-                                    _sync_competition_from_scan(client, fresh_comp)
-                                    for e in fresh_comp["events"]:
-                                        if e.get("existing_event_id"):
-                                            _insert_matched_participants(
-                                                client, e.get("existing_event_id"), e.get("teams", []),
-                                                e["name"], fresh_comp["name"],
-                                            )
-                                    st.toast(f"Updated {comp['name']}.", icon=":material/check_circle:")
-                                    st.rerun()
+                                    with _safe_write(f"update {comp['name']}"):
+                                        _sync_competition_from_scan(client, fresh_comp)
+                                        for e in fresh_comp["events"]:
+                                            if e.get("existing_event_id"):
+                                                _insert_matched_participants(
+                                                    client, e.get("existing_event_id"), e.get("teams", []),
+                                                    e["name"], fresh_comp["name"],
+                                                )
+                                        st.toast(f"Updated {comp['name']}.", icon=":material/check_circle:")
+                                        st.rerun()
 
                             # Lets the host pull in a specific event that wasn't
                             # auto-detected as robotics (e.g. a borderline AI/IoT
@@ -655,29 +702,30 @@ def render_e2c_import():
                                         st.error(f"Couldn't re-read the E2C sheet: {ex}")
                                         fresh_comp = None
                                     fresh_all_events = fresh_comp.get("all_events", []) if fresh_comp else []
-                                    for e in to_add:
-                                        event_result = client.table("competition_events").insert({
-                                            "competition_id": comp["existing_id"],
-                                            "name": e["name"], "details": e["details"],
-                                            "team_size": e["team_size"], "max_teams": e["max_teams"],
-                                            "min_grade": e["min_grade"], "max_grade": e["max_grade"],
-                                        }).execute()
-                                        new_event_id = event_result.data[0]["event_id"]
-                                        fresh_event = next(
-                                            (fe for fe in fresh_all_events
-                                             if fe["name"].strip().lower() == e["name"].strip().lower()),
-                                            e,
-                                        )
-                                        _insert_matched_participants(
-                                            client, new_event_id, fresh_event.get("teams", []), e["name"], comp["name"]
-                                        )
-                                    if to_add:
-                                        invalidate_cache()  # covers the competition_events inserts above
-                                        st.toast(
-                                            f"Added {len(to_add)} event(s) to {comp['name']}.",
-                                            icon=":material/check_circle:",
-                                        )
-                                        st.rerun()
+                                    with _safe_write(f"add events to {comp['name']}"):
+                                        for e in to_add:
+                                            event_result = client.table("competition_events").insert({
+                                                "competition_id": comp["existing_id"],
+                                                "name": e["name"], "details": e["details"],
+                                                "team_size": e["team_size"], "max_teams": e["max_teams"],
+                                                "min_grade": e["min_grade"], "max_grade": e["max_grade"],
+                                            }).execute()
+                                            new_event_id = event_result.data[0]["event_id"]
+                                            fresh_event = next(
+                                                (fe for fe in fresh_all_events
+                                                 if fe["name"].strip().lower() == e["name"].strip().lower()),
+                                                e,
+                                            )
+                                            _insert_matched_participants(
+                                                client, new_event_id, fresh_event.get("teams", []), e["name"], comp["name"]
+                                            )
+                                        if to_add:
+                                            invalidate_cache()  # covers the competition_events inserts above
+                                            st.toast(
+                                                f"Added {len(to_add)} event(s) to {comp['name']}.",
+                                                icon=":material/check_circle:",
+                                            )
+                                            st.rerun()
 
 # Success pops as a toast; errors stay inline so they can't be missed.
 if st.session_state.competition_message:
@@ -698,6 +746,8 @@ if st.session_state.competition_message:
 
 if "volunteer_message" not in st.session_state:
     st.session_state.volunteer_message = None
+if "withdrawing_event_id" not in st.session_state:
+    st.session_state.withdrawing_event_id = None
 
 if st.session_state.volunteer_message:
     st.toast(st.session_state.volunteer_message, icon=":material/check_circle:")
@@ -706,15 +756,33 @@ if st.session_state.volunteer_message:
 # Auto-flip: anything whose date has already passed and isn't marked past
 # yet gets marked past right now. No scheduled job needed for this one —
 # the page gets viewed often enough that a same-day flip is good enough,
-# unlike the reminder emails which genuinely need a fixed daily time. This
-# runs on every single page load (not gated behind a button), so it only
-# invalidates the cache when it actually changed a row — otherwise every
-# ordinary visit would clear the cache for nothing and defeat the point.
-_flip_result = client.table("competitions").update({"is_past": True}).lt(
-    "competition_date", date.today().isoformat()
-).eq("is_past", False).execute()
-if _flip_result.data:
-    invalidate_cache()
+# unlike the reminder emails which genuinely need a fixed daily time.
+#
+# Uses IST "today", not the server's own date — Streamlit Cloud runs in
+# UTC, and between midnight and 5:30 AM IST the UTC calendar date is still
+# "yesterday". Using date.today() directly (as this used to) meant a
+# competition happening "today" IST could stay un-flipped, and the
+# bot-status panel below could stay locked, for up to 5.5 hours longer
+# than it should on the day it matters most.
+#
+# Checks against the already-cached list first (a plain read, ~free) so
+# an ordinary visit only issues a write when something ACTUALLY needs
+# flipping, rather than firing an update query on literally every page
+# load by every user. Wrapped in _safe_write since this runs unconditionally
+# for anyone who opens the page — a transient failure here shouldn't take
+# the whole page down with it.
+today_ist = datetime.now(IST).date()
+with _safe_write("check for newly-past competitions"):
+    stale_ids = [
+        c["competition_id"] for c in cached_table("competitions")
+        if not c.get("is_past") and c.get("competition_date")
+        and date.fromisoformat(c["competition_date"]) < today_ist
+    ]
+    if stale_ids:
+        client.table("competitions").update({"is_past": True}).in_(
+            "competition_id", stale_ids
+        ).execute()
+        invalidate_cache()
 
 competitions = sorted(
     cached_table("competitions"),
@@ -744,14 +812,20 @@ m4.metric("Past", sum(1 for c in competitions if c.get("is_past")), border=True)
 comp_search = st.text_input(
     "Search competitions",
     key="comp_search",
-    placeholder="Search by name or venue",
+    placeholder="Search by name, venue, or event",
     icon=":material/search:",
     label_visibility="collapsed",
 )
 if comp_search:
+    q = comp_search.lower()
+    # Also matches on an event's own name (e.g. "RoboRace"), not just the
+    # competition's — searching for a specific event used to only work if
+    # it happened to also match the competition's own name or venue.
+    matching_comp_ids = {e["competition_id"] for e in all_events if q in e["name"].lower()}
     competitions = [
         c for c in competitions
-        if comp_search.lower() in (c["name"] + " " + (c.get("venue") or "")).lower()
+        if q in (c["name"] + " " + (c.get("venue") or "")).lower()
+        or c["competition_id"] in matching_comp_ids
     ]
 
 def render_competition_card(comp):
@@ -849,74 +923,67 @@ def render_competition_card(comp):
             if save_col.button(
                 "Save changes", key=f"save_comp_{cid}", icon=":material/check:", type="primary"
             ):
-                errors = []
-                if not edit_name.strip():
-                    errors.append("Competition name is required.")
-                if not edit_date:
-                    errors.append("Competition date is required.")
                 valid_events = [e for e in st.session_state.edit_comp_events if e["name"].strip()]
-                if not valid_events:
-                    errors.append("At least one event is required.")
-                for e in valid_events:
-                    if e["min_grade"] > e["max_grade"]:
-                        errors.append(f"Event '{e['name']}': min grade can't be higher than max grade.")
+                errors = _validate_competition_form(edit_name, edit_date, valid_events)
 
                 if errors:
                     st.session_state.competition_message = ("error", " ".join(errors))
-                else:
-                    client.table("competitions").update({
-                        "name": edit_name.strip(),
-                        "venue": edit_venue.strip(),
-                        "competition_date": edit_date.isoformat(),
-                        "registration_deadline": edit_reg_deadline.isoformat() if edit_reg_deadline else None,
-                        "student_incharge": edit_incharge.strip(),
-                    }).eq("competition_id", cid).execute()
-
-                    # Links: nothing else references them, so simplest
-                    # to just replace the whole set.
-                    client.table("competition_links").delete().eq("competition_id", cid).execute()
-                    valid_links = [l for l in st.session_state.edit_comp_links if l["url"].strip()]
-                    if valid_links:
-                        client.table("competition_links").insert([
-                            {
-                                "competition_id": cid,
-                                "label": l["label"].strip() or "Link",
-                                "url": l["url"].strip()
-                                if l["url"].strip().startswith(("http://", "https://"))
-                                else "https://" + l["url"].strip(),
-                            }
-                            for l in valid_links
-                        ]).execute()
-
-                    # Events: update existing ones in place (so their
-                    # volunteer signups survive), insert brand-new ones,
-                    # delete any that were removed from the list.
-                    kept_ids = {e["event_id"] for e in valid_events if e["event_id"] is not None}
-                    original_ids = {e["event_id"] for e in events}
-                    for old_id in original_ids - kept_ids:
-                        client.table("competition_events").delete().eq("event_id", old_id).execute()
-                    for e in valid_events:
-                        payload = {
-                            "name": e["name"].strip(),
-                            "details": e["details"].strip(),
-                            "team_size": e["team_size"],
-                            "max_teams": e["max_teams"],
-                            "min_grade": e["min_grade"],
-                            "max_grade": e["max_grade"],
-                        }
-                        if e["event_id"] is None:
-                            client.table("competition_events").insert(
-                                {**payload, "competition_id": cid}
-                            ).execute()
-                        else:
-                            client.table("competition_events").update(payload).eq(
-                                "event_id", e["event_id"]
-                            ).execute()
-
-                    invalidate_cache()
-                    st.session_state.competition_message = ("success", f"Updated {edit_name.strip()}.")
-                    st.session_state.editing_competition_id = None
                     st.rerun()
+                else:
+                    with _safe_write("save changes to this competition"):
+                        client.table("competitions").update({
+                            "name": edit_name.strip(),
+                            "venue": edit_venue.strip(),
+                            "competition_date": edit_date.isoformat(),
+                            "registration_deadline": edit_reg_deadline.isoformat() if edit_reg_deadline else None,
+                            "student_incharge": edit_incharge.strip(),
+                        }).eq("competition_id", cid).execute()
+
+                        # Links: nothing else references them, so simplest
+                        # to just replace the whole set.
+                        client.table("competition_links").delete().eq("competition_id", cid).execute()
+                        valid_links = [l for l in st.session_state.edit_comp_links if l["url"].strip()]
+                        if valid_links:
+                            client.table("competition_links").insert([
+                                {
+                                    "competition_id": cid,
+                                    "label": l["label"].strip() or "Link",
+                                    "url": l["url"].strip()
+                                    if l["url"].strip().startswith(("http://", "https://"))
+                                    else "https://" + l["url"].strip(),
+                                }
+                                for l in valid_links
+                            ]).execute()
+
+                        # Events: update existing ones in place (so their
+                        # volunteer signups survive), insert brand-new ones,
+                        # delete any that were removed from the list.
+                        kept_ids = {e["event_id"] for e in valid_events if e["event_id"] is not None}
+                        original_ids = {e["event_id"] for e in events}
+                        for old_id in original_ids - kept_ids:
+                            client.table("competition_events").delete().eq("event_id", old_id).execute()
+                        for e in valid_events:
+                            payload = {
+                                "name": e["name"].strip(),
+                                "details": e["details"].strip(),
+                                "team_size": e["team_size"],
+                                "max_teams": e["max_teams"],
+                                "min_grade": e["min_grade"],
+                                "max_grade": e["max_grade"],
+                            }
+                            if e["event_id"] is None:
+                                client.table("competition_events").insert(
+                                    {**payload, "competition_id": cid}
+                                ).execute()
+                            else:
+                                client.table("competition_events").update(payload).eq(
+                                    "event_id", e["event_id"]
+                                ).execute()
+
+                        invalidate_cache()
+                        st.session_state.competition_message = ("success", f"Updated {edit_name.strip()}.")
+                        st.session_state.editing_competition_id = None
+                        st.rerun()
             if cancel_col.button("Cancel", key=f"cancel_comp_{cid}", icon=":material/close:"):
                 st.session_state.editing_competition_id = None
                 st.rerun()
@@ -937,11 +1004,12 @@ def render_competition_card(comp):
                     "Confirm delete", key=f"confirm_delete_comp_{cid}",
                     icon=":material/delete_forever:", type="primary",
                 ):
-                    client.table("competitions").delete().eq("competition_id", cid).execute()
-                    invalidate_cache()
-                    st.session_state.deleting_competition_id = None
-                    st.session_state.competition_message = ("success", f"Deleted {comp['name']}.")
-                    st.rerun()
+                    with _safe_write("delete this competition"):
+                        client.table("competitions").delete().eq("competition_id", cid).execute()
+                        invalidate_cache()
+                        st.session_state.deleting_competition_id = None
+                        st.session_state.competition_message = ("success", f"Deleted {comp['name']}.")
+                        st.rerun()
                 if cancel_col.button("Cancel", key=f"cancel_delete_comp_{cid}", icon=":material/close:"):
                     st.session_state.deleting_competition_id = None
                     st.rerun()
@@ -955,59 +1023,63 @@ def render_competition_card(comp):
                         "Going after all", key=f"going_comp_{cid}", icon=":material/undo:",
                         help="Un-mark \"not attending\" for this competition",
                     ):
-                        client.table("competitions").update({"not_attending": False}).eq(
-                            "competition_id", cid
-                        ).execute()
-                        invalidate_cache()
-                        st.rerun()
+                        with _safe_write("update this competition"):
+                            client.table("competitions").update({"not_attending": False}).eq(
+                                "competition_id", cid
+                            ).execute()
+                            invalidate_cache()
+                            st.rerun()
                 else:
                     if going_col.button(
                         "Not going", key=f"notgoing_comp_{cid}", icon=":material/event_busy:",
                         help="Mark that RoboKnights isn't attending this competition",
                     ):
-                        client.table("competitions").update({"not_attending": True}).eq(
-                            "competition_id", cid
-                        ).execute()
-                        invalidate_cache()
-                        # Anyone already selected for one of its events gets told
-                        # directly — they'd otherwise still be expecting to go,
-                        # and the day-before/day-of reminder emails now skip this
-                        # competition entirely, so this is the only notice they get.
-                        event_ids_here = {e["event_id"] for e in events}
-                        selected_uids = {
-                            v["user_id"] for v in all_volunteers
-                            if v["event_id"] in event_ids_here and v.get("selected")
-                        }
-                        for uid in selected_uids:
-                            send_email(
-                                user_email_by_id.get(uid),
-                                f"RoboKnights is not attending {comp['name']}",
-                                f"You were selected to represent RoboKnights at {comp['name']}, "
-                                f"but due to unforeseen circumstances the club won't be attending "
-                                f"after all. Sorry for the change of plans — you don't need to do "
-                                f"anything further for this one.",
-                            )
-                        st.rerun()
+                        with _safe_write("update this competition"):
+                            client.table("competitions").update({"not_attending": True}).eq(
+                                "competition_id", cid
+                            ).execute()
+                            invalidate_cache()
+                            # Anyone already selected for one of its events gets told
+                            # directly — they'd otherwise still be expecting to go,
+                            # and the day-before/day-of reminder emails now skip this
+                            # competition entirely, so this is the only notice they get.
+                            event_ids_here = {e["event_id"] for e in events}
+                            selected_uids = {
+                                v["user_id"] for v in all_volunteers
+                                if v["event_id"] in event_ids_here and v.get("selected")
+                            }
+                            for uid in selected_uids:
+                                send_email(
+                                    user_email_by_id.get(uid),
+                                    f"RoboKnights is not attending {comp['name']}",
+                                    f"You were selected to represent RoboKnights at {comp['name']}, "
+                                    f"but due to unforeseen circumstances the club won't be attending "
+                                    f"after all. Sorry for the change of plans — you don't need to do "
+                                    f"anything further for this one.",
+                                )
+                            st.rerun()
                 if comp.get("is_past"):
                     if past_col.button(
                         "Restore", key=f"unpast_comp_{cid}", icon=":material/undo:",
                         help="Move this competition back to the upcoming list",
                     ):
-                        client.table("competitions").update({"is_past": False}).eq(
-                            "competition_id", cid
-                        ).execute()
-                        invalidate_cache()
-                        st.rerun()
+                        with _safe_write("update this competition"):
+                            client.table("competitions").update({"is_past": False}).eq(
+                                "competition_id", cid
+                            ).execute()
+                            invalidate_cache()
+                            st.rerun()
                 else:
                     if past_col.button(
                         "Mark past", key=f"mark_past_comp_{cid}", icon=":material/history:",
                         help="Move this competition to the Past section",
                     ):
-                        client.table("competitions").update({"is_past": True}).eq(
-                            "competition_id", cid
-                        ).execute()
-                        invalidate_cache()
-                        st.rerun()
+                        with _safe_write("update this competition"):
+                            client.table("competitions").update({"is_past": True}).eq(
+                                "competition_id", cid
+                            ).execute()
+                            invalidate_cache()
+                            st.rerun()
                 if delete_col.button(
                     "Delete", key=f"delete_comp_{cid}", icon=":material/delete:",
                     help="Delete this competition (with confirmation)",
@@ -1110,6 +1182,10 @@ def render_competition_card(comp):
 
                         if teamed:
                             st.markdown("**Teams:**")
+                            st.caption(
+                                ":material/travel_explore: From the E2C sheet — kept in sync "
+                                "automatically, so this can change if the sheet does."
+                            )
                             teams_by_no = {}
                             for v in teamed:
                                 teams_by_no.setdefault(v["team_no"], []).append(v)
@@ -1146,15 +1222,57 @@ def render_competition_card(comp):
                         # requestable by you.
                         if is_eligible:
                             if already_volunteered:
-                                if st.button(
-                                    "Withdraw", key=f"withdraw_{e['event_id']}", icon=":material/close:"
-                                ):
-                                    client.table("event_volunteers").delete().eq(
-                                        "event_id", e["event_id"]
-                                    ).eq("user_id", current_user_id).execute()
-                                    invalidate_cache()
-                                    st.session_state.volunteer_message = f"Withdrew from {e['name']}."
-                                    st.rerun()
+                                my_row = next(
+                                    (v for v in event_volunteers if v["user_id"] == current_user_id), None
+                                )
+                                confirming = st.session_state.withdrawing_event_id == e["event_id"]
+                                if confirming:
+                                    warning = f"Withdraw from {e['name']}?"
+                                    if my_row and my_row.get("selected"):
+                                        warning += (
+                                            " You're currently **selected** for this event — "
+                                            "the host will be notified so they can find a replacement."
+                                        )
+                                    st.warning(warning)
+                                    wcol1, wcol2 = st.columns([1, 1])
+                                    if wcol1.button(
+                                        "Confirm withdraw", key=f"confirm_withdraw_{e['event_id']}",
+                                        icon=":material/close:", type="primary",
+                                    ):
+                                        with _safe_write("withdraw from this event"):
+                                            was_selected = bool(my_row and my_row.get("selected"))
+                                            client.table("event_volunteers").delete().eq(
+                                                "event_id", e["event_id"]
+                                            ).eq("user_id", current_user_id).execute()
+                                            invalidate_cache()
+                                            if was_selected:
+                                                volunteer_name = user_name_by_id.get(current_user_id, "A member")
+                                                host_emails = [
+                                                    email for uid, email in user_email_by_id.items()
+                                                    if email in HOST_EMAILS
+                                                ]
+                                                for host_email in host_emails:
+                                                    send_email(
+                                                        host_email,
+                                                        f"{volunteer_name} withdrew: {e['name']} at {comp['name']}",
+                                                        f"{volunteer_name} was selected for {e['name']} at "
+                                                        f"{comp['name']}, but just withdrew. You may want to "
+                                                        f"pick a replacement.",
+                                                    )
+                                            st.session_state.withdrawing_event_id = None
+                                            st.session_state.volunteer_message = f"Withdrew from {e['name']}."
+                                            st.rerun()
+                                    if wcol2.button(
+                                        "Cancel", key=f"cancel_withdraw_{e['event_id']}", icon=":material/close:"
+                                    ):
+                                        st.session_state.withdrawing_event_id = None
+                                        st.rerun()
+                                else:
+                                    if st.button(
+                                        "Withdraw", key=f"withdraw_{e['event_id']}", icon=":material/close:"
+                                    ):
+                                        st.session_state.withdrawing_event_id = e["event_id"]
+                                        st.rerun()
                             else:
                                 if st.button(
                                     "Volunteer",
@@ -1162,13 +1280,14 @@ def render_competition_card(comp):
                                     icon=":material/front_hand:",
                                     type="primary",
                                 ):
-                                    client.table("event_volunteers").insert({
-                                        "event_id": e["event_id"],
-                                        "user_id": current_user_id,
-                                    }).execute()
-                                    invalidate_cache()
-                                    st.session_state.volunteer_message = f"You volunteered for {e['name']}!"
-                                    st.rerun()
+                                    with _safe_write("volunteer for this event"):
+                                        client.table("event_volunteers").insert({
+                                            "event_id": e["event_id"],
+                                            "user_id": current_user_id,
+                                        }).execute()
+                                        invalidate_cache()
+                                        st.session_state.volunteer_message = f"You volunteered for {e['name']}!"
+                                        st.rerun()
 
                         # Host-only: finalize who's actually selected,
                         # capped at team_size * max_teams. Only newly
@@ -1185,11 +1304,21 @@ def render_competition_card(comp):
                                     f"(likely from the E2C sheet sync, which doesn't check the cap) "
                                     f"— remove some below and save to fix it."
                                 )
+                            volunteer_team_no_by_uid = {
+                                v["user_id"]: v.get("team_no") for v in event_volunteers
+                            }
                             finalize_ids = st.multiselect(
                                 "Finalize volunteers",
                                 options=[v["user_id"] for v in event_volunteers],
                                 default=already_selected_ids,
-                                format_func=lambda uid: user_name_by_id.get(uid, "Unknown"),
+                                # Shows which sheet-team someone's on (e.g. "Naitik
+                                # Jindal (Team 1)") — a flat name list made it hard to
+                                # tell teammates apart while picking who's finalized.
+                                format_func=lambda uid: (
+                                    f"{user_name_by_id.get(uid, 'Unknown')} (Team {volunteer_team_no_by_uid[uid]})"
+                                    if volunteer_team_no_by_uid.get(uid)
+                                    else user_name_by_id.get(uid, "Unknown")
+                                ),
                                 # Never below however many are ALREADY selected — Streamlit
                                 # refuses to render a multiselect whose own default exceeds
                                 # max_selections, which is exactly what crashed this page
@@ -1202,32 +1331,27 @@ def render_competition_card(comp):
                                 "Save selection", key=f"save_finalize_{e['event_id']}",
                                 icon=":material/check:",
                             ):
-                                previously_selected = {
-                                    v["user_id"] for v in event_volunteers if v.get("selected")
-                                }
-                                newly_selected = set(finalize_ids) - previously_selected
-                                newly_deselected = previously_selected - set(finalize_ids)
+                                with _safe_write("save this selection"):
+                                    previously_selected = {
+                                        v["user_id"] for v in event_volunteers if v.get("selected")
+                                    }
+                                    newly_selected = set(finalize_ids) - previously_selected
+                                    newly_deselected = previously_selected - set(finalize_ids)
 
-                                for uid in newly_selected:
-                                    client.table("event_volunteers").update({"selected": True}).eq(
-                                        "event_id", e["event_id"]
-                                    ).eq("user_id", uid).execute()
-                                    send_email(
-                                        user_email_by_id.get(uid),
-                                        f"You're selected: {e['name']} at {comp['name']}",
-                                        f"You've been selected to represent RoboKnights in "
-                                        f"{e['name']} at {comp['name']}.\n\n"
-                                        f"Log in to the app for full details.",
-                                    )
-                                for uid in newly_deselected:
-                                    client.table("event_volunteers").update({"selected": False}).eq(
-                                        "event_id", e["event_id"]
-                                    ).eq("user_id", uid).execute()
+                                    for uid in newly_selected:
+                                        client.table("event_volunteers").update({"selected": True}).eq(
+                                            "event_id", e["event_id"]
+                                        ).eq("user_id", uid).execute()
+                                        _send_selected_email(uid, e["name"], comp["name"])
+                                    for uid in newly_deselected:
+                                        client.table("event_volunteers").update({"selected": False}).eq(
+                                            "event_id", e["event_id"]
+                                        ).eq("user_id", uid).execute()
 
-                                if newly_selected or newly_deselected:
-                                    invalidate_cache()
-                                st.session_state.volunteer_message = f"Saved selection for {e['name']}."
-                                st.rerun()
+                                    if newly_selected or newly_deselected:
+                                        invalidate_cache()
+                                    st.session_state.volunteer_message = f"Saved selection for {e['name']}."
+                                    st.rerun()
 
                         # Bot status: unlocked starting the day before
                         # the competition (matches when the day-before
@@ -1237,7 +1361,7 @@ def render_competition_card(comp):
                         # their own.
                         if selected_names and comp.get("competition_date"):
                             days_until = (
-                                date.fromisoformat(comp["competition_date"]) - date.today()
+                                date.fromisoformat(comp["competition_date"]) - today_ist
                             ).days
                             if days_until <= 1:
                                 st.markdown("**Bot status**")
@@ -1262,23 +1386,24 @@ def render_competition_card(comp):
                                         "Save status", key=f"save_bot_status_{e['event_id']}",
                                         icon=":material/check:",
                                     ):
-                                        # Shared across the whole team (same team_no) when
-                                        # one's known — one bot, one status, no need for every
-                                        # teammate to separately type the same update.
-                                        my_team_no = my_row.get("team_no")
-                                        update_query = (
-                                            client.table("event_volunteers")
-                                            .update({"bot_status": new_status.strip()})
-                                            .eq("event_id", e["event_id"])
-                                        )
-                                        if my_team_no:
-                                            update_query = update_query.eq("team_no", my_team_no)
-                                        else:
-                                            update_query = update_query.eq("user_id", current_user_id)
-                                        update_query.execute()
-                                        invalidate_cache()
-                                        st.session_state.volunteer_message = "Bot status updated."
-                                        st.rerun()
+                                        with _safe_write("save the bot status"):
+                                            # Shared across the whole team (same team_no) when
+                                            # one's known — one bot, one status, no need for every
+                                            # teammate to separately type the same update.
+                                            my_team_no = my_row.get("team_no")
+                                            update_query = (
+                                                client.table("event_volunteers")
+                                                .update({"bot_status": new_status.strip()})
+                                                .eq("event_id", e["event_id"])
+                                            )
+                                            if my_team_no:
+                                                update_query = update_query.eq("team_no", my_team_no)
+                                            else:
+                                                update_query = update_query.eq("user_id", current_user_id)
+                                            update_query.execute()
+                                            invalidate_cache()
+                                            st.session_state.volunteer_message = "Bot status updated."
+                                            st.rerun()
 
 
 # --- Layout ------------------------------------------------------------------
