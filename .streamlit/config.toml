@@ -3,18 +3,44 @@
 # accent on top of it — "knight gold" — because all-grey primary buttons
 # looked disabled/generic. Gold shows on primary buttons, focused inputs,
 # links, and selection highlights; everything else stays monochrome.
+#
+# Split into [theme.dark]/[theme.light] (rather than one flat [theme]) so
+# Streamlit's own Settings menu offers a real Light/Dark/System switcher
+# using OUR colors for both — a single flat [theme] block makes Streamlit
+# hide that picker entirely, on the assumption a fully custom theme
+# shouldn't fall back to its generic presets. base = "dark" just picks
+# which one loads first; a few options (base, fontFaces, baseFontSize,
+# baseFontWeight, showSidebarBorder, chart colors) have to stay here at
+# the shared top level — Streamlit doesn't allow per-variant overrides
+# for those.
+#
+# Known trade-off: the login/logout gear-splash overlay in app.py has its
+# own hardcoded dark background (#242424), since Streamlit doesn't expose
+# which variant the VIEWER currently has selected to either Python or
+# plain CSS in this version — someone using Light mode will see a brief
+# dark flash during that splash specifically, nothing else.
 
 [theme]
 base = "dark"
-primaryColor = "#E8B33D"
-backgroundColor = "#242424"
-secondaryBackgroundColor = "#2E2E2E"
-textColor = "#FFFFFF"
-linkColor = "#E8B33D"
-borderColor = "#3A3A3A"
 font = "Work Sans:https://fonts.googleapis.com/css2?family=Work+Sans:wght@400;500;600;700&display=swap"
 headingFont = "Work Sans:https://fonts.googleapis.com/css2?family=Work+Sans:wght@600;700&display=swap"
 baseFontSize = 16
 baseRadius = "8px"
 showWidgetBorder = true
 linkUnderline = false
+
+[theme.dark]
+primaryColor = "#E8B33D"
+backgroundColor = "#242424"
+secondaryBackgroundColor = "#2E2E2E"
+textColor = "#FFFFFF"
+linkColor = "#E8B33D"
+borderColor = "#3A3A3A"
+
+[theme.light]
+primaryColor = "#B8860B"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F2F2F2"
+textColor = "#1A1A1A"
+linkColor = "#B8860B"
+borderColor = "#DDDDDD"
