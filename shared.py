@@ -19,11 +19,52 @@ from supabase import create_client
 APP_URL = os.environ.get("APP_URL", "http://localhost:8501")
 
 # Only these accounts can see the host-only Competitions tools (add a
-# competition, finalize volunteers, send announcements). Just two people
-# ever, so a plain list is simpler than building role-management UI for it.
+# competition, finalize volunteers, send announcements, the Members
+# directory, etc). Ordered by real-world hierarchy (Vice Principal, then
+# HOD, then the teacher in-charge) purely for readability here — the app
+# itself doesn't tier host access, every HOST_EMAILS account has
+# identical permissions regardless of title.
 HOST_EMAILS = {
     "roboknights@dpsrkp.net",
-    "ajithkumar@dpsrkp.net",  # Mr Ajith Kumar KG, teacher in-charge
+    "mukeshkumar@dpsrkp.net",  # Mr Mukesh Kumar, Vice Principal
+    "hemajain@dpsrkp.net",  # Ms Hema Jain, HOD Computer Science
+    "ajithkumar@dpsrkp.net",  # Mr Ajith Kumar KG, Robotics In-Charge
+}
+
+# Display title shown next to a host's name (sidebar account badge). Not
+# used for permissions anywhere — every HOST_EMAILS account has identical
+# access regardless of title; this is purely who's-who for people using
+# the app, not a tiered-access system.
+HOST_ROLES = {
+    "mukeshkumar@dpsrkp.net": "Vice Principal",
+    "hemajain@dpsrkp.net": "HOD, Computer Science",
+    "ajithkumar@dpsrkp.net": "Robotics In-Charge",
+}
+
+# A limited external tier for RoboKnights' sister club, Exun — can VIEW
+# Competitions, Meetings, Achievements, and the Members directory, but
+# can't volunteer, RSVP, log an achievement, or touch anything host-only.
+# A set (not one email) since more Exun accounts may be added later, same
+# shape as HOST_EMAILS.
+EXUN_EMAILS = {
+    "exun@dpsrkp.net",
+}
+
+# The private RoboKnights <> Exun channel is scoped to this specific,
+# hand-picked list of people (both clubs' leadership plus a few named
+# RoboKnights members), not "every host" or "every member" — matches
+# what was actually asked for, not a broader role. Anyone not in this
+# set doesn't see the channel exist at all.
+EXUN_CHANNEL_MEMBERS = {
+    "roboknights@dpsrkp.net",
+    "mukeshkumar@dpsrkp.net",
+    "hemajain@dpsrkp.net",
+    "ajithkumar@dpsrkp.net",
+    "exun@dpsrkp.net",
+    "r22639naitik@dpsrkp.net",  # Naitik Jindal
+    "r23444kyraan@dpsrkp.net",  # Kyraan Katyal
+    "v09045medhansh@dpsrkp.net",  # Medhansh Tanmay Pandya
+    "v09145aryamman@dpsrkp.net",  # Aryamman Ojha
 }
 
 # The club's real competition-tracking sheet ("E2C"). Always this one sheet,

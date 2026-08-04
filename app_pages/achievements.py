@@ -15,6 +15,7 @@ from shared import cached_table, get_client, invalidate_cache
 
 client = get_client()
 is_host = st.session_state.is_host
+is_exun = st.session_state.is_exun
 current_user_id = st.session_state.current_user_id
 user_name_by_id = st.session_state.user_name_by_id
 
@@ -47,112 +48,118 @@ m3.metric(
     help="Distinct competition events with a result logged",
 )
 
-tab_browse, tab_add = st.tabs(["All achievements", "Log a result"])
+# Exun can browse, but never logs a result themselves — no second tab to
+# show them at all, rather than a tab that's just permanently empty.
+if is_exun:
+    tab_browse = st.container()
+else:
+    tab_browse, tab_add = st.tabs(["All achievements", "Log a result"])
 
-with tab_add:
-    if not competitions:
-        st.caption("No competitions to pick from yet.")
-    else:
-        comp_options = [c["competition_id"] for c in competitions]
-        comp_name_by_id = {c["competition_id"]: c["name"] for c in competitions}
-        chosen_comp_id = st.selectbox(
-            "Competition",
-            comp_options,
-            format_func=lambda cid: comp_name_by_id.get(cid, "Unknown"),
-            key="new_achievement_comp",
-        )
-
-        events = sorted(
-            (e for e in cached_table("competition_events") if e["competition_id"] == chosen_comp_id),
-            key=lambda e: (e["name"], e["event_id"]),
-        )
-        if not events:
-            st.caption("This competition has no events yet.")
+if not is_exun:
+    with tab_add:
+        if not competitions:
+            st.caption("No competitions to pick from yet.")
         else:
-            event_options = [e["event_id"] for e in events]
-            event_name_by_id = {e["event_id"]: e["name"] for e in events}
-            chosen_event_id = st.selectbox(
-                "Event",
-                event_options,
-                format_func=lambda eid: event_name_by_id.get(eid, "Unknown"),
-                key="new_achievement_event",
+            comp_options = [c["competition_id"] for c in competitions]
+            comp_name_by_id = {c["competition_id"]: c["name"] for c in competitions}
+            chosen_comp_id = st.selectbox(
+                "Competition",
+                comp_options,
+                format_func=lambda cid: comp_name_by_id.get(cid, "Unknown"),
+                key="new_achievement_comp",
             )
 
-            position = st.text_input(
-                "Position (e.g. 1st place, Finalist)", key="new_achievement_position"
+            events = sorted(
+                (e for e in cached_table("competition_events") if e["competition_id"] == chosen_comp_id),
+                key=lambda e: (e["name"], e["event_id"]),
             )
-            media_link = st.text_input(
-                "Attachment/link (optional)", key="new_achievement_media",
-                placeholder="https://... (photo, video, drive folder, etc.)",
-            )
-            if st.button("Save", icon=":material/check:", type="primary"):
-                link = media_link.strip()
-                if link and not link.startswith(("http://", "https://")):
-                    link = "https://" + link
-                client.table("achievements").insert({
-                    "user_id": current_user_id,
-                    "competition_id": chosen_comp_id,
-                    "event_id": chosen_event_id,
-                    "position": position.strip() or None,
-                    "media_link": link or None,
-                }).execute()
-
-                # Auto-log the same result for every teammate (same team_no
-                # on this event, from the E2C import's team grouping) who
-                # hasn't already logged one themselves — so one person
-                # reporting a team result doesn't mean everyone has to
-                # separately do the same thing. Nothing to do if this
-                # person isn't grouped into a team at all yet.
-                #
-                # These reads are deliberately NOT cached_table: they decide
-                # who to skip as already-logged, so they need the true
-                # current state rather than up to 8s old.
-                my_row = (
-                    client.table("event_volunteers")
-                    .select("team_no")
-                    .eq("event_id", chosen_event_id)
-                    .eq("user_id", current_user_id)
-                    .execute()
-                    .data
+            if not events:
+                st.caption("This competition has no events yet.")
+            else:
+                event_options = [e["event_id"] for e in events]
+                event_name_by_id = {e["event_id"]: e["name"] for e in events}
+                chosen_event_id = st.selectbox(
+                    "Event",
+                    event_options,
+                    format_func=lambda eid: event_name_by_id.get(eid, "Unknown"),
+                    key="new_achievement_event",
                 )
-                team_no = my_row[0]["team_no"] if my_row else None
 
-                auto_logged = 0
-                if team_no:
-                    teammates = (
+                position = st.text_input(
+                    "Position (e.g. 1st place, Finalist)", key="new_achievement_position"
+                )
+                media_link = st.text_input(
+                    "Attachment/link (optional)", key="new_achievement_media",
+                    placeholder="https://... (photo, video, drive folder, etc.)",
+                )
+                if st.button("Save", icon=":material/check:", type="primary"):
+                    link = media_link.strip()
+                    if link and not link.startswith(("http://", "https://")):
+                        link = "https://" + link
+                    client.table("achievements").insert({
+                        "user_id": current_user_id,
+                        "competition_id": chosen_comp_id,
+                        "event_id": chosen_event_id,
+                        "position": position.strip() or None,
+                        "media_link": link or None,
+                    }).execute()
+
+                    # Auto-log the same result for every teammate (same team_no
+                    # on this event, from the E2C import's team grouping) who
+                    # hasn't already logged one themselves — so one person
+                    # reporting a team result doesn't mean everyone has to
+                    # separately do the same thing. Nothing to do if this
+                    # person isn't grouped into a team at all yet.
+                    #
+                    # These reads are deliberately NOT cached_table: they decide
+                    # who to skip as already-logged, so they need the true
+                    # current state rather than up to 8s old.
+                    my_row = (
                         client.table("event_volunteers")
-                        .select("user_id")
+                        .select("team_no")
                         .eq("event_id", chosen_event_id)
-                        .eq("team_no", team_no)
-                        .neq("user_id", current_user_id)
+                        .eq("user_id", current_user_id)
                         .execute()
                         .data
                     )
-                    already_logged = {
-                        a["user_id"]
-                        for a in client.table("achievements")
-                        .select("user_id").eq("event_id", chosen_event_id).execute().data
-                    }
-                    for t in teammates:
-                        if t["user_id"] in already_logged:
-                            continue
-                        client.table("achievements").insert({
-                            "user_id": t["user_id"],
-                            "competition_id": chosen_comp_id,
-                            "event_id": chosen_event_id,
-                            "position": position.strip() or None,
-                            "media_link": link or None,
-                        }).execute()
-                        auto_logged += 1
+                    team_no = my_row[0]["team_no"] if my_row else None
 
-                invalidate_cache()
-                msg = "Achievement added!"
-                if auto_logged:
-                    msg += f" Also logged for {auto_logged} teammate(s)."
-                st.session_state.achievement_message = msg
-                del st.session_state["new_achievement_position"]
-                del st.session_state["new_achievement_media"]
-                st.rerun()
+                    auto_logged = 0
+                    if team_no:
+                        teammates = (
+                            client.table("event_volunteers")
+                            .select("user_id")
+                            .eq("event_id", chosen_event_id)
+                            .eq("team_no", team_no)
+                            .neq("user_id", current_user_id)
+                            .execute()
+                            .data
+                        )
+                        already_logged = {
+                            a["user_id"]
+                            for a in client.table("achievements")
+                            .select("user_id").eq("event_id", chosen_event_id).execute().data
+                        }
+                        for t in teammates:
+                            if t["user_id"] in already_logged:
+                                continue
+                            client.table("achievements").insert({
+                                "user_id": t["user_id"],
+                                "competition_id": chosen_comp_id,
+                                "event_id": chosen_event_id,
+                                "position": position.strip() or None,
+                                "media_link": link or None,
+                            }).execute()
+                            auto_logged += 1
+
+                    invalidate_cache()
+                    msg = "Achievement added!"
+                    if auto_logged:
+                        msg += f" Also logged for {auto_logged} teammate(s)."
+                    st.session_state.achievement_message = msg
+                    del st.session_state["new_achievement_position"]
+                    del st.session_state["new_achievement_media"]
+                    st.rerun()
 
 with tab_browse:
     # --- Browse all achievements -------------------------------------------------

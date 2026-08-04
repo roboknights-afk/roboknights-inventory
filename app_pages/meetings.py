@@ -17,6 +17,7 @@ from shared import cached_table, get_client, invalidate_cache
 
 client = get_client()
 is_host = st.session_state.is_host
+is_exun = st.session_state.is_exun
 current_user_id = st.session_state.current_user_id
 user_name_by_id = st.session_state.user_name_by_id
 
@@ -220,44 +221,47 @@ def render_meeting_card(m):
             else:
                 st.caption(":material/group: No one has RSVP'd yet")
 
-            rcol1, rcol2 = st.columns(2)
-            if already_rsvpd:
-                if rcol1.button(
-                    "Can't make it", key=f"withdraw_rsvp_{m['meeting_id']}", icon=":material/close:"
-                ):
-                    client.table("meeting_rsvps").delete().eq(
-                        "meeting_id", m["meeting_id"]
-                    ).eq("user_id", current_user_id).execute()
-                    invalidate_cache()
-                    st.session_state.meeting_message = ("success", "RSVP withdrawn.")
-                    st.rerun()
-            else:
-                if rcol1.button(
-                    "I'm going", key=f"rsvp_{m['meeting_id']}", icon=":material/event_available:",
-                    type="primary",
-                ):
-                    client.table("meeting_rsvps").insert({
-                        "meeting_id": m["meeting_id"], "user_id": current_user_id,
-                    }).execute()
-                    invalidate_cache()
-                    st.session_state.meeting_message = ("success", "RSVP'd!")
-                    st.rerun()
-
-            # Self check-in only opens up once the meeting's actually
-            # happening or has passed — no point checking in for the future.
-            if is_past_or_today:
-                if already_checked_in:
-                    rcol2.caption(":material/check_circle: You checked in")
-                else:
-                    if rcol2.button(
-                        "I attended", key=f"checkin_{m['meeting_id']}", icon=":material/how_to_reg:"
+            # Exun can see everything above (details, join link, who's
+            # going) but never RSVPs or checks in themselves — view only.
+            if not is_exun:
+                rcol1, rcol2 = st.columns(2)
+                if already_rsvpd:
+                    if rcol1.button(
+                        "Can't make it", key=f"withdraw_rsvp_{m['meeting_id']}", icon=":material/close:"
                     ):
-                        client.table("meeting_attendance").insert({
+                        client.table("meeting_rsvps").delete().eq(
+                            "meeting_id", m["meeting_id"]
+                        ).eq("user_id", current_user_id).execute()
+                        invalidate_cache()
+                        st.session_state.meeting_message = ("success", "RSVP withdrawn.")
+                        st.rerun()
+                else:
+                    if rcol1.button(
+                        "I'm going", key=f"rsvp_{m['meeting_id']}", icon=":material/event_available:",
+                        type="primary",
+                    ):
+                        client.table("meeting_rsvps").insert({
                             "meeting_id": m["meeting_id"], "user_id": current_user_id,
                         }).execute()
                         invalidate_cache()
-                        st.session_state.meeting_message = ("success", "Checked in!")
+                        st.session_state.meeting_message = ("success", "RSVP'd!")
                         st.rerun()
+
+                # Self check-in only opens up once the meeting's actually
+                # happening or has passed — no point checking in for the future.
+                if is_past_or_today:
+                    if already_checked_in:
+                        rcol2.caption(":material/check_circle: You checked in")
+                    else:
+                        if rcol2.button(
+                            "I attended", key=f"checkin_{m['meeting_id']}", icon=":material/how_to_reg:"
+                        ):
+                            client.table("meeting_attendance").insert({
+                                "meeting_id": m["meeting_id"], "user_id": current_user_id,
+                            }).execute()
+                            invalidate_cache()
+                            st.session_state.meeting_message = ("success", "Checked in!")
+                            st.rerun()
 
             # Host: review and correct the final attendance list — anyone
             # can be added or removed here, not just people who checked

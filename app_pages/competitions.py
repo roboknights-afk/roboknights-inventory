@@ -19,6 +19,7 @@ from shared import HOST_EMAILS, IST, cached_table, get_client, invalidate_cache,
 
 client = get_client()
 is_host = st.session_state.is_host
+is_exun = st.session_state.is_exun
 current_user_id = st.session_state.current_user_id
 current_user_grade = st.session_state.current_user_grade
 user_name_by_id = st.session_state.user_name_by_id
@@ -1158,7 +1159,8 @@ def render_competition_card(comp):
                     ]
                     already_volunteered = any(v["user_id"] == current_user_id for v in event_volunteers)
                     is_eligible = (
-                        not comp.get("not_attending")
+                        not is_exun  # Exun can view every event, but never volunteer for one
+                        and not comp.get("not_attending")
                         and current_user_grade is not None
                         and e["min_grade"] <= current_user_grade <= e["max_grade"]
                     )

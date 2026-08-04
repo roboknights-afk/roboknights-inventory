@@ -4,7 +4,10 @@ from pathlib import Path
 import streamlit as st
 from dotenv import load_dotenv
 
-from shared import HOST_EMAILS, cached_table, get_client, invalidate_cache
+from shared import (
+    EXUN_CHANNEL_MEMBERS, EXUN_EMAILS, HOST_EMAILS, HOST_ROLES, cached_table, get_client,
+    invalidate_cache,
+)
 
 # Secrets (the Supabase URL and key) live in a local .env file, not in this
 # file, so they never get accidentally shared or committed.
@@ -142,6 +145,15 @@ st.html("""
 # and at 5% opacity so it reads as texture, not content. Inlined as a
 # base64 data-URI because Streamlit doesn't serve the static/ folder over
 # HTTP by default.
+#
+# The source SVG is solid white (fill="white") — invisible-on-white once
+# the light theme option existed, since it'd be a blurred white shape on a
+# blurred white background. Streamlit doesn't expose which theme variant
+# the viewer currently has selected to plain CSS in this version (same
+# limitation as the splash below), so this uses prefers-color-scheme as
+# the best available signal — exactly right for anyone on "System", a
+# reasonable default otherwise. filter: invert(1) flips the white gear to
+# near-black, which reads the same way against a light background.
 _gear_b64 = base64.b64encode(Path("static/roboknights_logo.svg").read_bytes()).decode()
 st.html(f"""
     <style>
@@ -162,6 +174,9 @@ st.html(f"""
         pointer-events: none;
         z-index: 0;
         animation: rk-watermark-spin 120s linear infinite;
+    }}
+    @media (prefers-color-scheme: light) {{
+        [data-testid="stApp"]::after {{ filter: blur(2px) invert(1); }}
     }}
     </style>
 """)
@@ -198,6 +213,16 @@ def render_gear_splash(direction="in"):
 #rk-splash svg {{
     width: 150px; height: 150px;
     animation: rk-splash-gear {gear_secs} cubic-bezier(0.4, 0, 0.2, 1) forwards;
+}}
+/* Same limitation as the watermark above: Streamlit doesn't expose the
+   viewer's live theme selection to plain CSS in this version, so this
+   uses the OS-level signal instead — correct for "System", a reasonable
+   default otherwise. Without it, a light-mode viewer would see a jarring
+   near-black flash (and an invisible white-on-white gear) on every
+   login/logout. */
+@media (prefers-color-scheme: light) {{
+    #rk-splash {{ background: #FFFFFF; }}
+    #rk-splash svg {{ filter: invert(1); }}
 }}
 @keyframes rk-splash-gear {{{gear_frames}
 }}
@@ -512,6 +537,11 @@ st.session_state.current_user_name = st.session_state.user_name_by_id.get(
 st.session_state.current_user_grade = st.session_state.user_grade_by_id.get(st.session_state.current_user_id)
 st.session_state.current_user_is_staff = st.session_state.user_is_staff_by_id.get(st.session_state.current_user_id, False)
 st.session_state.is_host = st.session_state.auth_user["email"] in HOST_EMAILS
+# A limited external tier for Exun (RoboKnights' sister club): can VIEW
+# Competitions/Meetings/Achievements/Members, but never volunteer, RSVP,
+# log an achievement, or touch anything host-only. Checked separately
+# from is_host — the two are mutually exclusive in practice.
+st.session_state.is_exun = st.session_state.auth_user["email"] in EXUN_EMAILS
 
 # --- Sidebar: account card -------------------------------------------------
 # Lives here (not in a page file) so it shows up no matter which page is
@@ -525,7 +555,13 @@ with st.sidebar:
         # Role + grade at a glance, so it's obvious which account you're on
         # (easy to lose track when testing with more than one).
         if st.session_state.is_host:
-            st.badge("Host", color="primary", icon=":material/shield_person:")
+            host_title = HOST_ROLES.get(st.session_state.auth_user["email"])
+            st.badge(
+                host_title if host_title else "Host",
+                color="primary", icon=":material/shield_person:",
+            )
+        elif st.session_state.is_exun:
+            st.badge("Exun (Sister Club)", color="blue", icon=":material/handshake:")
         elif st.session_state.current_user_is_staff:
             st.badge("Staff", color="grey", icon=":material/badge:")
         else:
@@ -545,19 +581,29 @@ with st.sidebar:
 
 # --- Navigation ------------------------------------------------------------
 
-pages = [
-    st.Page("app_pages/home.py", title="Home", icon=":material/home:"),
-    st.Page("app_pages/inventory.py", title="Inventory", icon=":material/inventory_2:"),
-    st.Page("app_pages/competitions.py", title="Competitions", icon=":material/emoji_events:"),
-    st.Page("app_pages/announcements.py", title="Announcements", icon=":material/campaign:"),
-    st.Page("app_pages/queries.py", title="Queries", icon=":material/quiz:"),
-    st.Page("app_pages/meetings.py", title="Meetings", icon=":material/groups:"),
-    st.Page("app_pages/achievements.py", title="Achievements", icon=":material/military_tech:"),
-]
-# Host-only page — only added to the nav at all when logged in as a host,
-# so non-hosts never even see it listed in the sidebar.
-if st.session_state.is_host:
+pages = [st.Page("app_pages/home.py", title="Home", icon=":material/home:")]
+# Exun only gets an allowlist of specific pages (Competitions, Meetings,
+# Achievements, Members — each enforcing view-only for Exun internally),
+# not the full nav — Inventory, Announcements, and Queries aren't part of
+# what Exun was actually given access to.
+if not st.session_state.is_exun:
+    pages.append(st.Page("app_pages/inventory.py", title="Inventory", icon=":material/inventory_2:"))
+pages.append(st.Page("app_pages/competitions.py", title="Competitions", icon=":material/emoji_events:"))
+if not st.session_state.is_exun:
+    pages.append(st.Page("app_pages/announcements.py", title="Announcements", icon=":material/campaign:"))
+    pages.append(st.Page("app_pages/queries.py", title="Queries", icon=":material/quiz:"))
+pages.append(st.Page("app_pages/meetings.py", title="Meetings", icon=":material/groups:"))
+pages.append(st.Page("app_pages/achievements.py", title="Achievements", icon=":material/military_tech:"))
+
+# Host-only elsewhere, but Members is also opened up to Exun (full
+# details, per an explicit call — Exun just can't edit it, unlike a host).
+if st.session_state.is_host or st.session_state.is_exun:
     pages.append(st.Page("app_pages/members.py", title="Members", icon=":material/badge:"))
+
+# The private RoboKnights <> Exun channel — only the specific hand-picked
+# people in EXUN_CHANNEL_MEMBERS ever see this page exists at all.
+if st.session_state.auth_user["email"] in EXUN_CHANNEL_MEMBERS:
+    pages.append(st.Page("app_pages/exun_channel.py", title="Exun Channel", icon=":material/handshake:"))
 
 page = st.navigation(pages)
 page.run()

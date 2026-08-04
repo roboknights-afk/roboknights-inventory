@@ -1,5 +1,7 @@
-# Host-only member directory. Not linked from anywhere a non-host would see
-# it — app.py only adds this page to the nav at all when is_host is true —
+# Host-only member directory — Exun (RoboKnights' sister club) also gets
+# read-only access to the same full data, per an explicit call, but can't
+# edit anything. Not linked from anywhere a non-host/non-Exun would see
+# it — app.py only adds this page to the nav at all for those two groups —
 # but guarded here too in case someone hits the URL directly, since that's
 # the one thing st.navigation's page list alone doesn't stop.
 
@@ -8,9 +10,10 @@ import streamlit as st
 from shared import cached_table, get_client, invalidate_cache
 
 is_host = st.session_state.is_host
+is_exun = st.session_state.is_exun
 
-if not is_host:
-    st.error("Host access only.")
+if not is_host and not is_exun:
+    st.error("Access only for hosts and Exun.")
     st.stop()
 
 client = get_client()
@@ -51,14 +54,15 @@ m3.metric(
 with st.expander(":material/info: About this page"):
     st.markdown(
         "Grade, section, admission no., and phone no. are private to each member "
-        "everywhere else in the app — this directory is the one place a host can "
-        "see everyone's details together."
+        "everywhere else in the app — this directory (visible to hosts and Exun) "
+        "is the one place they're shown together."
     )
-    st.warning(
-        "Editing **Institutional email** here only updates this profile record. "
-        "It does **not** change their actual login email in Supabase Auth, which "
-        "is a separate system this app doesn't have admin access to."
-    )
+    if not is_exun:
+        st.warning(
+            "Editing **Institutional email** here only updates this profile record. "
+            "It does **not** change their actual login email in Supabase Auth, which "
+            "is a separate system this app doesn't have admin access to."
+        )
 
 if not users:
     st.caption("No members yet.")
@@ -94,66 +98,72 @@ else:
 
     st.caption(f"Showing {len(visible_users)} of {len(users)} member(s).")
 
-    # Editable straight in the table. num_rows="fixed" so hosts can't
-    # add/delete rows here — a "member" only ever comes from someone
-    # actually signing up.
-    edited_rows = st.data_editor(
-        [
-            {
-                "Name": u["name"],
-                "Role": "Staff" if u.get("is_staff") else "Student",
-                "Institutional email": u["email"],
-                "Grade": u.get("grade"),
-                "Section": u.get("section") or "",
-                "Admission no.": u.get("admission_no") or "",
-                "Phone no.": u.get("phone_no") or "",
-            }
-            for u in visible_users
-        ],
-        hide_index=True,
-        width="stretch",
-        num_rows="fixed",
-        column_config={
-            "Name": st.column_config.TextColumn("Name", width="medium"),
-            "Role": st.column_config.TextColumn("Role", width="small", disabled=True),
-            "Institutional email": st.column_config.TextColumn("Institutional email", width="medium"),
-            "Grade": st.column_config.SelectboxColumn("Grade", options=GRADE_OPTIONS, width="small"),
-            "Section": st.column_config.TextColumn("Section", width="small"),
-            "Admission no.": st.column_config.TextColumn("Admission no.", width="small"),
-            "Phone no.": st.column_config.TextColumn("Phone no.", width="small"),
-        },
-        key="members_editor",
-    )
+    table_rows = [
+        {
+            "Name": u["name"],
+            "Role": "Staff" if u.get("is_staff") else "Student",
+            "Institutional email": u["email"],
+            "Grade": u.get("grade"),
+            "Section": u.get("section") or "",
+            "Admission no.": u.get("admission_no") or "",
+            "Phone no.": u.get("phone_no") or "",
+        }
+        for u in visible_users
+    ]
 
-    if st.button("Save changes", icon=":material/check:", type="primary"):
-        # Row order is preserved by data_editor, so we can zip the rows that
-        # were actually shown back up with the edited ones and write only
-        # what changed. Zipping against the FILTERED list matters — pairing
-        # edits with the unfiltered list would write them to the wrong people
-        # whenever a search or grade filter is active.
-        changed = 0
-        for original, edited in zip(visible_users, edited_rows):
-            updates = {}
-            if edited["Name"].strip() != original["name"]:
-                updates["name"] = edited["Name"].strip()
-            if edited["Institutional email"].strip() != original["email"]:
-                updates["email"] = edited["Institutional email"].strip()
-            if edited["Grade"] != original.get("grade"):
-                updates["grade"] = edited["Grade"]
-            if edited["Section"].strip() != (original.get("section") or ""):
-                updates["section"] = edited["Section"].strip()
-            if edited["Admission no."].strip() != (original.get("admission_no") or ""):
-                updates["admission_no"] = edited["Admission no."].strip()
-            if edited["Phone no."].strip() != (original.get("phone_no") or ""):
-                updates["phone_no"] = edited["Phone no."].strip()
-
-            if updates:
-                client.table("users").update(updates).eq("user_id", original["user_id"]).execute()
-                changed += 1
-
-        if changed:
-            invalidate_cache()
-        st.session_state.member_edit_message = (
-            f"Updated {changed} member(s)." if changed else "No changes to save."
+    if is_exun:
+        # Read-only for Exun — same data a host sees, but no editing.
+        st.dataframe(table_rows, hide_index=True, width="stretch")
+    else:
+        # Editable straight in the table. num_rows="fixed" so hosts can't
+        # add/delete rows here — a "member" only ever comes from someone
+        # actually signing up.
+        edited_rows = st.data_editor(
+            table_rows,
+            hide_index=True,
+            width="stretch",
+            num_rows="fixed",
+            column_config={
+                "Name": st.column_config.TextColumn("Name", width="medium"),
+                "Role": st.column_config.TextColumn("Role", width="small", disabled=True),
+                "Institutional email": st.column_config.TextColumn("Institutional email", width="medium"),
+                "Grade": st.column_config.SelectboxColumn("Grade", options=GRADE_OPTIONS, width="small"),
+                "Section": st.column_config.TextColumn("Section", width="small"),
+                "Admission no.": st.column_config.TextColumn("Admission no.", width="small"),
+                "Phone no.": st.column_config.TextColumn("Phone no.", width="small"),
+            },
+            key="members_editor",
         )
-        st.rerun()
+
+        if st.button("Save changes", icon=":material/check:", type="primary"):
+            # Row order is preserved by data_editor, so we can zip the rows
+            # that were actually shown back up with the edited ones and write
+            # only what changed. Zipping against the FILTERED list matters —
+            # pairing edits with the unfiltered list would write them to the
+            # wrong people whenever a search or grade filter is active.
+            changed = 0
+            for original, edited in zip(visible_users, edited_rows):
+                updates = {}
+                if edited["Name"].strip() != original["name"]:
+                    updates["name"] = edited["Name"].strip()
+                if edited["Institutional email"].strip() != original["email"]:
+                    updates["email"] = edited["Institutional email"].strip()
+                if edited["Grade"] != original.get("grade"):
+                    updates["grade"] = edited["Grade"]
+                if edited["Section"].strip() != (original.get("section") or ""):
+                    updates["section"] = edited["Section"].strip()
+                if edited["Admission no."].strip() != (original.get("admission_no") or ""):
+                    updates["admission_no"] = edited["Admission no."].strip()
+                if edited["Phone no."].strip() != (original.get("phone_no") or ""):
+                    updates["phone_no"] = edited["Phone no."].strip()
+
+                if updates:
+                    client.table("users").update(updates).eq("user_id", original["user_id"]).execute()
+                    changed += 1
+
+            if changed:
+                invalidate_cache()
+            st.session_state.member_edit_message = (
+                f"Updated {changed} member(s)." if changed else "No changes to save."
+            )
+            st.rerun()

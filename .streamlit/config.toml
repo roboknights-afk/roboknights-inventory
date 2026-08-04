@@ -14,11 +14,14 @@
 # the shared top level — Streamlit doesn't allow per-variant overrides
 # for those.
 #
-# Known trade-off: the login/logout gear-splash overlay in app.py has its
-# own hardcoded dark background (#242424), since Streamlit doesn't expose
-# which variant the VIEWER currently has selected to either Python or
-# plain CSS in this version — someone using Light mode will see a brief
-# dark flash during that splash specifically, nothing else.
+# Known trade-off: the login/logout gear-splash overlay and the gear
+# watermark in app.py can't ask Streamlit which variant the viewer
+# currently has selected — that isn't exposed to Python or plain CSS in
+# this version. Both fall back to a prefers-color-scheme media query
+# instead (the OS/browser's own light-vs-dark signal), which is exactly
+# right for anyone on the "System" option and a reasonable default
+# otherwise, but won't track someone who explicitly picks Light while
+# their OS itself is set to Dark (or vice versa).
 
 [theme]
 base = "dark"
