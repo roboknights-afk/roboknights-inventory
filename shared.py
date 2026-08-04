@@ -6,6 +6,7 @@
 import os
 import re
 import smtplib
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from email.mime.text import MIMEText
 
@@ -118,6 +119,15 @@ def invalidate_cache():
 IST = timezone(timedelta(hours=5, minutes=30))
 
 
+def today_ist():
+    # "Today" as the people using this app experience it — NOT the
+    # server's own date. Streamlit Cloud and GitHub Actions both run in
+    # UTC, where between midnight and 5:30 AM IST the calendar date is
+    # still "yesterday" — every due-date / is-it-today comparison in the
+    # app should go through this, never a bare date.today().
+    return datetime.now(IST).date()
+
+
 def format_ist(created_at):
     # Supabase stores timestamps in UTC; convert to IST for display since
     # that's the timezone everyone using this app is actually in.
@@ -125,6 +135,41 @@ def format_ist(created_at):
     if posted.tzinfo is None:
         posted = posted.replace(tzinfo=timezone.utc)
     return posted.astimezone(IST).strftime("%d %b %Y, %I:%M %p IST")
+
+
+def format_relative(created_at):
+    # "5m ago" reads faster than a full timestamp for anything recent —
+    # used on chat-like screens (queries, announcements, the Exun
+    # channel), usually with the exact format_ist time tucked into a
+    # help tooltip. Falls back to the full date once it's over a week
+    # old, where "9d ago" stops being helpful.
+    posted = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+    if posted.tzinfo is None:
+        posted = posted.replace(tzinfo=timezone.utc)
+    seconds = int((datetime.now(timezone.utc) - posted).total_seconds())
+    if seconds < 60:
+        return "just now"
+    if seconds < 3600:
+        return f"{seconds // 60}m ago"
+    if seconds < 86400:
+        return f"{seconds // 3600}h ago"
+    if seconds < 7 * 86400:
+        return f"{seconds // 86400}d ago"
+    return format_ist(created_at)
+
+
+@contextmanager
+def safe_write(action_description):
+    # Wraps a block of Supabase writes so a transient failure (network
+    # blip, a Supabase hiccup) shows a clean inline error instead of
+    # crashing the whole page for whoever's using it right then. Safe
+    # around st.rerun()/st.stop() too: those work by raising exceptions
+    # that inherit from BaseException specifically so a broad
+    # "except Exception" like this one can't swallow them.
+    try:
+        yield
+    except Exception as e:
+        st.error(f"Couldn't {action_description}: {e}")
 
 
 def send_email(to_email, subject, body):

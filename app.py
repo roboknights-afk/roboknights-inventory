@@ -136,6 +136,21 @@ st.html("""
 
     /* Inputs ease their focus-border in instead of snapping */
     [data-testid="stTextInputRootElement"] { transition: border-color 0.15s ease; }
+
+    /* Chat messages (Queries, Exun channel) get a soft bubble background so
+       a conversation reads as bubbles, not bare rows. The translucent grey
+       works on both the dark and light theme without needing two rules. */
+    [data-testid="stChatMessage"] {
+        background: rgba(128, 128, 128, 0.08);
+        border-radius: 12px;
+        padding: 12px 16px;
+    }
+
+    /* Sidebar nav links nudge right on hover — same "this is alive"
+       language as the buttons and cards. Anchor tags inside the nav are
+       stable across Streamlit versions, unlike the emotion-cache classes. */
+    [data-testid="stSidebarNav"] a { transition: transform 0.12s ease; }
+    [data-testid="stSidebarNav"] a:hover { transform: translateX(3px); }
     </style>
 """)
 

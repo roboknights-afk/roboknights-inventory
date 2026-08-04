@@ -15,7 +15,7 @@ from datetime import date
 
 import streamlit as st
 
-from shared import cached_table, format_ist
+from shared import cached_table, format_ist, today_ist
 
 # Read-only page — every table it needs goes through the shared 8-second
 # cache instead of a fresh Supabase round trip per query, so landing here
@@ -24,7 +24,10 @@ current_user_id = st.session_state.current_user_id
 current_user_name = st.session_state.current_user_name
 is_host = st.session_state.is_host
 
-today = date.today()
+# IST "today", not the UTC server's — otherwise everything date-sensitive
+# here (overdue warnings, "meeting is today" check-ins) runs up to 5.5
+# hours behind real IST mornings.
+today = today_ist()
 today_iso = today.isoformat()
 
 
@@ -125,7 +128,9 @@ latest_announcements = sorted(
 # --- Header + metrics strip ---------------------------------------------------
 
 st.title(f":material/waving_hand: Welcome back, {current_user_name.split()[0]}")
-st.caption("Everything waiting on you, in one place.")
+st.caption(
+    f"{today.strftime('%A, %d %B %Y')}  •  Everything waiting on you, in one place."
+)
 
 m1, m2, m3, m4 = st.columns(4)
 m1.metric(

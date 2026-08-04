@@ -9,13 +9,19 @@
 # instead, since those need to run on a schedule, not a page view.
 # Announcements moved to their own page (app_pages/announcements.py).
 
-from contextlib import contextmanager
 from datetime import date, datetime
 
 import streamlit as st
 
 from e2c_import import scan_e2c_sheet
-from shared import HOST_EMAILS, IST, cached_table, get_client, invalidate_cache, send_email
+from shared import (
+    HOST_EMAILS, IST, cached_table, get_client, invalidate_cache, safe_write, send_email,
+)
+
+# The page-local name everything below already uses — the implementation
+# moved to shared.py so Inventory and the other pages get the same
+# crash-proofing without a second copy to keep in sync.
+_safe_write = safe_write
 
 client = get_client()
 is_host = st.session_state.is_host
@@ -28,19 +34,6 @@ user_email_by_id = st.session_state.user_email_by_id
 GRADES = [6, 7, 8, 9, 10, 11, 12]  # 6 included since E2C-imported events can genuinely be 6th-grade eligible
 BLANK_LINK = {"label": "", "url": ""}
 BLANK_EVENT = {"event_id": None, "name": "", "details": "", "team_size": 1, "max_teams": 1, "min_grade": 7, "max_grade": 12}
-
-
-@contextmanager
-def _safe_write(action_description):
-    # Wraps a block of Supabase writes so a transient failure (network
-    # blip, a Supabase hiccup) shows a clean inline error instead of
-    # crashing the whole page for whoever's using it right then — the same
-    # crash class as the DMMITS multiselect bug, just triggered by an API
-    # failure instead of a bad widget default.
-    try:
-        yield
-    except Exception as e:
-        st.error(f"Couldn't {action_description}: {e}")
 
 
 def _validate_competition_form(name, comp_date, events):

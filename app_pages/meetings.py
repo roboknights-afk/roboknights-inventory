@@ -13,7 +13,7 @@ from datetime import date, time
 
 import streamlit as st
 
-from shared import cached_table, get_client, invalidate_cache
+from shared import cached_table, get_client, invalidate_cache, today_ist
 
 client = get_client()
 is_host = st.session_state.is_host
@@ -84,7 +84,10 @@ if st.session_state.meeting_message:
 meetings = sorted(cached_table("meetings"), key=lambda m: (m["meeting_date"], m["meeting_id"]))
 all_rsvps = cached_table("meeting_rsvps")
 all_attendance = cached_table("meeting_attendance")
-today_iso = date.today().isoformat()
+# IST "today", not the UTC server's — otherwise check-in for a meeting
+# happening today wouldn't unlock until 5:30 AM IST, and the upcoming/past
+# split would lag the same way.
+today_iso = today_ist().isoformat()
 
 # --- At-a-glance numbers -----------------------------------------------------
 upcoming_meetings = [m for m in meetings if m["meeting_date"] >= today_iso]
@@ -170,7 +173,11 @@ def render_meeting_card(m):
                 [3, 1, 1, 1], vertical_alignment="center"
             )
             title_col.markdown(f"### {m['title']}")
-            # Where you stand on this one, without reading the names list.
+            # Where you stand on this one, without reading the names list —
+            # plus a loud "Today" flag so the one meeting that matters right
+            # now stands out from the rest of the list.
+            if m["meeting_date"] == today_iso:
+                badge_col.badge("Today", color="primary", icon=":material/today:")
             if already_checked_in:
                 badge_col.badge("Attended", color="green", icon=":material/how_to_reg:")
             elif already_rsvpd:
@@ -201,7 +208,12 @@ def render_meeting_card(m):
                 st.write(m["agenda"])
 
             if m.get("join_link"):
-                st.markdown(f"[Join meeting]({m['join_link']})")
+                # A real button, not a bare text link — this is the single
+                # most important action on a meeting card.
+                st.link_button(
+                    "Join meeting", m["join_link"],
+                    icon=":material/videocam:", type="primary",
+                )
 
             if m.get("meeting_id_code") or m.get("meeting_password"):
                 detail_bits = []

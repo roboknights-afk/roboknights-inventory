@@ -12,8 +12,8 @@ from urllib.parse import quote
 import streamlit as st
 
 from shared import (
-    APP_URL, HOST_EMAILS, WHATSAPP_HELP_NUMBER, cached_table, format_ist, get_client,
-    invalidate_cache, send_email,
+    APP_URL, HOST_EMAILS, WHATSAPP_HELP_NUMBER, cached_table, format_ist, format_relative,
+    get_client, invalidate_cache, send_email,
 )
 
 client = get_client()
@@ -72,7 +72,12 @@ def render_thread(query, all_messages, notify_email=None):
         # back-and-forth reads like a chat rather than a stack of boxes.
         # Your own messages sit on the "user" side, the other person's on
         # the "assistant" side, whichever way round host/student happens to be.
-        with st.chat_message("user" if mine else "assistant"):
+        # The avatar shows the sender's ROLE at a glance — a shield for a
+        # host, a plain person otherwise — instead of Streamlit's generic
+        # human/bot icons (a student's reply isn't from a bot).
+        sender_is_host = user_email_by_id.get(msg["sender_id"]) in HOST_EMAILS
+        avatar = ":material/shield_person:" if sender_is_host else ":material/person:"
+        with st.chat_message("user" if mine else "assistant", avatar=avatar):
             if st.session_state.editing_message_id == msg["message_id"]:
                 edited_body = st.text_area(
                     "Edit message", value=msg["body"], key=f"edit_msg_{msg['message_id']}",
@@ -82,7 +87,11 @@ def render_thread(query, all_messages, notify_email=None):
                 if save_col.button("Save", key=f"save_msg_{msg['message_id']}", icon=":material/check:"):
                     client.table("query_messages").update({
                         "body": edited_body.strip(),
-                        "edited_at": datetime.now().isoformat(),
+                        # UTC-aware, matching every other timestamp in the
+                        # database — a bare datetime.now() is the server's
+                        # local wall clock with no timezone attached, which
+                        # format_ist would then wrongly treat as UTC.
+                        "edited_at": datetime.now(timezone.utc).isoformat(),
                     }).eq("message_id", msg["message_id"]).execute()
                     invalidate_cache()
                     st.session_state.editing_message_id = None
@@ -97,7 +106,9 @@ def render_thread(query, all_messages, notify_email=None):
                     label += " _(edited)_"
                 col1.markdown(label)
                 st.write(msg["body"])
-                timestamp_line = f":material/schedule: {format_ist(msg['created_at'])}"
+                # Relative time reads faster in a chat; the exact IST
+                # timestamp lives in the hover tooltip.
+                timestamp_line = f":material/schedule: {format_relative(msg['created_at'])}"
                 # Blue ticks, WhatsApp-style — only shown on your OWN messages
                 # (there's no such thing as a read receipt on a message you
                 # received), comparing against the other side's read_at.
@@ -106,7 +117,7 @@ def render_thread(query, all_messages, notify_email=None):
                         timestamp_line += "  •  :blue[✓✓ Read]"
                     else:
                         timestamp_line += "  •  ✓ Sent"
-                st.caption(timestamp_line)
+                st.caption(timestamp_line, help=format_ist(msg["created_at"]))
                 # You can only edit your own messages, not the other side's.
                 if mine:
                     if col2.button("Edit", key=f"edit_btn_{msg['message_id']}", icon=":material/edit:"):
