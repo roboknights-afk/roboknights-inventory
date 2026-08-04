@@ -16,7 +16,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install supabase python-dotenv
+      # requests isn't a transitive dependency of supabase (which uses httpx
+      # internally) — needed explicitly since send_due_reminders.py imports
+      # it directly for the WhatsApp Cloud API calls.
+      - run: pip install supabase python-dotenv requests
       # Manual runs (github.event.schedule is empty) do both, for easy testing.
       - name: Loan + day-before competition reminders (9am IST)
         if: github.event.schedule != '30 10 * * *'
