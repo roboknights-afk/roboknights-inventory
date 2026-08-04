@@ -66,6 +66,22 @@ def _clean_participant_name(raw):
     return " ".join(name.split())  # collapses any doubled/odd whitespace too
 
 
+def _normalize_name(raw):
+    # The full matching-side cleanup, applied identically to BOTH the
+    # sheet's participant cells and our own users.name column: bracketed
+    # tags go first ("(10-O)", "[Ad-Hoc]"), then any TRAILING tokens that
+    # contain a digit get dropped — people paste class/session junk into
+    # both places ("KUSH SINGH(10-O)" on the sheet, "KUSH SINGH 10O
+    # 2026-2027" typed into the signup name box; both confirmed real).
+    # Deliberately NOT fuzzy matching — a real name's words never contain
+    # digits, so this only ever removes junk, never guesses between two
+    # different people.
+    tokens = _clean_participant_name(raw).split()
+    while tokens and any(ch.isdigit() for ch in tokens[-1]):
+        tokens.pop()
+    return " ".join(tokens)
+
+
 def _api_get(path, api_key, **params):
     resp = requests.get(
         f"https://sheets.googleapis.com/v4/spreadsheets/{path}",
@@ -335,7 +351,7 @@ def _parse_teams(team_rows, user_id_by_name):
         for cell in row[3:]:
             if not cell["text"]:
                 continue
-            cleaned = _clean_participant_name(cell["text"])
+            cleaned = _normalize_name(cell["text"])
             user_id = user_id_by_name.get(cleaned.lower())
             if user_id:
                 participants.append({"user_id": user_id, "name": cleaned, "selected": cell["is_green"]})
@@ -459,8 +475,11 @@ def scan_e2c_sheet(client):
     for e in client.table("competition_events").select("event_id, competition_id, name").execute().data:
         existing_event_id_by_comp_and_name[(e["competition_id"], e["name"].strip().lower())] = e["event_id"]
 
+    # Same _normalize_name treatment as the sheet side, so a member who
+    # typed class/session junk into their signup name still matches their
+    # clean name on the sheet (and vice versa).
     user_id_by_name = {
-        u["name"].strip().lower(): u["user_id"]
+        _normalize_name(u["name"]).lower(): u["user_id"]
         for u in client.table("users").select("user_id, name").execute().data
     }
 

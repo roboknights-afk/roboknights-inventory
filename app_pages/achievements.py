@@ -85,6 +85,41 @@ if not is_exun:
                     key="new_achievement_event",
                 )
 
+                # Hosts log on behalf of the people who actually competed —
+                # names pulled automatically from the event's own volunteer
+                # list (selected people pre-picked), not typed by hand, so
+                # there's no name to get wrong. Falls back to the full member
+                # list only when an event has no volunteers recorded at all
+                # (e.g. a manually-added competition that never used the
+                # volunteer flow).
+                log_for_ids = None
+                if is_host:
+                    event_vols = [
+                        v for v in cached_table("event_volunteers")
+                        if v["event_id"] == chosen_event_id
+                    ]
+                    if event_vols:
+                        onbehalf_options = [v["user_id"] for v in event_vols]
+                        onbehalf_default = [v["user_id"] for v in event_vols if v.get("selected")]
+                        st.caption(
+                            ":material/group: Names pulled automatically from this "
+                            "event's volunteers — selected people are pre-picked."
+                        )
+                    else:
+                        onbehalf_options = list(user_name_by_id.keys())
+                        onbehalf_default = []
+                        st.caption(
+                            ":material/info: No volunteers recorded for this event — "
+                            "pick from the full member list instead."
+                        )
+                    log_for_ids = st.multiselect(
+                        "Log this result for",
+                        options=onbehalf_options,
+                        default=onbehalf_default,
+                        format_func=lambda uid: user_name_by_id.get(uid, "Unknown"),
+                        key=f"ach_log_for_{chosen_event_id}",
+                    )
+
                 position = st.text_input(
                     "Position (e.g. 1st place, Finalist)", key="new_achievement_position"
                 )
@@ -93,73 +128,103 @@ if not is_exun:
                     placeholder="https://... (photo, video, drive folder, etc.)",
                 )
                 if st.button("Save", icon=":material/check:", type="primary"):
-                    link = media_link.strip()
-                    if link and not link.startswith(("http://", "https://")):
-                        link = "https://" + link
-                    client.table("achievements").insert({
-                        "user_id": current_user_id,
-                        "competition_id": chosen_comp_id,
-                        "event_id": chosen_event_id,
-                        "position": position.strip() or None,
-                        "media_link": link or None,
-                    }).execute()
+                    if is_host and not log_for_ids:
+                        st.error("Pick at least one person to log this result for.")
+                    else:
+                        link = media_link.strip()
+                        if link and not link.startswith(("http://", "https://")):
+                            link = "https://" + link
 
-                    # Auto-log the same result for every teammate (same team_no
-                    # on this event, from the E2C import's team grouping) who
-                    # hasn't already logged one themselves — so one person
-                    # reporting a team result doesn't mean everyone has to
-                    # separately do the same thing. Nothing to do if this
-                    # person isn't grouped into a team at all yet.
-                    #
-                    # These reads are deliberately NOT cached_table: they decide
-                    # who to skip as already-logged, so they need the true
-                    # current state rather than up to 8s old.
-                    my_row = (
-                        client.table("event_volunteers")
-                        .select("team_no")
-                        .eq("event_id", chosen_event_id)
-                        .eq("user_id", current_user_id)
-                        .execute()
-                        .data
-                    )
-                    team_no = my_row[0]["team_no"] if my_row else None
+                        # Host path: one row per chosen person, skipping
+                        # anyone who already has a result for this exact
+                        # event (so re-logging can't duplicate). Member
+                        # path: yourself, same skip rule.
+                        #
+                        # This read is deliberately NOT cached_table: it
+                        # decides who to skip as already-logged, so it needs
+                        # the true current state rather than up to 8s old.
+                        targets = log_for_ids if is_host else [current_user_id]
 
-                    auto_logged = 0
-                    if team_no:
-                        teammates = (
-                            client.table("event_volunteers")
-                            .select("user_id")
-                            .eq("event_id", chosen_event_id)
-                            .eq("team_no", team_no)
-                            .neq("user_id", current_user_id)
-                            .execute()
-                            .data
-                        )
-                        already_logged = {
+                        already_logged_ids = {
                             a["user_id"]
                             for a in client.table("achievements")
                             .select("user_id").eq("event_id", chosen_event_id).execute().data
                         }
-                        for t in teammates:
-                            if t["user_id"] in already_logged:
+                        logged = 0
+                        for uid in targets:
+                            if uid in already_logged_ids:
                                 continue
                             client.table("achievements").insert({
-                                "user_id": t["user_id"],
+                                "user_id": uid,
                                 "competition_id": chosen_comp_id,
                                 "event_id": chosen_event_id,
                                 "position": position.strip() or None,
                                 "media_link": link or None,
                             }).execute()
-                            auto_logged += 1
+                            logged += 1
 
-                    invalidate_cache()
-                    msg = "Achievement added!"
-                    if auto_logged:
-                        msg += f" Also logged for {auto_logged} teammate(s)."
-                    st.session_state.achievement_message = msg
-                    del st.session_state["new_achievement_position"]
-                    del st.session_state["new_achievement_media"]
-                    st.rerun()
+                        # Auto-log the same result for every teammate (same
+                        # team_no on this event, from the E2C import's team
+                        # grouping) who hasn't already logged one themselves —
+                        # so one person reporting a team result doesn't mean
+                        # everyone has to separately do the same thing. Only
+                        # applies to a member logging their OWN result — a
+                        # host already picked the exact people above, so
+                        # nothing extra should be implied.
+                        auto_logged = 0
+                        if not is_host:
+                            my_row = (
+                                client.table("event_volunteers")
+                                .select("team_no")
+                                .eq("event_id", chosen_event_id)
+                                .eq("user_id", current_user_id)
+                                .execute()
+                                .data
+                            )
+                            team_no = my_row[0]["team_no"] if my_row else None
+                            if team_no:
+                                teammates = (
+                                    client.table("event_volunteers")
+                                    .select("user_id")
+                                    .eq("event_id", chosen_event_id)
+                                    .eq("team_no", team_no)
+                                    .neq("user_id", current_user_id)
+                                    .execute()
+                                    .data
+                                )
+                                already_logged = {
+                                    a["user_id"]
+                                    for a in client.table("achievements")
+                                    .select("user_id").eq("event_id", chosen_event_id).execute().data
+                                }
+                                for t in teammates:
+                                    if t["user_id"] in already_logged:
+                                        continue
+                                    client.table("achievements").insert({
+                                        "user_id": t["user_id"],
+                                        "competition_id": chosen_comp_id,
+                                        "event_id": chosen_event_id,
+                                        "position": position.strip() or None,
+                                        "media_link": link or None,
+                                    }).execute()
+                                    auto_logged += 1
+
+                        invalidate_cache()
+                        skipped = len(targets) - logged
+                        if is_host:
+                            msg = f"Logged this result for {logged} member(s)."
+                        elif logged:
+                            msg = "Achievement added!"
+                        else:
+                            msg = "You already have a result for this event — nothing new added."
+                        if auto_logged:
+                            msg += f" Also logged for {auto_logged} teammate(s)."
+                        if skipped and is_host:
+                            msg += f" Skipped {skipped} who already had a result for this event."
+                        st.session_state.achievement_message = msg
+                        del st.session_state["new_achievement_position"]
+                        del st.session_state["new_achievement_media"]
+                        st.rerun()
 
 with tab_browse:
     # --- Browse all achievements -------------------------------------------------
@@ -225,7 +290,19 @@ with tab_browse:
                 col1.markdown(f"**{member_names}** — {comp_name} ({event_name})")
 
                 if first.get("position"):
-                    st.write(first["position"])
+                    # A medal-colored badge reads much faster than plain text
+                    # when scanning the list — gold (our primary) for a win,
+                    # then per-place colors, grey for everything else
+                    # (finalist, participation, etc.).
+                    pos_lower = first["position"].lower()
+                    if "1st" in pos_lower or "first" in pos_lower or "winner" in pos_lower:
+                        st.badge(first["position"], color="primary", icon=":material/emoji_events:")
+                    elif "2nd" in pos_lower or "second" in pos_lower:
+                        st.badge(first["position"], color="blue", icon=":material/military_tech:")
+                    elif "3rd" in pos_lower or "third" in pos_lower:
+                        st.badge(first["position"], color="orange", icon=":material/military_tech:")
+                    else:
+                        st.badge(first["position"], color="grey", icon=":material/military_tech:")
                 if first.get("media_link"):
                     st.markdown(f"[View attachment]({first['media_link']})")
 
