@@ -348,6 +348,7 @@ def send_welcome_email(to_email, name):
         f"Queries — a private line to ask a host a question directly.\n\n"
         f"Announcements — club-wide updates land here and in your inbox.\n\n"
         f"Log in any time at {APP_URL} to get started.\n\n"
+        f"If you have any queries you can contact Naitik Jindal at 9311259439.\n\n"
         f"— RoboKnights",
     )
 
