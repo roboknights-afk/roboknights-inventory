@@ -567,9 +567,19 @@ staggered card entrance (nth-child delays on rkcard classes; fill mode is
 the hover transform), gold hover glow on cards, a pulsing gold border on
 the "Requests for me" metric while non-zero (keyed marker container
 `rkpulse_requests` in inventory.py + `:has()` rule in app.py),
-`st.balloons()` after signup, and a faint (5% opacity, blurred, 120s
-rotation) gear watermark in the bottom-right via `stApp::after` with the
-SVG inlined as base64 (Streamlit doesn't serve static/ over HTTP).
+`st.balloons()` after signup, and a faint (5% opacity, blurred) gear
+watermark with the SVG inlined as base64 (Streamlit doesn't serve
+static/ over HTTP). Reworked 2026-08-05 at the student's request: the
+logo's two gears are now split into `static/gear_big.svg` /
+`gear_small.svg` (same 128x99 canvas each, so stacked they keep their
+drawn meshed positions), centred mid-screen, each rotating about its own
+gear's centre in OPPOSITE directions with the small one 1.836x faster —
+the big:small radius ratio measured from the artwork, i.e. real meshed-
+gear physics. Implementation gotcha, confirmed live in the DOM: a div
+injected via st.html lands inside `stMainBlockContainer`, whose
+transform (the fade-up animation) hijacks position:fixed — so the two
+gears live on `stApp::before`/`::after` pseudo-elements instead, centred
+via calc() so the keyframes stay pure rotation.
 
 ## Email deliverability incident + school-domain lock (2026-07-14)
 

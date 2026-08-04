@@ -155,42 +155,71 @@ st.html("""
 """)
 
 # --- Gear watermark -------------------------------------------------------
-# A huge, extremely faint, slowly rotating gear in the bottom-right corner,
-# behind everything interactive (pointer-events: none). Deliberately blurred
-# and at 5% opacity so it reads as texture, not content. Inlined as a
-# base64 data-URI because Streamlit doesn't serve the static/ folder over
-# HTTP by default.
+# Two huge, extremely faint gears meshing in the CENTRE of the screen,
+# behind everything interactive (pointer-events: none). Deliberately
+# blurred and at 5% opacity so it reads as texture, not content. Inlined
+# as base64 data-URIs because Streamlit doesn't serve static/ over HTTP.
 #
-# The source SVG is solid white (fill="white") — invisible-on-white once
-# the light theme option existed, since it'd be a blurred white shape on a
-# blurred white background. Streamlit doesn't expose which theme variant
-# the viewer currently has selected to plain CSS in this version (same
-# limitation as the splash below), so this uses prefers-color-scheme as
-# the best available signal — exactly right for anyone on "System", a
-# reasonable default otherwise. filter: invert(1) flips the white gear to
-# near-black, which reads the same way against a light background.
-_gear_b64 = base64.b64encode(Path("static/roboknights_logo.svg").read_bytes()).decode()
+# The logo is genuinely drawn as two interlocking gears, but as one baked
+# SVG they could only ever spin together like a sticker — which is exactly
+# what made it look fake. gear_big.svg / gear_small.svg are the same
+# artwork split into its two gears (same 128x99 canvas each, so they stay
+# in their drawn, meshed positions when stacked). Each layer then rotates
+# about ITS OWN gear's centre (the transform-origin percentages below are
+# those centres measured from the artwork), in OPPOSITE directions — and
+# the small gear turns 1.836x faster, because that's the big:small radius
+# ratio measured from the same artwork. That's real meshed-gear physics:
+# the big one drives, the small one is driven, teeth speeds match.
+#
+# White artwork would vanish on the light theme; Streamlit doesn't expose
+# the viewer's live theme pick to plain CSS (same limitation as the splash
+# below), so prefers-color-scheme + invert(1) is the best available signal.
+_gear_big_b64 = base64.b64encode(Path("static/gear_big.svg").read_bytes()).decode()
+_gear_small_b64 = base64.b64encode(Path("static/gear_small.svg").read_bytes()).decode()
 st.html(f"""
     <style>
-    @keyframes rk-watermark-spin {{
+    @keyframes rk-gear-drive {{
         from {{ transform: rotate(0deg); }}
         to   {{ transform: rotate(360deg); }}
     }}
+    @keyframes rk-gear-driven {{
+        from {{ transform: rotate(0deg); }}
+        to   {{ transform: rotate(-360deg); }}
+    }}
+    /* One pseudo-element per gear, BOTH on stApp itself — a div injected by
+       st.html would sit inside stMainBlockContainer, whose transform (from
+       the fade-up animation) hijacks position:fixed and drags the "fixed"
+       gears around with the page content (verified live in the DOM).
+       Centred with calc() rather than translate(-50%,-50%) so the keyframe
+       transform stays pure rotation. 80vmin wide; height is 80 x 99/128 =
+       61.875vmin (the artwork's aspect), so half-height is 30.9375vmin. */
+    [data-testid="stApp"]::before,
     [data-testid="stApp"]::after {{
         content: "";
         position: fixed;
-        width: 75vmin;
-        height: 75vmin;
-        right: -15vmin;
-        bottom: -15vmin;
-        background: url("data:image/svg+xml;base64,{_gear_b64}") no-repeat center / contain;
+        left: calc(50% - 40vmin);
+        top: calc(50% - 30.9375vmin);
+        width: 80vmin;
+        height: 61.875vmin;
+        background-repeat: no-repeat;
+        background-size: 100% 100%;
         opacity: 0.05;
         filter: blur(2px);
         pointer-events: none;
         z-index: 0;
-        animation: rk-watermark-spin 120s linear infinite;
+    }}
+    [data-testid="stApp"]::before {{
+        background-image: url("data:image/svg+xml;base64,{_gear_big_b64}");
+        transform-origin: 65.3% 45.3%;
+        animation: rk-gear-drive 110s linear infinite;
+    }}
+    [data-testid="stApp"]::after {{
+        background-image: url("data:image/svg+xml;base64,{_gear_small_b64}");
+        transform-origin: 18.9% 75.4%;
+        animation: rk-gear-driven 59.9s linear infinite;
     }}
     @media (prefers-color-scheme: light) {{
+        [data-testid="stApp"]::before,
         [data-testid="stApp"]::after {{ filter: blur(2px) invert(1); }}
     }}
     </style>
