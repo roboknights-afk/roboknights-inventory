@@ -5,8 +5,8 @@ import streamlit as st
 from dotenv import load_dotenv
 
 from shared import (
-    EXUN_CHANNEL_MEMBERS, EXUN_EMAILS, HOST_EMAILS, HOST_ROLES, cached_table, get_client,
-    invalidate_cache,
+    APP_URL, EXUN_CHANNEL_MEMBERS, EXUN_EMAILS, HOST_EMAILS, HOST_ROLES, cached_table,
+    get_client, invalidate_cache, send_email,
 )
 
 # Secrets (the Supabase URL and key) live in a local .env file, not in this
@@ -322,6 +322,36 @@ def admission_no_input(key_prefix):
     return f"{prefix}{digits.strip()}"
 
 
+def send_welcome_email(to_email, name):
+    # Sent once, right after signup — a plain-language tour of what the
+    # app actually does, since a brand-new member has no way to know that
+    # yet. One template for everyone (student, staff, or host) rather than
+    # branching by role: whatever host-only or Exun-only tools someone has
+    # will just show up naturally once they're logged in, and this email's
+    # job is only to explain the parts every member sees.
+    send_email(
+        to_email,
+        "Welcome to RoboKnights!",
+        f"Hi {name},\n\n"
+        f"Welcome to RoboKnights! Your account is set up — here's a quick "
+        f"rundown of what you can do in the app:\n\n"
+        f"Inventory — see every part the club owns, and borrow one from "
+        f"another member in a couple of clicks. The owner gets notified and "
+        f"approves it before it's yours.\n\n"
+        f"Competitions — browse upcoming competitions and volunteer for any "
+        f"event you're eligible for by grade. If you're selected, you'll "
+        f"get an email, plus reminders leading up to the day.\n\n"
+        f"Meetings — see what's scheduled, RSVP, and check in once you're "
+        f"there.\n\n"
+        f"Achievements — after a competition, log your result so it's on "
+        f"record for the club.\n\n"
+        f"Queries — a private line to ask a host a question directly.\n\n"
+        f"Announcements — club-wide updates land here and in your inbox.\n\n"
+        f"Log in any time at {APP_URL} to get started.\n\n"
+        f"— RoboKnights",
+    )
+
+
 def show_login_signup(client):
     # This whole screen only appears when nobody is logged in yet.
     # Everything sits in one centered, card-width column — on a wide layout,
@@ -423,6 +453,12 @@ def show_login_signup(client):
                                     "phone_no": phone_no.strip(),
                                 }).execute()
                                 invalidate_cache()
+                                # Sent here (account created), not after the
+                                # login attempt below — that part only decides
+                                # whether they're dropped straight into the app
+                                # or have to confirm their email first, and the
+                                # welcome should go out either way.
+                                send_welcome_email(email, name)
 
                                 try:
                                     # Only succeeds right away if "Confirm email" is
