@@ -1,4 +1,5 @@
 import base64
+import time
 from pathlib import Path
 
 import streamlit as st
@@ -426,7 +427,23 @@ def show_login_signup(client):
                         st.error("Enter your username.")
                     else:
                         try:
-                            result = client.auth.sign_up({"email": email, "password": password})
+                            # email_redirect_to: after Supabase confirms the
+                            # account (server-side, on Supabase's own end —
+                            # nothing Streamlit has to do), it sends the
+                            # browser here with ?verified=1 so we can show a
+                            # friendly "you're verified" screen instead of
+                            # just dumping them back on a bare login form.
+                            # This is NOT the same failure mode as the old
+                            # password-reset link problem: that broke because
+                            # Streamlit itself had to act on a link INSIDE
+                            # its sandboxed iframe; this redirect happens
+                            # entirely on Supabase's server before the
+                            # browser ever gets here, so there's nothing for
+                            # the sandbox to block.
+                            result = client.auth.sign_up({
+                                "email": email, "password": password,
+                                "options": {"email_redirect_to": f"{APP_URL}?verified=1"},
+                            })
 
                             # Supabase quirk: if this email ALREADY has an account,
                             # it doesn't error — it "succeeds" but sends no email
@@ -486,6 +503,35 @@ def show_login_signup(client):
                         st.success("Confirmation email resent — check your inbox and spam folder.")
                     except Exception as e:
                         st.error(f"Couldn't resend: {e}")
+
+
+def show_email_verified_screen():
+    # Landed here via ?verified=1, which Supabase only adds AFTER it has
+    # already confirmed the account server-side — so by the time this
+    # renders, verification is simply done. No token to check, no action
+    # to take here; this is purely a friendlier landing than a bare login
+    # form. Ticks a 10s countdown down live in place (a plain Python loop
+    # writing into one placeholder — no JS, no browser navigation, so
+    # none of the sandboxed-iframe trouble a real redirect ran into
+    # elsewhere in this app), then clears the query param and reruns to
+    # show the normal login screen. The button does the same thing
+    # instantly, for anyone who doesn't want to wait.
+    pad_left, middle, pad_right = st.columns([1, 1.1, 1])
+    with middle:
+        st.title("Email verified", text_alignment="center")
+        with st.container(border=True):
+            st.success(":material/check_circle: Your email is confirmed — you can log in now.")
+            countdown_placeholder = st.empty()
+            if st.button("Go to login now", icon=":material/login:", type="primary", width="stretch"):
+                st.query_params.clear()
+                st.rerun()
+            for seconds_left in range(10, 0, -1):
+                countdown_placeholder.caption(
+                    f"Taking you to the login page in {seconds_left} second(s)…"
+                )
+                time.sleep(1)
+            st.query_params.clear()
+            st.rerun()
 
 
 def show_reset_screen(client):
@@ -567,15 +613,18 @@ if "auth_user" not in st.session_state:
 if "show_reset" not in st.session_state:
     st.session_state.show_reset = False
 
-# Nobody logged in yet — show either the reset screen or the login/signup
-# screen, then stop here so the rest of the app stays hidden.
+# Nobody logged in yet — show the email-verified landing, the reset
+# screen, or the login/signup screen, then stop here so the rest of the
+# app stays hidden.
 if st.session_state.auth_user is None:
     # Re-arm the gear splash so it plays again on the next login.
     st.session_state.splash_shown = False
     # Coming here straight from a Log out click: gear spins away once.
     if st.session_state.pop("splash_out", False):
         render_gear_splash("out")
-    if st.session_state.show_reset:
+    if st.query_params.get("verified") == "1":
+        show_email_verified_screen()
+    elif st.session_state.show_reset:
         show_reset_screen(client)
     else:
         show_login_signup(client)
