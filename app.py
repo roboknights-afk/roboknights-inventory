@@ -1,8 +1,10 @@
 import base64
+import json
 import time
 from pathlib import Path
 
 import streamlit as st
+import streamlit.components.v1 as components
 from dotenv import load_dotenv
 
 from shared import (
@@ -307,6 +309,70 @@ def school_email_input(label, key):
     return build_school_email(username)
 
 
+# --- "Save my login details" -----------------------------------------------
+# Two independent things happen behind this one checkbox: (1) a real
+# stay-logged-in session, using Supabase's own refresh token, so you don't
+# have to type your password again next time; (2) asking the BROWSER's own
+# password manager to offer saving the login, same as it does on any other
+# site. Neither ever touches the raw password on our end for #1 — it's
+# Supabase's token being stored, not the password.
+#
+# Both need actual JS to run, and st.html() turned out not to run <script>
+# tags at all (confirmed live: a script inside st.html silently does
+# nothing, same family of gotcha as it stripping inline <svg> — see the
+# gear splash notes below). st.components.v1.html DOES run scripts
+# reliably, because it renders into a real sandboxed iframe rather than
+# being poured into the page via innerHTML — confirmed live too: a cookie
+# set from inside it shows up in st.context.cookies on the next load.
+REMEMBER_ME_COOKIE = "rk_remember_token"
+REMEMBER_ME_DAYS = 30
+
+
+def _set_remember_cookie(refresh_token):
+    max_age = REMEMBER_ME_DAYS * 24 * 60 * 60
+    components.html(
+        f"""<script>
+        window.parent.document.cookie =
+            "{REMEMBER_ME_COOKIE}={refresh_token}; max-age={max_age}; path=/; SameSite=Lax";
+        </script>""",
+        height=0,
+    )
+
+
+def _clear_remember_cookie():
+    components.html(
+        f"""<script>
+        window.parent.document.cookie = "{REMEMBER_ME_COOKIE}=; max-age=0; path=/; SameSite=Lax";
+        </script>""",
+        height=0,
+    )
+
+
+def _offer_browser_password_save(email, password):
+    # The Credential Management API — the right tool here specifically
+    # because login isn't a real HTML <form> submission in this app (every
+    # Streamlit widget talks over its own websocket call, not a page
+    # navigation), which is exactly the case browsers' own save-password
+    # heuristics usually miss entirely. Supported in Chrome/Edge, not in
+    # Firefox/Safari — harmless no-op there, not a broken feature, since
+    # everything is guarded behind the feature check.
+    components.html(
+        f"""<script>
+        if (window.parent.PasswordCredential) {{
+            try {{
+                const cred = new window.parent.PasswordCredential({{
+                    id: {json.dumps(email)},
+                    password: {json.dumps(password)},
+                    name: {json.dumps(email)},
+                }});
+                window.parent.navigator.credentials.store(cred);
+            }} catch (e) {{}}
+        }}
+        </script>""",
+        height=0,
+    )
+
+
 ADMISSION_NO_PREFIXES = ["R", "E", "V"]
 
 
@@ -386,10 +452,21 @@ def show_login_signup(client):
             with login_tab:
                 email = school_email_input("Email", key="login_username")
                 password = st.text_input("Password", type="password", key="login_password")
+                save_login = st.checkbox(
+                    "Save my login details on this device",
+                    key="login_save_details",
+                    help="Stays logged in on this device (uses a secure session token, "
+                         "not your actual password), and offers to save your password "
+                         "in your browser's own password manager.",
+                )
                 if st.button("Log in", icon=":material/login:", type="primary", width="stretch"):
                     try:
                         result = client.auth.sign_in_with_password({"email": email, "password": password})
                         st.session_state.auth_user = {"id": result.user.id, "email": result.user.email}
+                        if save_login:
+                            if result.session and result.session.refresh_token:
+                                _set_remember_cookie(result.session.refresh_token)
+                            _offer_browser_password_save(email, password)
                         st.rerun()
                     except Exception as e:
                         st.error(f"Couldn't log in: {e}")
@@ -613,6 +690,26 @@ if "auth_user" not in st.session_state:
 if "show_reset" not in st.session_state:
     st.session_state.show_reset = False
 
+# Silently try a "remembered" session before showing any login UI at all —
+# see _set_remember_cookie for how this cookie gets written in the first
+# place. Guarded by tried_remember_login so a bad/expired token (cleared
+# below) only gets ONE retry attempt per browser session, not one on every
+# single rerun of the login screen.
+if st.session_state.auth_user is None and not st.session_state.get("tried_remember_login"):
+    st.session_state.tried_remember_login = True
+    remembered_token = st.context.cookies.get(REMEMBER_ME_COOKIE)
+    if remembered_token:
+        try:
+            result = client.auth.refresh_session(remembered_token)
+            st.session_state.auth_user = {"id": result.user.id, "email": result.user.email}
+            # Refresh tokens rotate on every use — the one we just spent is
+            # already invalid, so the cookie has to move to the NEW one or
+            # the next visit's silent restore would fail.
+            _set_remember_cookie(result.session.refresh_token)
+            st.rerun()
+        except Exception:
+            _clear_remember_cookie()
+
 # Nobody logged in yet — show the email-verified landing, the reset
 # screen, or the login/signup screen, then stop here so the rest of the
 # app stays hidden.
@@ -705,6 +802,11 @@ with st.sidebar:
         if st.button("Log out", icon=":material/logout:", width="stretch"):
             client.auth.sign_out()
             st.session_state.auth_user = None
+            # A logout should genuinely log out — without this, "remember
+            # me" would silently sign them right back in on the very next
+            # rerun via the auto-restore check above.
+            _clear_remember_cookie()
+            st.session_state.tried_remember_login = True
             # Tells the login screen to play the gear spin-DOWN once.
             st.session_state.splash_out = True
             st.rerun()
