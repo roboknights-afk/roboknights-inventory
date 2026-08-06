@@ -342,22 +342,30 @@ def _apply_e2c_bulk_sync(fresh_by_name, already_imported, accept_dates):
 
 def _insert_matched_participants(client, event_id, teams, event_name, comp_name):
     # teams: list of team-rows, each {"team_no", "participants": [{"user_id",
-    # "name", "selected"}]} matched against real members off the sheet's
-    # green cells. A row's presence here can ADD someone, PROMOTE them from
-    # pending to selected, and now also REMOVE someone who's been swapped
-    # out of the green cell on the real sheet — but that removal only ever
-    # touches a row THIS sync itself put there (synced_from_sheet=True).
-    # A row from someone clicking Volunteer directly in the app is never
-    # touched, so this can't silently undo an in-app action, only ever a
-    # sheet-sourced one going stale. Anyone newly added or promoted as
-    # selected gets the same "You're selected" email the manual finalize
-    # flow sends — being confirmed on the real sheet is no different from
-    # being finalized by the host.
+    # "name", "selected"}]} matched against real members off the sheet —
+    # "selected" reflects that specific cell's green/white color.
+    #
+    # Explicit rule from the student: sync only ever touches the SELECTED
+    # flag, never whether someone is a volunteer at all.
+    #   - A white (unconfirmed) cell never drives any change by itself —
+    #     it doesn't add a new volunteer and doesn't touch an existing one.
+    #   - A green cell adds a brand-new volunteer as selected, or promotes
+    #     an existing (non-selected) volunteer to selected.
+    #   - Anyone currently selected=True whose name ISN'T in a green cell
+    #     this sync gets downgraded to selected=False — regardless of
+    #     whether they were originally selected via a previous sheet sync
+    #     OR finalized by a host manually. E2C's green cells are the one
+    #     source of truth for who's currently selected.
+    #   - The event_volunteers ROW itself is never deleted by sync, for
+    #     anyone, sheet-sourced or self-volunteered — downgrading just
+    #     leaves them as a plain (unselected) volunteer.
+    # Anyone newly added or promoted to selected gets the same "You're
+    # selected" email the manual finalize flow sends.
     #
     # This read is deliberately NOT cached_table: it decides insert-vs-
-    # promote-vs-remove, so it needs the true current state, not up to 8s
-    # old (this function is also called repeatedly in a loop across many
-    # events in one sync, where stale data would risk a duplicate insert).
+    # promote-vs-downgrade, so it needs the true current state, not up to
+    # 8s old (this function is also called repeatedly in a loop across
+    # many events in one sync, where stale data would risk a duplicate).
     existing = {
         v["user_id"]: v
         for v in client.table("event_volunteers")
@@ -367,21 +375,20 @@ def _insert_matched_participants(client, event_id, teams, event_name, comp_name)
         .data
     }
     changed = False
-    matched_user_ids = set()
+    green_user_ids = set()
 
     for team in teams:
         team_no = team["team_no"]
         for p in team["participants"]:
-            matched_user_ids.add(p["user_id"])
+            if not p["selected"]:
+                continue  # a white/unconfirmed cell never drives a change
+            green_user_ids.add(p["user_id"])
             if p["user_id"] in existing:
                 row = existing[p["user_id"]]
                 updates = {}
                 if not row.get("synced_from_sheet"):
-                    # Confirmed present on the sheet right now — safe for a
-                    # FUTURE sync to remove this row if they're ever swapped
-                    # out later, same as any other sheet-sourced entry.
                     updates["synced_from_sheet"] = True
-                if p["selected"] and not row["selected"]:
+                if not row["selected"]:
                     updates["selected"] = True
                 if updates:
                     client.table("event_volunteers").update(updates).eq(
@@ -393,27 +400,24 @@ def _insert_matched_participants(client, event_id, teams, event_name, comp_name)
                 continue
             client.table("event_volunteers").insert({
                 "event_id": event_id, "user_id": p["user_id"],
-                "team_no": team_no, "selected": p["selected"],
+                "team_no": team_no, "selected": True,
                 "synced_from_sheet": True,
             }).execute()
-            existing[p["user_id"]] = {"selected": p["selected"], "synced_from_sheet": True}
+            existing[p["user_id"]] = {"selected": True, "synced_from_sheet": True}
             changed = True
-            if p["selected"]:
-                _send_selected_email(p["user_id"], event_name, comp_name)
+            _send_selected_email(p["user_id"], event_name, comp_name)
 
-    stale_ids = [
+    downgrade_ids = [
         uid for uid, row in existing.items()
-        if row.get("synced_from_sheet") and uid not in matched_user_ids
+        if row.get("selected") and uid not in green_user_ids
     ]
-    if stale_ids:
-        client.table("event_volunteers").delete().eq("event_id", event_id).in_("user_id", stale_ids).execute()
+    if downgrade_ids:
+        client.table("event_volunteers").update({"selected": False}).eq(
+            "event_id", event_id
+        ).in_("user_id", downgrade_ids).execute()
         changed = True
-        # Only tell people who'd actually been confirmed selected — a
-        # pending volunteer going stale was never told they were "on the
-        # team" in the first place, so there's nothing to un-notify them of.
-        for uid in stale_ids:
-            if existing[uid].get("selected"):
-                _send_removed_email(uid, event_name, comp_name)
+        for uid in downgrade_ids:
+            _send_unselected_email(uid, event_name, comp_name)
 
     if changed:
         invalidate_cache()
@@ -429,16 +433,19 @@ def _send_selected_email(user_id, event_name, comp_name):
     )
 
 
-def _send_removed_email(user_id, event_name, comp_name):
-    # Sync can now remove someone who's been swapped out on the real
-    # sheet (see _insert_matched_participants) — without this, they'd only
-    # find out by happening to check the app again themselves.
+def _send_unselected_email(user_id, event_name, comp_name):
+    # Sync can now un-select someone who's not (or no longer) in a green
+    # cell on the real sheet — without this, they'd only find out by
+    # happening to check the app again themselves. They're still a
+    # volunteer for this event, just not currently finalized — sync
+    # never removes anyone from the volunteer list itself.
     send_email(
         user_email_by_id.get(user_id),
         f"Team change: {event_name} at {comp_name}",
-        f"You're no longer listed for {event_name} at {comp_name} — the "
-        f"team roster on the registration sheet has changed. If this "
-        f"looks wrong, check with your student in-charge or a host.",
+        f"You're no longer marked as selected for {event_name} at {comp_name} — "
+        f"the team roster on the registration sheet has changed. You're still "
+        f"listed as a volunteer. If this looks wrong, check with your student "
+        f"in-charge or a host.",
     )
 
 
