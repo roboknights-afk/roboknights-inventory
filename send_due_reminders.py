@@ -11,7 +11,7 @@
 import os
 import re
 import smtplib
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from email.mime.text import MIMEText
 
 import requests
@@ -21,6 +21,20 @@ from supabase import create_client
 load_dotenv()
 
 client = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
+
+# Duplicated from shared.py's EXUN_CHANNEL_STUDENT_EMAILS (this script
+# deliberately doesn't import shared.py — see the WhatsApp helpers below
+# for why) — keep in sync if EXUN_CHANNEL_MEMBERS ever changes there.
+EXUN_CHANNEL_STUDENT_EMAILS = {
+    "r22639naitik@dpsrkp.net",  # Naitik Jindal
+    "r23444kyraan@dpsrkp.net",  # Kyraan Katyal
+    "v09045medhansh@dpsrkp.net",  # Medhansh Tanmay Pandya
+    "v09145aryamman@dpsrkp.net",  # Aryamman Ojha
+}
+
+
+def _as_date(timestamp):
+    return datetime.fromisoformat(timestamp.replace("Z", "+00:00")).date()
 
 
 def send_email(to_email, subject, body):
@@ -259,7 +273,102 @@ def send_registration_deadline_reminders():
         ).execute()
 
 
+def send_unread_query_reminders():
+    # A nudge on TOP of the immediate "New reply" email queries.py already
+    # sends — for whoever missed/ignored that one. Only ever targets the
+    # student side: the host is always staff, and this reminder is
+    # students-only by design (see EXUN_CHANNEL_STUDENT_EMAILS above for
+    # the same rule applied to the Exun channel). Only fires for a reply
+    # that's been sitting unread since before today, so it never doubles
+    # up with the immediate same-day email.
+    today = date.today()
+    queries = client.table("queries").select("*").execute().data
+    if not queries:
+        return
+    messages = client.table("query_messages").select("*").execute().data
+    users = {u["user_id"]: u for u in client.table("users").select("user_id, name, email").execute().data}
+
+    messages_by_query = {}
+    for m in messages:
+        messages_by_query.setdefault(m["query_id"], []).append(m)
+
+    for q in queries:
+        student = users.get(q["student_id"])
+        if not student:
+            continue
+        thread_messages = messages_by_query.get(q["query_id"], [])
+        latest_from_host = max(
+            (m["created_at"] for m in thread_messages if m["sender_id"] != q["student_id"]),
+            default=None,
+        )
+        if not latest_from_host or _as_date(latest_from_host) >= today:
+            continue
+        student_read_at = q.get("student_read_at")
+        if student_read_at and student_read_at >= latest_from_host:
+            continue  # already read
+        sent_at = q.get("student_unread_reminder_sent_at")
+        if sent_at and sent_at >= latest_from_host:
+            continue  # already nudged for this exact reply
+        send_email(
+            student["email"],
+            "You have an unread reply in Queries",
+            f"You have a reply waiting in your Queries thread on the app that you "
+            f"haven't seen yet.\n\nLog in to the app to read it: {os.environ.get('APP_URL', '')}",
+        )
+        client.table("queries").update({
+            "student_unread_reminder_sent_at": datetime.now(timezone.utc).isoformat(),
+        }).eq("query_id", q["query_id"]).execute()
+        print(f"Sent unread-query reminder to {student['name']}")
+
+
+def send_unread_exun_reminders():
+    # Same "unread since before today, only nudge once" shape as the query
+    # reminder above, but per-member (not per-thread) since the Exun
+    # channel is one flat shared conversation. Only the four named
+    # RoboKnights STUDENT members get nudged — never the staff/host
+    # accounts or Exun themselves, per explicit instruction.
+    today = date.today()
+    messages = client.table("exun_channel_messages").select("created_at").execute().data
+    latest_message_at = max((m["created_at"] for m in messages), default=None)
+    if not latest_message_at or _as_date(latest_message_at) >= today:
+        return
+
+    users = {
+        u["email"]: u
+        for u in client.table("users").select("user_id, name, email").execute().data
+        if u["email"] in EXUN_CHANNEL_STUDENT_EMAILS
+    }
+    if not users:
+        return
+    reads = {
+        r["user_id"]: r
+        for r in client.table("exun_channel_reads").select("*").execute().data
+    }
+
+    for email, user in users.items():
+        read_row = reads.get(user["user_id"])
+        last_read_at = read_row.get("last_read_at") if read_row else None
+        if last_read_at and last_read_at >= latest_message_at:
+            continue  # already read
+        sent_at = read_row.get("unread_reminder_sent_at") if read_row else None
+        if sent_at and sent_at >= latest_message_at:
+            continue  # already nudged for this exact message
+        send_email(
+            email,
+            "You have unread messages in the Exun channel",
+            f"There's a message waiting in the Exun channel on the app that you "
+            f"haven't seen yet.\n\nLog in to the app to read it: {os.environ.get('APP_URL', '')}",
+        )
+        client.table("exun_channel_reads").upsert({
+            "user_id": user["user_id"],
+            "unread_reminder_sent_at": datetime.now(timezone.utc).isoformat(),
+        }).execute()
+        print(f"Sent unread-Exun-channel reminder to {user['name']}")
+
+
 send_reminders_for(2, "reminder_2day_sent")
 send_reminders_for(1, "reminder_1day_sent")
 send_competition_reminders()
 send_registration_deadline_reminders()
+send_unread_query_reminders()
+send_unread_exun_reminders()

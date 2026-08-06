@@ -105,6 +105,27 @@ def _notify_date_change(name, old_date, new_date):
         )
 
 
+def _notify_new_event(comp_name, event_name, min_grade, max_grade):
+    # Registered members only — an E2C "ad-hoc" (an unregistered guest
+    # named on the sheet) has no account or email in this system, so
+    # there's nothing to notify them at. Exun is excluded too: they can
+    # view every event but can never volunteer for one (see the
+    # is_eligible check further down this file), so "you're eligible for
+    # this" doesn't apply to them.
+    eligible_emails = [
+        u["email"] for u in cached_table("users")
+        if u.get("grade") is not None and min_grade <= u["grade"] <= max_grade
+        and u["email"] not in EXUN_EMAILS
+    ]
+    for email in eligible_emails:
+        send_email(
+            email,
+            f"New event you're eligible for: {event_name}",
+            f"A new event, {event_name}, was just added to {comp_name} — open to your grade.\n\n"
+            f"Log in to the app to volunteer.",
+        )
+
+
 def render_add_competition():
     with st.container(border=True):
         st.subheader(":material/add_box: Add a competition")
@@ -206,6 +227,9 @@ def render_add_competition():
                         for e in valid_events
                     ]).execute()
                     invalidate_cache()
+
+                    for e in valid_events:
+                        _notify_new_event(name.strip(), e["name"].strip(), e["min_grade"], e["max_grade"])
 
                     st.session_state.competition_message = ("success", f"Added {name.strip()}.")
                     # Reset the form's lists back to one blank row each.
@@ -701,6 +725,7 @@ def render_e2c_import():
                                     "min_grade": e["min_grade"], "max_grade": e["max_grade"],
                                 }).execute()
                                 new_event_id = event_result.data[0]["event_id"]
+                                _notify_new_event(data["name"], e["name"], e["min_grade"], e["max_grade"])
                                 fresh_event = next(
                                     (fe for fe in fresh_events_here if fe["name"].strip().lower() == e["name"].strip().lower()),
                                     e,
@@ -893,6 +918,7 @@ def render_e2c_import():
                                                 "min_grade": e["min_grade"], "max_grade": e["max_grade"],
                                             }).execute()
                                             new_event_id = event_result.data[0]["event_id"]
+                                            _notify_new_event(comp["name"], e["name"], e["min_grade"], e["max_grade"])
                                             fresh_event = next(
                                                 (fe for fe in fresh_all_events
                                                  if fe["name"].strip().lower() == e["name"].strip().lower()),
@@ -1059,6 +1085,7 @@ def _apply_competition_save(
             }
             if e["event_id"] is None:
                 client.table("competition_events").insert({**payload, "competition_id": cid}).execute()
+                _notify_new_event(name, e["name"], e["min_grade"], e["max_grade"])
             else:
                 client.table("competition_events").update(payload).eq("event_id", e["event_id"]).execute()
 

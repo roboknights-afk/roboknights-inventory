@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 
 from shared import (
     APP_URL, EXUN_CHANNEL_MEMBERS, EXUN_EMAILS, HOST_EMAILS, HOST_ROLES, cached_table,
-    get_client, invalidate_cache, send_email,
+    get_client, has_unread_exun_channel, has_unread_queries, invalidate_cache, send_email,
 )
 
 # Secrets (the Supabase URL and key) live in a local .env file, not in this
@@ -816,7 +816,14 @@ if not st.session_state.is_exun:
 pages.append(st.Page("app_pages/competitions.py", title="Competitions", icon=":material/emoji_events:"))
 if not st.session_state.is_exun:
     pages.append(st.Page("app_pages/announcements.py", title="Announcements", icon=":material/campaign:"))
-    pages.append(st.Page("app_pages/queries.py", title="Queries", icon=":material/quiz:"))
+    # 🔵 dot mirrors the same "unread" badge queries.py already puts on
+    # individual threads for the host — same visual language, just at the
+    # nav level so it's visible from anywhere in the app, not only once
+    # you're already on the Queries page.
+    queries_title = "Queries"
+    if has_unread_queries(st.session_state.current_user_id, st.session_state.is_host):
+        queries_title += " 🔵"
+    pages.append(st.Page("app_pages/queries.py", title=queries_title, icon=":material/quiz:"))
 pages.append(st.Page("app_pages/meetings.py", title="Meetings", icon=":material/groups:"))
 pages.append(st.Page("app_pages/achievements.py", title="Achievements", icon=":material/military_tech:"))
 
@@ -828,7 +835,10 @@ if st.session_state.is_host or st.session_state.is_exun:
 # The private RoboKnights <> Exun channel — only the specific hand-picked
 # people in EXUN_CHANNEL_MEMBERS ever see this page exists at all.
 if st.session_state.auth_user["email"] in EXUN_CHANNEL_MEMBERS:
-    pages.append(st.Page("app_pages/exun_channel.py", title="Exun Channel", icon=":material/handshake:"))
+    exun_title = "Exun Channel"
+    if has_unread_exun_channel(st.session_state.current_user_id):
+        exun_title += " 🔵"
+    pages.append(st.Page("app_pages/exun_channel.py", title=exun_title, icon=":material/handshake:"))
 
 page = st.navigation(pages)
 page.run()

@@ -68,6 +68,14 @@ EXUN_CHANNEL_MEMBERS = {
     "v09145aryamman@dpsrkp.net",  # Aryamman Ojha
 }
 
+# Derived, not hand-maintained, so it can't drift out of sync with
+# EXUN_CHANNEL_MEMBERS: everyone in that channel who's neither a
+# host/staff account nor Exun themselves — i.e. the named RoboKnights
+# STUDENT members. Used to scope the "unread channel message" nudge to
+# students only, per the student's explicit instruction that staff never
+# get nagged about unread messages.
+EXUN_CHANNEL_STUDENT_EMAILS = EXUN_CHANNEL_MEMBERS - HOST_EMAILS - EXUN_EMAILS
+
 # The club's real competition-tracking sheet ("E2C"). Always this one sheet,
 # so the host scans it directly instead of pasting a link every time.
 E2C_SHEET_ID = "1RLSXcAJ4t44M_wQ_hKlZqaTVmWjwAXrI8FInjHIZRTw"
@@ -114,6 +122,42 @@ def invalidate_cache():
     # (e.g. approving a request updates both requests and parts) and a
     # blanket clear can't miss one by mistake.
     cached_table.clear()
+
+
+def has_unread_queries(user_id, is_host):
+    # Same "message from the other side newer than my last read" check
+    # queries.py itself does per-thread (see render_thread there) — reused
+    # here so the sidebar nav badge and the actual read-marking logic can
+    # never disagree about what counts as unread.
+    queries = [q for q in cached_table("queries") if is_host or q["student_id"] == user_id]
+    if not queries:
+        return False
+    messages_by_query = {}
+    for m in cached_table("query_messages"):
+        messages_by_query.setdefault(m["query_id"], []).append(m)
+    read_field = "host_read_at" if is_host else "student_read_at"
+    for q in queries:
+        thread_messages = messages_by_query.get(q["query_id"], [])
+        latest_from_other = max(
+            (m["created_at"] for m in thread_messages if m["sender_id"] != user_id),
+            default=None,
+        )
+        my_read_at = q.get(read_field)
+        if latest_from_other and (not my_read_at or latest_from_other > my_read_at):
+            return True
+    return False
+
+
+def has_unread_exun_channel(user_id):
+    messages = cached_table("exun_channel_messages")
+    latest = max((m["created_at"] for m in messages), default=None)
+    if not latest:
+        return False
+    my_read = next(
+        (r for r in cached_table("exun_channel_reads") if r["user_id"] == user_id), None
+    )
+    my_read_at = my_read.get("last_read_at") if my_read else None
+    return not my_read_at or latest > my_read_at
 
 
 IST = timezone(timedelta(hours=5, minutes=30))

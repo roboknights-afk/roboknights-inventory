@@ -5,11 +5,13 @@
 # those exact people, but it's guarded here too since that's the one
 # thing st.navigation's page list alone doesn't stop for a direct URL hit.
 
+from datetime import datetime, timezone
+
 import streamlit as st
 
 from shared import (
-    EXUN_CHANNEL_MEMBERS, EXUN_EMAILS, HOST_EMAILS, cached_table, format_ist, format_relative,
-    get_client, invalidate_cache, safe_write,
+    APP_URL, EXUN_CHANNEL_MEMBERS, EXUN_EMAILS, HOST_EMAILS, cached_table, format_ist,
+    format_relative, get_client, invalidate_cache, safe_write, send_email,
 )
 
 client = get_client()
@@ -38,6 +40,23 @@ user_name_by_id = st.session_state.user_name_by_id
 user_email_by_id = st.session_state.user_email_by_id
 
 messages = sorted(cached_table("exun_channel_messages"), key=lambda m: m["created_at"])
+
+# Read receipt: one row per member (not per-thread — this is a single flat
+# channel everyone reads independently). Only WRITE when there's actually
+# something newer than what's on record, same "don't spam updates on an
+# already-read channel" guard Queries uses for its own read_at columns.
+latest_message_at = max((m["created_at"] for m in messages), default=None)
+my_read_row = next(
+    (r for r in cached_table("exun_channel_reads") if r["user_id"] == current_user_id), None
+)
+my_read_at = my_read_row.get("last_read_at") if my_read_row else None
+if latest_message_at and (not my_read_at or latest_message_at > my_read_at):
+    with safe_write("mark this channel read"):
+        client.table("exun_channel_reads").upsert({
+            "user_id": current_user_id,
+            "last_read_at": datetime.now(timezone.utc).isoformat(),
+        }).execute()
+        invalidate_cache()
 
 if not messages:
     st.caption("No messages yet — say hello.")
@@ -71,4 +90,16 @@ if reply_text and reply_text.strip():
             "body": reply_text.strip(),
         }).execute()
         invalidate_cache()
+
+        # Only the RoboKnights side notifies Exun — Exun posting their own
+        # message doesn't need to email themselves.
+        if current_email not in EXUN_EMAILS:
+            for exun_email in EXUN_EMAILS:
+                send_email(
+                    exun_email,
+                    f"New message from {current_user_name} in the Exun channel",
+                    f"{current_user_name} posted in the Exun channel:\n\n{reply_text.strip()}\n\n"
+                    f"Reply here: {APP_URL}",
+                )
+
         st.rerun()
