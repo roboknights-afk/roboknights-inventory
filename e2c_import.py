@@ -273,6 +273,13 @@ def _parse_date_best_effort(text):
         return None
 
 
+MODE_VALUES = {"hybrid", "offline", "online"}
+# Only the two PRE-competition markers — "CONQUERED"/"CANCELLED"/"OVER"/
+# "NOT GOING"/etc are post-competition results, not something a NEWLY
+# imported (still-upcoming) competition would ever carry.
+PRIORITY_VALUES = {"to be conquered", "to be conquered at all costs"}
+
+
 def _parse_competition_info(block):
     a_entries = [
         (row[0]["text"], row[0]["hyperlink"], row[0]["font_size"])
@@ -282,6 +289,7 @@ def _parse_competition_info(block):
         return {
             "name": "Untitled competition", "venue": "", "date_text": "",
             "deadline_text": None, "student_incharge": "", "links": [],
+            "mode": "", "priority_label": "",
         }
 
     name = a_entries[0][0]
@@ -296,6 +304,21 @@ def _parse_competition_info(block):
         else:
             break
     rest = a_entries[header_len:]
+
+    # The mode ("Hybrid"/"Offline"/"Online") and status ("TO BE CONQUERED"
+    # [AT ALL COSTS]) lines both live somewhere in the header, in no fixed
+    # order (confirmed live: one block had status before mode, most have
+    # it after) — matched by known text, not position. Previously these
+    # were only ever used to COUNT header_len; their actual text was
+    # discarded entirely.
+    mode = ""
+    priority_label = ""
+    for t, _, _ in a_entries[1:header_len]:
+        low = t.strip().lower()
+        if low in MODE_VALUES:
+            mode = t.strip()
+        elif low in PRIORITY_VALUES:
+            priority_label = t.strip()
 
     links = [{"label": t, "url": h} for t, h, _ in rest if h]
 
@@ -327,6 +350,8 @@ def _parse_competition_info(block):
         "deadline_text": deadline_text,
         "student_incharge": student_incharge,
         "links": links,
+        "mode": mode,
+        "priority_label": priority_label,
     }
 
 

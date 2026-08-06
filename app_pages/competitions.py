@@ -260,6 +260,10 @@ def _sync_competition_from_scan(client, comp):
         payload["registration_deadline"] = comp["deadline_parsed"].isoformat()
     if comp["student_incharge"]:
         payload["student_incharge"] = comp["student_incharge"]
+    if comp.get("mode"):
+        payload["mode"] = comp["mode"]
+    if comp.get("priority_label"):
+        payload["priority_label"] = comp["priority_label"]
     if payload:
         client.table("competitions").update(payload).eq("competition_id", comp["existing_id"]).execute()
 
@@ -665,6 +669,7 @@ def render_e2c_import():
                     pending_new.append({
                         "name": comp["name"], "venue": venue, "competition_date": comp_date,
                         "registration_deadline": deadline, "student_incharge": incharge,
+                        "mode": comp.get("mode", ""), "priority_label": comp.get("priority_label", ""),
                         "links": comp["links"], "events": event_widgets,
                     })
 
@@ -707,6 +712,8 @@ def render_e2c_import():
                                     data["registration_deadline"].isoformat() if data["registration_deadline"] else None
                                 ),
                                 "student_incharge": data["student_incharge"].strip(),
+                                "mode": data.get("mode") or None,
+                                "priority_label": data.get("priority_label") or None,
                             }).execute()
                             competition_id = comp_result.data[0]["competition_id"]
 
