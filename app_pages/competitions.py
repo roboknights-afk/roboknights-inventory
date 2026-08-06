@@ -75,6 +75,35 @@ if "confirming_date_change_id" not in st.session_state:
     st.session_state.confirming_date_change_id = None
 if "pending_date_change" not in st.session_state:
     st.session_state.pending_date_change = None
+if "confirming_e2c_single_sync_idx" not in st.session_state:
+    st.session_state.confirming_e2c_single_sync_idx = None
+if "pending_e2c_single_sync" not in st.session_state:
+    st.session_state.pending_e2c_single_sync = None
+if "confirming_e2c_bulk_sync" not in st.session_state:
+    st.session_state.confirming_e2c_bulk_sync = False
+if "pending_e2c_bulk_sync" not in st.session_state:
+    st.session_state.pending_e2c_bulk_sync = None
+
+
+def _notify_date_change(name, old_date, new_date):
+    # Shared by every path that can change a competition's date: the Edit
+    # form's Accept button, and now the E2C single/bulk sync Accept
+    # buttons too — same audience, same wording, wherever the change
+    # actually came from.
+    old_str = old_date.strftime("%d %b %Y") if old_date else "no date set"
+    new_str = new_date.strftime("%d %b %Y")
+    all_emails = [
+        email for email in user_email_by_id.values()
+        if email and email not in EXUN_EMAILS
+    ]
+    for email in all_emails:
+        send_email(
+            email,
+            f"Date change: {name.strip()}",
+            f"The date for {name.strip()} has changed from {old_str} to {new_str}.\n\n"
+            f"Log in to the app for full details.",
+        )
+
 
 def render_add_competition():
     with st.container(border=True):
@@ -221,6 +250,68 @@ def _sync_competition_from_scan(client, comp):
         invalidate_cache()
 
 
+def _stored_competition_date(existing_id):
+    # The sheet-scan dict only knows the SHEET's date, not what's currently
+    # in our own database — needed to tell whether syncing would actually
+    # change the date, same comparison the Edit form's Save does.
+    stored = next(
+        (c for c in cached_table("competitions") if c["competition_id"] == existing_id), None
+    )
+    return date.fromisoformat(stored["competition_date"]) if stored and stored.get("competition_date") else None
+
+
+def _apply_e2c_single_sync(fresh_comp, accept_date):
+    # accept_date=False re-syncs everything (venue, deadline, in-charge,
+    # links, rosters) EXCEPT the date — done by stripping date_parsed
+    # before handing off to _sync_competition_from_scan, which already
+    # skips any field it wasn't given.
+    old_date = _stored_competition_date(fresh_comp.get("existing_id"))
+    new_date = fresh_comp.get("date_parsed")
+    date_changed = bool(new_date and new_date != old_date)
+    sync_comp = fresh_comp if accept_date else {**fresh_comp, "date_parsed": None}
+
+    with _safe_write(f"update {fresh_comp['name']}"):
+        _sync_competition_from_scan(client, sync_comp)
+        if date_changed and accept_date:
+            _notify_date_change(fresh_comp["name"], old_date, new_date)
+        for e in fresh_comp["events"]:
+            if e.get("existing_event_id"):
+                _insert_matched_participants(
+                    client, e.get("existing_event_id"), e.get("teams", []), e["name"], fresh_comp["name"],
+                )
+        st.session_state.confirming_e2c_single_sync_idx = None
+        st.session_state.pending_e2c_single_sync = None
+        st.toast(f"Updated {fresh_comp['name']}.", icon=":material/check_circle:")
+        st.rerun()
+
+
+def _apply_e2c_bulk_sync(fresh_by_name, already_imported, accept_dates):
+    # Same accept/reject-the-date shape as the single-competition sync,
+    # applied across the whole batch: every competition's non-date fields
+    # always sync, but its date only changes if accept_dates is True AND
+    # the sheet actually disagrees with what's stored.
+    with _safe_write("sync the already-imported competitions"):
+        for comp in already_imported:
+            fresh_comp = fresh_by_name.get(comp["name"].strip().lower(), comp)
+            old_date = _stored_competition_date(comp["existing_id"])
+            new_date = fresh_comp.get("date_parsed")
+            date_changed = bool(new_date and new_date != old_date)
+            sync_comp = fresh_comp if (accept_dates or not date_changed) else {**fresh_comp, "date_parsed": None}
+
+            _sync_competition_from_scan(client, sync_comp)
+            if date_changed and accept_dates:
+                _notify_date_change(fresh_comp["name"], old_date, new_date)
+            for e in fresh_comp["events"]:
+                if e.get("existing_event_id"):
+                    _insert_matched_participants(
+                        client, e.get("existing_event_id"), e.get("teams", []), e["name"], fresh_comp["name"],
+                    )
+        st.session_state.confirming_e2c_bulk_sync = False
+        st.session_state.pending_e2c_bulk_sync = None
+        st.toast(f"Synced {len(already_imported)} competition(s).", icon=":material/check_circle:")
+        st.rerun()
+
+
 def _insert_matched_participants(client, event_id, teams, event_name, comp_name):
     # teams: list of team-rows, each {"team_no", "participants": [{"user_id",
     # "name", "selected"}]} matched against real members off the sheet's
@@ -355,7 +446,31 @@ def render_e2c_import():
 
             already_imported = [c for c in results if c["already_imported"]]
             if already_imported:
-                if st.button(
+                if st.session_state.confirming_e2c_bulk_sync:
+                    pending = st.session_state.pending_e2c_bulk_sync
+                    change_lines = "\n".join(
+                        f"- **{c['name']}**: "
+                        f"{c['old_date'].strftime('%d %b %Y') if c['old_date'] else 'no date set'} → "
+                        f"{c['new_date'].strftime('%d %b %Y')}"
+                        for c in pending["changes"]
+                    )
+                    st.warning(
+                        f"The sheet has a different date for {len(pending['changes'])} "
+                        f"competition(s):\n\n{change_lines}\n\nAccepting updates these dates and "
+                        f"emails every member. Rejecting still syncs venue/links/rosters for "
+                        f"everything, but keeps the original dates."
+                    )
+                    accept_col, reject_col = st.columns([1, 1])
+                    if accept_col.button(
+                        "Accept all date changes", key="e2c_accept_bulk_dates",
+                        icon=":material/check:", type="primary",
+                    ):
+                        _apply_e2c_bulk_sync(pending["fresh_by_name"], pending["already_imported"], accept_dates=True)
+                    if reject_col.button(
+                        "Reject date changes", key="e2c_reject_bulk_dates", icon=":material/close:"
+                    ):
+                        _apply_e2c_bulk_sync(pending["fresh_by_name"], pending["already_imported"], accept_dates=False)
+                elif st.button(
                     f"Sync all {len(already_imported)} already-imported competitions",
                     key="e2c_update_all", icon=":material/sync:",
                     help="Re-reads the sheet fresh, so anyone who signed up since your last Scan is included",
@@ -370,18 +485,22 @@ def render_e2c_import():
                         st.error(f"Couldn't re-read the E2C sheet: {e}")
                         fresh_by_name = {}
                     if fresh_by_name:
-                        with _safe_write("sync the already-imported competitions"):
-                            for comp in already_imported:
-                                fresh_comp = fresh_by_name.get(comp["name"].strip().lower(), comp)
-                                _sync_competition_from_scan(client, fresh_comp)
-                                for e in fresh_comp["events"]:
-                                    if e.get("existing_event_id"):
-                                        _insert_matched_participants(
-                                            client, e.get("existing_event_id"), e.get("teams", []),
-                                            e["name"], fresh_comp["name"],
-                                        )
-                            st.toast(f"Synced {len(already_imported)} competition(s).", icon=":material/check_circle:")
+                        changes = []
+                        for comp in already_imported:
+                            fresh_comp = fresh_by_name.get(comp["name"].strip().lower(), comp)
+                            old_date = _stored_competition_date(comp["existing_id"])
+                            new_date = fresh_comp.get("date_parsed")
+                            if new_date and new_date != old_date:
+                                changes.append({"name": fresh_comp["name"], "old_date": old_date, "new_date": new_date})
+                        if changes:
+                            st.session_state.pending_e2c_bulk_sync = {
+                                "fresh_by_name": fresh_by_name, "already_imported": already_imported,
+                                "changes": changes,
+                            }
+                            st.session_state.confirming_e2c_bulk_sync = True
                             st.rerun()
+                        else:
+                            _apply_e2c_bulk_sync(fresh_by_name, already_imported, accept_dates=True)
 
             pending_new = []  # collects each new competition's current widget values
 
@@ -583,7 +702,30 @@ def render_e2c_import():
                                 f":material/location_on: {comp['venue'] or '(not found)'}  •  "
                                 f":material/event: {comp['date_text'] or '(not found)'}"
                             )
-                            if st.button(
+                            if st.session_state.confirming_e2c_single_sync_idx == idx:
+                                pending = st.session_state.pending_e2c_single_sync
+                                old_str = (
+                                    pending["old_date"].strftime("%d %b %Y") if pending["old_date"] else "no date set"
+                                )
+                                new_str = pending["new_date"].strftime("%d %b %Y")
+                                st.warning(
+                                    f"The sheet's date for **{pending['fresh_comp']['name']}** is "
+                                    f"**{new_str}**, but this competition is currently stored as "
+                                    f"**{old_str}**. Accepting updates the date and emails every "
+                                    f"member. Rejecting still syncs venue/links/roster, but keeps "
+                                    f"the original date."
+                                )
+                                accept_col, reject_col = st.columns([1, 1])
+                                if accept_col.button(
+                                    "Accept date change", key=f"e2c_accept_date_{idx}",
+                                    icon=":material/check:", type="primary",
+                                ):
+                                    _apply_e2c_single_sync(pending["fresh_comp"], accept_date=True)
+                                if reject_col.button(
+                                    "Reject date change", key=f"e2c_reject_date_{idx}", icon=":material/close:"
+                                ):
+                                    _apply_e2c_single_sync(pending["fresh_comp"], accept_date=False)
+                            elif st.button(
                                 "Update this competition", key=f"e2c_update_{idx}", icon=":material/sync:",
                                 help="Re-reads the sheet fresh — anyone who signed up since your last "
                                      "Scan is included",
@@ -598,16 +740,16 @@ def render_e2c_import():
                                     st.error(f"Couldn't re-read the E2C sheet: {e}")
                                     fresh_comp = None
                                 if fresh_comp:
-                                    with _safe_write(f"update {comp['name']}"):
-                                        _sync_competition_from_scan(client, fresh_comp)
-                                        for e in fresh_comp["events"]:
-                                            if e.get("existing_event_id"):
-                                                _insert_matched_participants(
-                                                    client, e.get("existing_event_id"), e.get("teams", []),
-                                                    e["name"], fresh_comp["name"],
-                                                )
-                                        st.toast(f"Updated {comp['name']}.", icon=":material/check_circle:")
+                                    old_date = _stored_competition_date(fresh_comp.get("existing_id"))
+                                    new_date = fresh_comp.get("date_parsed")
+                                    if new_date and new_date != old_date:
+                                        st.session_state.pending_e2c_single_sync = {
+                                            "fresh_comp": fresh_comp, "old_date": old_date, "new_date": new_date,
+                                        }
+                                        st.session_state.confirming_e2c_single_sync_idx = idx
                                         st.rerun()
+                                    else:
+                                        _apply_e2c_single_sync(fresh_comp, accept_date=True)
 
                             # Lets the host pull in a specific event that wasn't
                             # auto-detected as robotics (e.g. a borderline AI/IoT
@@ -881,21 +1023,7 @@ def _apply_competition_save(
         invalidate_cache()
 
         if date_changed:
-            old_str = old_date.strftime("%d %b %Y") if old_date else "no date set"
-            new_str = final_date.strftime("%d %b %Y")
-            # Same "everyone except Exun" audience as Announcements — Exun
-            # can view Competitions but isn't part of this internal channel.
-            all_emails = [
-                email for email in user_email_by_id.values()
-                if email and email not in EXUN_EMAILS
-            ]
-            for email in all_emails:
-                send_email(
-                    email,
-                    f"Date change: {name.strip()}",
-                    f"The date for {name.strip()} has changed from {old_str} to {new_str}.\n\n"
-                    f"Log in to the app for full details.",
-                )
+            _notify_date_change(name, old_date, final_date)
 
         st.session_state.competition_message = ("success", f"Updated {name.strip()}.")
         st.session_state.editing_competition_id = None
