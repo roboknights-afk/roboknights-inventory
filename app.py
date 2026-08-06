@@ -819,10 +819,17 @@ if not st.session_state.is_exun:
     # 🔵 dot mirrors the same "unread" badge queries.py already puts on
     # individual threads for the host — same visual language, just at the
     # nav level so it's visible from anywhere in the app, not only once
-    # you're already on the Queries page.
+    # you're already on the Queries page. This runs unconditionally on
+    # EVERY page load for every user (unlike a button-triggered write), so
+    # it's wrapped defensively — a badge is a nice-to-have; it must never
+    # be able to take the whole app down for everyone the way an
+    # unguarded query against a not-yet-migrated table just did.
     queries_title = "Queries"
-    if has_unread_queries(st.session_state.current_user_id, st.session_state.is_host):
-        queries_title += " 🔵"
+    try:
+        if has_unread_queries(st.session_state.current_user_id, st.session_state.is_host):
+            queries_title += " 🔵"
+    except Exception:
+        pass
     pages.append(st.Page("app_pages/queries.py", title=queries_title, icon=":material/quiz:"))
 pages.append(st.Page("app_pages/meetings.py", title="Meetings", icon=":material/groups:"))
 pages.append(st.Page("app_pages/achievements.py", title="Achievements", icon=":material/military_tech:"))
@@ -836,8 +843,11 @@ if st.session_state.is_host or st.session_state.is_exun:
 # people in EXUN_CHANNEL_MEMBERS ever see this page exists at all.
 if st.session_state.auth_user["email"] in EXUN_CHANNEL_MEMBERS:
     exun_title = "Exun Channel"
-    if has_unread_exun_channel(st.session_state.current_user_id):
-        exun_title += " 🔵"
+    try:
+        if has_unread_exun_channel(st.session_state.current_user_id):
+            exun_title += " 🔵"
+    except Exception:
+        pass
     pages.append(st.Page("app_pages/exun_channel.py", title=exun_title, icon=":material/handshake:"))
 
 page = st.navigation(pages)
