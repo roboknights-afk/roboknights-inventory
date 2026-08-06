@@ -444,6 +444,29 @@ def render_e2c_import():
             if not results:
                 st.caption("No robotics competitions found in the current year's tab.")
 
+            # Events the host has explicitly said "no" to before — filtered
+            # out of every suggestion list below so a rejected event stops
+            # coming back on every future scan. Name-keyed (not id-keyed),
+            # see the schema comment for why.
+            rejected_pairs = {
+                (r["competition_name"].strip().lower(), r["event_name"].strip().lower())
+                for r in cached_table("e2c_rejected_events")
+            }
+
+            def _reject_event_button(comp_name, event_name, key):
+                if st.button(
+                    "Reject", key=key, icon=":material/block:",
+                    help="Never suggest this event again for this competition",
+                ):
+                    with _safe_write("reject this event"):
+                        client.table("e2c_rejected_events").upsert(
+                            {"competition_name": comp_name.strip(), "event_name": event_name.strip()},
+                            on_conflict="competition_name,event_name",
+                        ).execute()
+                        invalidate_cache()
+                        st.toast(f"Won't suggest \"{event_name}\" for {comp_name} again.", icon=":material/check_circle:")
+                        st.rerun()
+
             already_imported = [c for c in results if c["already_imported"]]
             if already_imported:
                 if st.session_state.confirming_e2c_bulk_sync:
@@ -529,6 +552,14 @@ def render_e2c_import():
 
                     st.markdown("**Robotics events to import:**")
 
+                    # Rejected ones are filtered out of the suggested list
+                    # entirely, not just left unchecked — that's the whole
+                    # point of Reject vs. just unticking Include.
+                    visible_candidate_events = [
+                        e for e in comp["events"]
+                        if (comp["name"].strip().lower(), e["name"].strip().lower()) not in rejected_pairs
+                    ]
+
                     # Lets the host pull in a specific event that wasn't
                     # auto-detected as robotics (e.g. a borderline AI/IoT
                     # one) by typing its exact name from the sheet.
@@ -543,7 +574,7 @@ def render_e2c_import():
                     )
                     if add_col2.button("Add", key=f"e2c_addname_btn_{idx}", icon=":material/add:") and add_name.strip():
                         shown_names = {
-                            e["name"].strip().lower() for e in comp["events"] + st.session_state[extra_key]
+                            e["name"].strip().lower() for e in visible_candidate_events + st.session_state[extra_key]
                         }
                         match = next(
                             (e for e in comp.get("all_events", []) if e["name"].strip().lower() == add_name.strip().lower()),
@@ -567,9 +598,9 @@ def render_e2c_import():
                         st.caption(f"{':material/error:' if kind == 'error' else ':material/info:'} {text}")
 
                     event_widgets = []
-                    for eidx, e in enumerate(comp["events"] + st.session_state[extra_key]):
+                    for eidx, e in enumerate(visible_candidate_events + st.session_state[extra_key]):
                         with st.container(border=True):
-                            ecol1, ecol2 = st.columns([4, 1])
+                            ecol1, ecol2, ecol3 = st.columns([4, 1, 1])
                             ecol1.markdown(
                                 f"**{e['name']}**"
                                 + ("  :material/warning: check team size/max teams" if e["flagged"] else "")
@@ -580,6 +611,8 @@ def render_e2c_import():
                             include = ecol2.checkbox(
                                 "Include", value=not e.get("needs_review"), key=f"e2c_incl_{idx}_{eidx}",
                             )
+                            with ecol3:
+                                _reject_event_button(comp["name"], e["name"], f"e2c_reject_{idx}_{eidx}")
                             c1, c2, c3, c4 = st.columns(4)
                             team_size = c1.number_input(
                                 "Team size", min_value=1, value=e["team_size"], key=f"e2c_ts_{idx}_{eidx}",
@@ -770,6 +803,7 @@ def render_e2c_import():
                                     e["name"].strip().lower()
                                     for e in comp["events"] + st.session_state[extra_key]
                                     if not e["already_imported"]
+                                    and (comp["name"].strip().lower(), e["name"].strip().lower()) not in rejected_pairs
                                 }
                                 match = next(
                                     (e for e in comp.get("all_events", [])
@@ -800,7 +834,10 @@ def render_e2c_import():
                                 st.caption(f"{':material/error:' if kind == 'error' else ':material/info:'} {text}")
 
                             new_events = (
-                                [e for e in comp["events"] if not e["already_imported"]]
+                                [
+                                    e for e in comp["events"] if not e["already_imported"]
+                                    and (comp["name"].strip().lower(), e["name"].strip().lower()) not in rejected_pairs
+                                ]
                                 + st.session_state[extra_key]
                             )
                             if new_events:
@@ -818,11 +855,16 @@ def render_e2c_import():
                                             " — not auto-detected as robotics, RoboKnights members are "
                                             "already on the roster, confirm before adding"
                                         )
-                                    if st.checkbox(
+                                    check_col, reject_col2 = st.columns([5, 1])
+                                    if check_col.checkbox(
                                         label, value=not e["flagged"] and not e.get("needs_review"),
                                         key=f"e2c_addevent_{idx}_{e['name']}",
                                     ):
                                         to_add.append(e)
+                                    with reject_col2:
+                                        _reject_event_button(
+                                            comp["name"], e["name"], f"e2c_reject_existing_{idx}_{e['name']}"
+                                        )
                                     teams_caption = _teams_caption(e.get("teams", []))
                                     if teams_caption:
                                         st.caption(teams_caption)
