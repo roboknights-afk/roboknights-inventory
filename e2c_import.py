@@ -82,6 +82,52 @@ def _normalize_name(raw):
     return " ".join(tokens)
 
 
+def _tokens_match(sheet_tokens, user_tokens):
+    # Same word count and every word matches, EXCEPT a single-letter (+
+    # optional period) token on either side is allowed to stand in for
+    # the other side's full word in that same position — e.g. the sheet's
+    # "T." matching our stored "Tanmay" in "Medhansh T. Pandya" vs
+    # "Medhansh Tanmay Pandya". First and last name still have to match
+    # exactly either way, so this only ever bridges an abbreviation,
+    # never guesses between two different people.
+    if len(sheet_tokens) != len(user_tokens):
+        return False
+    for st, ut in zip(sheet_tokens, user_tokens):
+        if st == ut:
+            continue
+        st_bare, ut_bare = st.rstrip("."), ut.rstrip(".")
+        if len(st_bare) == 1 and st_bare == ut_bare[:1]:
+            continue
+        if len(ut_bare) == 1 and ut_bare == st_bare[:1]:
+            continue
+        return False
+    return True
+
+
+class _NameMatcher:
+    # Exact match (a plain dict lookup) is the fast, common path — this
+    # only falls back to the slower token-by-token _tokens_match when
+    # that misses, so a club-sized member list costs nothing extra for
+    # the overwhelming majority of names that already match exactly.
+    def __init__(self, users):
+        self._exact = {}
+        self._entries = []
+        for u in users:
+            normalized_lower = _normalize_name(u["name"]).lower()
+            self._exact[normalized_lower] = u["user_id"]
+            self._entries.append((normalized_lower.split(), u["user_id"]))
+
+    def get(self, cleaned_lower):
+        user_id = self._exact.get(cleaned_lower)
+        if user_id:
+            return user_id
+        sheet_tokens = cleaned_lower.split()
+        for user_tokens, user_id in self._entries:
+            if _tokens_match(sheet_tokens, user_tokens):
+                return user_id
+        return None
+
+
 def _api_get(path, api_key, **params):
     resp = requests.get(
         f"https://sheets.googleapis.com/v4/spreadsheets/{path}",
@@ -502,11 +548,9 @@ def scan_e2c_sheet(client):
 
     # Same _normalize_name treatment as the sheet side, so a member who
     # typed class/session junk into their signup name still matches their
-    # clean name on the sheet (and vice versa).
-    user_id_by_name = {
-        _normalize_name(u["name"]).lower(): u["user_id"]
-        for u in client.table("users").select("user_id, name").execute().data
-    }
+    # clean name on the sheet (and vice versa) — plus the initial-bridging
+    # fallback in _NameMatcher for abbreviated middle names.
+    user_id_by_name = _NameMatcher(client.table("users").select("user_id, name").execute().data)
 
     competitions = []
     for block in blocks:
