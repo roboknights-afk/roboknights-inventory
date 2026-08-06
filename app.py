@@ -1,5 +1,4 @@
 import base64
-import json
 import time
 from pathlib import Path
 
@@ -303,24 +302,36 @@ def school_email_input(label, key):
     # A text_input with a fixed "@dpsrkp.net" suffix shown alongside it —
     # Streamlit has no native "input with suffix" widget, so this is just
     # two columns: the box, then the suffix as a label next to it.
+    # autocomplete="username" is the standard hint browsers use to
+    # recognize a login-identifier field — same value regardless of
+    # whether this particular box is on the login, signup, or reset
+    # screen, since it means the same thing on all three.
     col1, col2 = st.columns([2, 1.2], vertical_alignment="bottom")
-    username = col1.text_input(label, key=key, placeholder="yourusername")
+    username = col1.text_input(
+        label, key=key, placeholder="yourusername", autocomplete="username"
+    )
     col2.markdown(f"`{ALLOWED_EMAIL_DOMAIN}`")
     return build_school_email(username)
 
 
 # --- "Save my login details" -----------------------------------------------
-# Two independent things happen behind this one checkbox: (1) a real
-# stay-logged-in session, using Supabase's own refresh token, so you don't
-# have to type your password again next time; (2) asking the BROWSER's own
-# password manager to offer saving the login, same as it does on any other
-# site. Neither ever touches the raw password on our end for #1 — it's
-# Supabase's token being stored, not the password.
+# A real stay-logged-in session, using Supabase's OWN refresh token stored
+# in a cookie — never the actual password — so you don't have to type your
+# password in again next time you open the app. (The other half of "save my
+# login details" — asking the BROWSER to offer saving the password itself —
+# was tried via the Credential Management API and pulled back out: it
+# requires a very recent, direct user gesture ("transient activation"), and
+# Streamlit's login button click round-trips through the server before any
+# script of ours runs, which used up that window every time. Not a bug to
+# chase further — a real mismatch between what that API demands and how
+# Streamlit is built. autocomplete="username"/"current-password" on the
+# fields below is the actual fix: the standards-based hint every browser's
+# OWN save-password heuristic already looks for, no custom JS involved.)
 #
-# Both need actual JS to run, and st.html() turned out not to run <script>
-# tags at all (confirmed live: a script inside st.html silently does
-# nothing, same family of gotcha as it stripping inline <svg> — see the
-# gear splash notes below). st.components.v1.html DOES run scripts
+# Writing the cookie needs actual JS, and st.html() turned out not to run
+# <script> tags at all (confirmed live: a script inside st.html silently
+# does nothing, same family of gotcha as it stripping inline <svg> — see
+# the gear splash notes below). st.components.v1.html DOES run scripts
 # reliably, because it renders into a real sandboxed iframe rather than
 # being poured into the page via innerHTML — confirmed live too: a cookie
 # set from inside it shows up in st.context.cookies on the next load.
@@ -343,31 +354,6 @@ def _clear_remember_cookie():
     components.html(
         f"""<script>
         window.parent.document.cookie = "{REMEMBER_ME_COOKIE}=; max-age=0; path=/; SameSite=Lax";
-        </script>""",
-        height=0,
-    )
-
-
-def _offer_browser_password_save(email, password):
-    # The Credential Management API — the right tool here specifically
-    # because login isn't a real HTML <form> submission in this app (every
-    # Streamlit widget talks over its own websocket call, not a page
-    # navigation), which is exactly the case browsers' own save-password
-    # heuristics usually miss entirely. Supported in Chrome/Edge, not in
-    # Firefox/Safari — harmless no-op there, not a broken feature, since
-    # everything is guarded behind the feature check.
-    components.html(
-        f"""<script>
-        if (window.parent.PasswordCredential) {{
-            try {{
-                const cred = new window.parent.PasswordCredential({{
-                    id: {json.dumps(email)},
-                    password: {json.dumps(password)},
-                    name: {json.dumps(email)},
-                }});
-                window.parent.navigator.credentials.store(cred);
-            }} catch (e) {{}}
-        }}
         </script>""",
         height=0,
     )
@@ -451,22 +437,23 @@ def show_login_signup(client):
 
             with login_tab:
                 email = school_email_input("Email", key="login_username")
-                password = st.text_input("Password", type="password", key="login_password")
+                password = st.text_input(
+                    "Password", type="password", key="login_password",
+                    autocomplete="current-password",
+                )
                 save_login = st.checkbox(
                     "Save my login details on this device",
                     key="login_save_details",
-                    help="Stays logged in on this device (uses a secure session token, "
-                         "not your actual password), and offers to save your password "
-                         "in your browser's own password manager.",
+                    help="Stays logged in on this device using a secure session token — "
+                         "never your actual password — so you don't have to type your "
+                         "password in again next time.",
                 )
                 if st.button("Log in", icon=":material/login:", type="primary", width="stretch"):
                     try:
                         result = client.auth.sign_in_with_password({"email": email, "password": password})
                         st.session_state.auth_user = {"id": result.user.id, "email": result.user.email}
-                        if save_login:
-                            if result.session and result.session.refresh_token:
-                                _set_remember_cookie(result.session.refresh_token)
-                            _offer_browser_password_save(email, password)
+                        if save_login and result.session and result.session.refresh_token:
+                            _set_remember_cookie(result.session.refresh_token)
                         st.rerun()
                     except Exception as e:
                         st.error(f"Couldn't log in: {e}")
@@ -498,7 +485,10 @@ def show_login_signup(client):
                     section = st.text_input("Section", key="signup_section")
                     admission_no = admission_no_input("signup_admission_no")
                 phone_no = st.text_input("Phone no.", key="signup_phone_no")
-                password = st.text_input("Password", type="password", key="signup_password")
+                password = st.text_input(
+                    "Password", type="password", key="signup_password",
+                    autocomplete="new-password",
+                )
                 if st.button("Sign up", icon=":material/person_add:", type="primary", width="stretch"):
                     if email == ALLOWED_EMAIL_DOMAIN:
                         st.error("Enter your username.")
@@ -651,7 +641,10 @@ def show_reset_screen(client):
                     "6-digit code from the email — or paste the full reset link",
                     key="reset_code",
                 )
-                new_password = st.text_input("New password", type="password", key="reset_new_password")
+                new_password = st.text_input(
+                    "New password", type="password", key="reset_new_password",
+                    autocomplete="new-password",
+                )
                 if st.button("Update password", icon=":material/lock_reset:", type="primary", width="stretch"):
                     try:
                         entered = code.strip()
