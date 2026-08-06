@@ -203,6 +203,63 @@ def send_competition_reminders():
                 print(f"Sent competition reminder to {user['name']} for {event['name']}")
 
 
+def send_registration_deadline_reminders():
+    # Fires the morning (9am IST, same run as the other reminders below) a
+    # competition's own registration_deadline arrives. Tries the named
+    # student in-charge first — a simple exact name match against users,
+    # since that's what's actually typed into that free-text field — and
+    # falls back to the two standing club addresses when there's no match
+    # (typo'd name, in-charge isn't a member with an app account, etc.),
+    # so a deadline reminder is never silently dropped.
+    today = date.today().isoformat()
+
+    competitions = (
+        client.table("competitions")
+        .select("*")
+        .eq("registration_deadline", today)
+        .eq("not_attending", False)
+        .eq("registration_reminder_sent", False)
+        .execute()
+        .data
+    )
+    if not competitions:
+        print("No registration deadlines today.")
+        return
+
+    user_by_name = {
+        u["name"].strip().lower(): u
+        for u in client.table("users").select("user_id, name, email").execute().data
+        if u.get("name")
+    }
+
+    for comp in competitions:
+        incharge_name = (comp.get("student_incharge") or "").strip()
+        matched_user = user_by_name.get(incharge_name.lower()) if incharge_name else None
+
+        subject = f"Registration deadline today: {comp['name']}"
+        body = (
+            f"Today ({comp['registration_deadline']}) is the registration deadline for "
+            f"{comp['name']}" + (f" at {comp['venue']}" if comp.get("venue") else "") + ". "
+            f"Please make sure registration is completed."
+        )
+
+        if matched_user:
+            send_email(matched_user["email"], subject, body)
+            print(f"Sent registration deadline reminder for {comp['name']} to {matched_user['name']}")
+        else:
+            send_email("roboknights@dpsrkp.net", subject, body)
+            send_email("exun@dpsrkp.net", subject, body)
+            print(
+                f"Sent registration deadline reminder for {comp['name']} to roboknights@/exun@ "
+                f"(no member matched student in-charge \"{incharge_name}\")"
+            )
+
+        client.table("competitions").update({"registration_reminder_sent": True}).eq(
+            "competition_id", comp["competition_id"]
+        ).execute()
+
+
 send_reminders_for(2, "reminder_2day_sent")
 send_reminders_for(1, "reminder_1day_sent")
 send_competition_reminders()
+send_registration_deadline_reminders()

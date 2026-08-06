@@ -15,7 +15,7 @@ import streamlit as st
 
 from e2c_import import scan_e2c_sheet
 from shared import (
-    HOST_EMAILS, IST, cached_table, get_client, invalidate_cache, safe_write, send_email,
+    EXUN_EMAILS, HOST_EMAILS, IST, cached_table, get_client, invalidate_cache, safe_write, send_email,
 )
 
 # The page-local name everything below already uses — the implementation
@@ -71,6 +71,10 @@ if "editing_competition_id" not in st.session_state:
     st.session_state.editing_competition_id = None
 if "deleting_competition_id" not in st.session_state:
     st.session_state.deleting_competition_id = None
+if "confirming_date_change_id" not in st.session_state:
+    st.session_state.confirming_date_change_id = None
+if "pending_date_change" not in st.session_state:
+    st.session_state.pending_date_change = None
 
 def render_add_competition():
     with st.container(border=True):
@@ -822,6 +826,84 @@ if comp_search:
         or c["competition_id"] in matching_comp_ids
     ]
 
+def _apply_competition_save(
+    cid, name, venue, final_date, reg_deadline, incharge,
+    valid_events, valid_links, original_events, date_changed, old_date,
+):
+    # Shared by all three ways an edit can finish: no date change (saves
+    # immediately), Accept (saves with the new date), Reject (saves
+    # everything else but keeps the original date) — same write logic
+    # either way, only the date value and whether to email about it differ.
+    with _safe_write("save changes to this competition"):
+        client.table("competitions").update({
+            "name": name.strip(),
+            "venue": venue.strip(),
+            "competition_date": final_date.isoformat(),
+            "registration_deadline": reg_deadline.isoformat() if reg_deadline else None,
+            "student_incharge": incharge.strip(),
+        }).eq("competition_id", cid).execute()
+
+        # Links: nothing else references them, so simplest to just replace
+        # the whole set.
+        client.table("competition_links").delete().eq("competition_id", cid).execute()
+        if valid_links:
+            client.table("competition_links").insert([
+                {
+                    "competition_id": cid,
+                    "label": l["label"].strip() or "Link",
+                    "url": l["url"].strip()
+                    if l["url"].strip().startswith(("http://", "https://"))
+                    else "https://" + l["url"].strip(),
+                }
+                for l in valid_links
+            ]).execute()
+
+        # Events: update existing ones in place (so their volunteer signups
+        # survive), insert brand-new ones, delete any that were removed.
+        kept_ids = {e["event_id"] for e in valid_events if e["event_id"] is not None}
+        original_ids = {e["event_id"] for e in original_events}
+        for old_id in original_ids - kept_ids:
+            client.table("competition_events").delete().eq("event_id", old_id).execute()
+        for e in valid_events:
+            payload = {
+                "name": e["name"].strip(),
+                "details": e["details"].strip(),
+                "team_size": e["team_size"],
+                "max_teams": e["max_teams"],
+                "min_grade": e["min_grade"],
+                "max_grade": e["max_grade"],
+            }
+            if e["event_id"] is None:
+                client.table("competition_events").insert({**payload, "competition_id": cid}).execute()
+            else:
+                client.table("competition_events").update(payload).eq("event_id", e["event_id"]).execute()
+
+        invalidate_cache()
+
+        if date_changed:
+            old_str = old_date.strftime("%d %b %Y") if old_date else "no date set"
+            new_str = final_date.strftime("%d %b %Y")
+            # Same "everyone except Exun" audience as Announcements — Exun
+            # can view Competitions but isn't part of this internal channel.
+            all_emails = [
+                email for email in user_email_by_id.values()
+                if email and email not in EXUN_EMAILS
+            ]
+            for email in all_emails:
+                send_email(
+                    email,
+                    f"Date change: {name.strip()}",
+                    f"The date for {name.strip()} has changed from {old_str} to {new_str}.\n\n"
+                    f"Log in to the app for full details.",
+                )
+
+        st.session_state.competition_message = ("success", f"Updated {name.strip()}.")
+        st.session_state.editing_competition_id = None
+        st.session_state.confirming_date_change_id = None
+        st.session_state.pending_date_change = None
+        st.rerun()
+
+
 def render_competition_card(comp):
     cid = comp["competition_id"]
     links = [l for l in all_links if l["competition_id"] == cid]
@@ -831,7 +913,40 @@ def render_competition_card(comp):
     # key= gives the card a stable "st-key-rkcard_..." CSS class, which
     # the hover animation in app.py targets.
     with st.container(border=True, key=f"rkcard_comp_{cid}"):
-        if editing_this:
+        if editing_this and st.session_state.confirming_date_change_id == cid:
+            # --- Host: confirm a date change before it's applied --------
+            # The date is the one field this app won't silently change on
+            # a plain Save — a wrong/accidental date is disruptive enough
+            # (it goes out to every member) that it gets its own explicit
+            # Accept/Reject step, same two-step-confirm shape as deleting a
+            # competition or withdrawing from an event elsewhere on this page.
+            pending = st.session_state.pending_date_change
+            old_str = pending["old_date"].strftime("%d %b %Y") if pending["old_date"] else "no date set"
+            new_str = pending["new_date"].strftime("%d %b %Y")
+            st.warning(
+                f"**{pending['name'].strip()}**'s date is changing from **{old_str}** to "
+                f"**{new_str}**. Accepting saves your changes and emails every member about "
+                f"the new date. Rejecting saves your other changes but keeps the original date."
+            )
+            accept_col, reject_col = st.columns([1, 1])
+            if accept_col.button(
+                "Accept date change", key=f"accept_date_{cid}", icon=":material/check:", type="primary"
+            ):
+                _apply_competition_save(
+                    pending["cid"], pending["name"], pending["venue"], pending["new_date"],
+                    pending["reg_deadline"], pending["incharge"], pending["valid_events"],
+                    pending["valid_links"], pending["original_events"],
+                    date_changed=True, old_date=pending["old_date"],
+                )
+            if reject_col.button("Reject date change", key=f"reject_date_{cid}", icon=":material/close:"):
+                _apply_competition_save(
+                    pending["cid"], pending["name"], pending["venue"], pending["old_date"],
+                    pending["reg_deadline"], pending["incharge"], pending["valid_events"],
+                    pending["valid_links"], pending["original_events"],
+                    date_changed=False, old_date=pending["old_date"],
+                )
+
+        elif editing_this:
             # --- Host: edit this competition ---------------------------
             # Same list-in-session-state + Add/Remove pattern as the
             # Create form above, just pre-filled with the existing data.
@@ -924,60 +1039,28 @@ def render_competition_card(comp):
                     st.session_state.competition_message = ("error", " ".join(errors))
                     st.rerun()
                 else:
-                    with _safe_write("save changes to this competition"):
-                        client.table("competitions").update({
-                            "name": edit_name.strip(),
-                            "venue": edit_venue.strip(),
-                            "competition_date": edit_date.isoformat(),
-                            "registration_deadline": edit_reg_deadline.isoformat() if edit_reg_deadline else None,
-                            "student_incharge": edit_incharge.strip(),
-                        }).eq("competition_id", cid).execute()
-
-                        # Links: nothing else references them, so simplest
-                        # to just replace the whole set.
-                        client.table("competition_links").delete().eq("competition_id", cid).execute()
-                        valid_links = [l for l in st.session_state.edit_comp_links if l["url"].strip()]
-                        if valid_links:
-                            client.table("competition_links").insert([
-                                {
-                                    "competition_id": cid,
-                                    "label": l["label"].strip() or "Link",
-                                    "url": l["url"].strip()
-                                    if l["url"].strip().startswith(("http://", "https://"))
-                                    else "https://" + l["url"].strip(),
-                                }
-                                for l in valid_links
-                            ]).execute()
-
-                        # Events: update existing ones in place (so their
-                        # volunteer signups survive), insert brand-new ones,
-                        # delete any that were removed from the list.
-                        kept_ids = {e["event_id"] for e in valid_events if e["event_id"] is not None}
-                        original_ids = {e["event_id"] for e in events}
-                        for old_id in original_ids - kept_ids:
-                            client.table("competition_events").delete().eq("event_id", old_id).execute()
-                        for e in valid_events:
-                            payload = {
-                                "name": e["name"].strip(),
-                                "details": e["details"].strip(),
-                                "team_size": e["team_size"],
-                                "max_teams": e["max_teams"],
-                                "min_grade": e["min_grade"],
-                                "max_grade": e["max_grade"],
-                            }
-                            if e["event_id"] is None:
-                                client.table("competition_events").insert(
-                                    {**payload, "competition_id": cid}
-                                ).execute()
-                            else:
-                                client.table("competition_events").update(payload).eq(
-                                    "event_id", e["event_id"]
-                                ).execute()
-
-                        invalidate_cache()
-                        st.session_state.competition_message = ("success", f"Updated {edit_name.strip()}.")
-                        st.session_state.editing_competition_id = None
+                    valid_links = [l for l in st.session_state.edit_comp_links if l["url"].strip()]
+                    old_date = (
+                        date.fromisoformat(comp["competition_date"]) if comp.get("competition_date") else None
+                    )
+                    if edit_date != old_date:
+                        # Don't save yet — hold everything in session_state
+                        # and show the Accept/Reject prompt on the next
+                        # rerun instead. Other field edits ride along with
+                        # whichever choice the host makes.
+                        st.session_state.pending_date_change = {
+                            "cid": cid, "name": edit_name, "venue": edit_venue, "new_date": edit_date,
+                            "reg_deadline": edit_reg_deadline, "incharge": edit_incharge,
+                            "valid_events": valid_events, "valid_links": valid_links,
+                            "original_events": events, "old_date": old_date,
+                        }
+                        st.session_state.confirming_date_change_id = cid
                         st.rerun()
+                    else:
+                        _apply_competition_save(
+                            cid, edit_name, edit_venue, edit_date, edit_reg_deadline, edit_incharge,
+                            valid_events, valid_links, events, date_changed=False, old_date=old_date,
+                        )
             if cancel_col.button("Cancel", key=f"cancel_comp_{cid}", icon=":material/close:"):
                 st.session_state.editing_competition_id = None
                 st.rerun()
