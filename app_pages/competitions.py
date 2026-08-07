@@ -1451,6 +1451,19 @@ def render_competition_card(comp):
                         else f"Grades {e['min_grade']}–{e['max_grade']}"
                     )
                     event_volunteers = [v for v in all_volunteers if v["event_id"] == e["event_id"]]
+                    # team_no itself is the sheet ROW position, with gaps
+                    # left by rows that had no matched members (see
+                    # _parse_teams in e2c_import.py — it has to stay that
+                    # way underneath, so a newly-matched row can't merge
+                    # into an unrelated team_no). Only the display needs to
+                    # be gap-free, so remap to a plain 1, 2, 3... just for
+                    # what's shown on screen.
+                    team_no_display = {
+                        real: i
+                        for i, real in enumerate(
+                            sorted({v["team_no"] for v in event_volunteers if v.get("team_no")}), start=1
+                        )
+                    }
                     selected_names = [
                         user_name_by_id.get(v["user_id"], "Unknown")
                         for v in event_volunteers
@@ -1496,7 +1509,7 @@ def render_competition_card(comp):
                                     + ("" if v.get("selected") else " (pending)")
                                     for v in teams_by_no[team_no]
                                 )
-                                st.caption(f":material/group: Team {team_no}: {members}")
+                                st.caption(f":material/group: Team {team_no_display[team_no]}: {members}")
 
                         if unteamed:
                             unteamed_selected = [
@@ -1616,7 +1629,8 @@ def render_competition_card(comp):
                                 # Jindal (Team 1)") — a flat name list made it hard to
                                 # tell teammates apart while picking who's finalized.
                                 format_func=lambda uid: (
-                                    f"{user_name_by_id.get(uid, 'Unknown')} (Team {volunteer_team_no_by_uid[uid]})"
+                                    f"{user_name_by_id.get(uid, 'Unknown')} "
+                                    f"(Team {team_no_display[volunteer_team_no_by_uid[uid]]})"
                                     if volunteer_team_no_by_uid.get(uid)
                                     else user_name_by_id.get(uid, "Unknown")
                                 ),
