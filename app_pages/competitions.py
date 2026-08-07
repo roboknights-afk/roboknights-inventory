@@ -369,7 +369,7 @@ def _insert_matched_participants(client, event_id, teams, event_name, comp_name)
     existing = {
         v["user_id"]: v
         for v in client.table("event_volunteers")
-        .select("user_id, selected, synced_from_sheet")
+        .select("user_id, selected, synced_from_sheet, team_no")
         .eq("event_id", event_id)
         .execute()
         .data
@@ -390,6 +390,13 @@ def _insert_matched_participants(client, event_id, teams, event_name, comp_name)
                     updates["synced_from_sheet"] = True
                 if not row["selected"]:
                     updates["selected"] = True
+                if row.get("team_no") != team_no:
+                    # The sheet's own team groupings are the source of truth
+                    # for who's currently on which team together — keep this
+                    # in sync the same way "selected" is, so the Teams
+                    # display doesn't go stale when the sheet reshuffles who's
+                    # grouped with who.
+                    updates["team_no"] = team_no
                 if updates:
                     client.table("event_volunteers").update(updates).eq(
                         "event_id", event_id
@@ -403,7 +410,7 @@ def _insert_matched_participants(client, event_id, teams, event_name, comp_name)
                 "team_no": team_no, "selected": True,
                 "synced_from_sheet": True,
             }).execute()
-            existing[p["user_id"]] = {"selected": True, "synced_from_sheet": True}
+            existing[p["user_id"]] = {"selected": True, "synced_from_sheet": True, "team_no": team_no}
             changed = True
             _send_selected_email(p["user_id"], event_name, comp_name)
 
@@ -412,7 +419,12 @@ def _insert_matched_participants(client, event_id, teams, event_name, comp_name)
         if row.get("selected") and uid not in green_user_ids
     ]
     if downgrade_ids:
-        client.table("event_volunteers").update({"selected": False}).eq(
+        # Clear team_no too, not just selected — a name no longer in a green
+        # cell isn't on that team anymore per this sync. It still stays a
+        # volunteer (never deleted), just falls back to the plain
+        # Selected/Volunteers list instead of appearing grouped under a team
+        # it's no longer actually part of.
+        client.table("event_volunteers").update({"selected": False, "team_no": None}).eq(
             "event_id", event_id
         ).in_("user_id", downgrade_ids).execute()
         changed = True
