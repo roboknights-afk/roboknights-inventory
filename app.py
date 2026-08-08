@@ -158,6 +158,32 @@ st.html("""
        stable across Streamlit versions, unlike the emotion-cache classes. */
     [data-testid="stSidebarNav"] a { transition: transform 0.12s ease; }
     [data-testid="stSidebarNav"] a:hover { transform: translateX(3px); }
+
+    /* Skeleton placeholder bars — used ONLY where something genuinely
+       slow (a live external fetch, not a cached table read) is about to
+       fill a specific shaped area, e.g. the E2C sheet scan results. Gold
+       shimmer tying into the accent color, not a generic grey shimmer-
+       library look. */
+    @keyframes rk-skeleton-shimmer {
+        0%   { background-position: -300px 0; }
+        100% { background-position: 300px 0; }
+    }
+    .rk-skel-bar {
+        height: 14px;
+        border-radius: 6px;
+        margin: 8px 0;
+        background: linear-gradient(
+            90deg,
+            rgba(232, 179, 61, 0.08) 25%,
+            rgba(232, 179, 61, 0.20) 50%,
+            rgba(232, 179, 61, 0.08) 75%
+        );
+        background-size: 600px 100%;
+        animation: rk-skeleton-shimmer 1.3s ease-in-out infinite;
+    }
+    .rk-skel-title { width: 55%; height: 18px; }
+    .rk-skel-wide { width: 92%; }
+    .rk-skel-narrow { width: 38%; }
     </style>
 """)
 

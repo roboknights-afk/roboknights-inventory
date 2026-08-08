@@ -7,7 +7,7 @@
 
 import streamlit as st
 
-from shared import cached_table, get_client, invalidate_cache
+from shared import cached_table, get_client, invalidate_cache, safe_write
 
 is_host = st.session_state.is_host
 is_exun = st.session_state.is_exun
@@ -142,27 +142,28 @@ else:
             # pairing edits with the unfiltered list would write them to the
             # wrong people whenever a search or grade filter is active.
             changed = 0
-            for original, edited in zip(visible_users, edited_rows):
-                updates = {}
-                if edited["Name"].strip() != original["name"]:
-                    updates["name"] = edited["Name"].strip()
-                if edited["Institutional email"].strip() != original["email"]:
-                    updates["email"] = edited["Institutional email"].strip()
-                if edited["Grade"] != original.get("grade"):
-                    updates["grade"] = edited["Grade"]
-                if edited["Section"].strip() != (original.get("section") or ""):
-                    updates["section"] = edited["Section"].strip()
-                if edited["Admission no."].strip() != (original.get("admission_no") or ""):
-                    updates["admission_no"] = edited["Admission no."].strip()
-                if edited["Phone no."].strip() != (original.get("phone_no") or ""):
-                    updates["phone_no"] = edited["Phone no."].strip()
+            with safe_write("save member changes"):
+                for original, edited in zip(visible_users, edited_rows):
+                    updates = {}
+                    if edited["Name"].strip() != original["name"]:
+                        updates["name"] = edited["Name"].strip()
+                    if edited["Institutional email"].strip() != original["email"]:
+                        updates["email"] = edited["Institutional email"].strip()
+                    if edited["Grade"] != original.get("grade"):
+                        updates["grade"] = edited["Grade"]
+                    if edited["Section"].strip() != (original.get("section") or ""):
+                        updates["section"] = edited["Section"].strip()
+                    if edited["Admission no."].strip() != (original.get("admission_no") or ""):
+                        updates["admission_no"] = edited["Admission no."].strip()
+                    if edited["Phone no."].strip() != (original.get("phone_no") or ""):
+                        updates["phone_no"] = edited["Phone no."].strip()
 
-                if updates:
-                    client.table("users").update(updates).eq("user_id", original["user_id"]).execute()
-                    changed += 1
+                    if updates:
+                        client.table("users").update(updates).eq("user_id", original["user_id"]).execute()
+                        changed += 1
 
-            if changed:
-                invalidate_cache()
+                if changed:
+                    invalidate_cache()
             st.session_state.member_edit_message = (
                 f"Updated {changed} member(s)." if changed else "No changes to save."
             )

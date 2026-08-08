@@ -11,7 +11,7 @@
 
 import streamlit as st
 
-from shared import cached_table, get_client, invalidate_cache
+from shared import cached_table, get_client, invalidate_cache, safe_write
 
 client = get_client()
 is_host = st.session_state.is_host
@@ -145,71 +145,72 @@ if not is_exun:
                         # the true current state rather than up to 8s old.
                         targets = log_for_ids if is_host else [current_user_id]
 
-                        already_logged_ids = {
-                            a["user_id"]
-                            for a in client.table("achievements")
-                            .select("user_id").eq("event_id", chosen_event_id).execute().data
-                        }
-                        logged = 0
-                        for uid in targets:
-                            if uid in already_logged_ids:
-                                continue
-                            client.table("achievements").insert({
-                                "user_id": uid,
-                                "competition_id": chosen_comp_id,
-                                "event_id": chosen_event_id,
-                                "position": position.strip() or None,
-                                "media_link": link or None,
-                            }).execute()
-                            logged += 1
+                        with safe_write("log this achievement"):
+                            already_logged_ids = {
+                                a["user_id"]
+                                for a in client.table("achievements")
+                                .select("user_id").eq("event_id", chosen_event_id).execute().data
+                            }
+                            logged = 0
+                            for uid in targets:
+                                if uid in already_logged_ids:
+                                    continue
+                                client.table("achievements").insert({
+                                    "user_id": uid,
+                                    "competition_id": chosen_comp_id,
+                                    "event_id": chosen_event_id,
+                                    "position": position.strip() or None,
+                                    "media_link": link or None,
+                                }).execute()
+                                logged += 1
 
-                        # Auto-log the same result for every teammate (same
-                        # team_no on this event, from the E2C import's team
-                        # grouping) who hasn't already logged one themselves —
-                        # so one person reporting a team result doesn't mean
-                        # everyone has to separately do the same thing. Only
-                        # applies to a member logging their OWN result — a
-                        # host already picked the exact people above, so
-                        # nothing extra should be implied.
-                        auto_logged = 0
-                        if not is_host:
-                            my_row = (
-                                client.table("event_volunteers")
-                                .select("team_no")
-                                .eq("event_id", chosen_event_id)
-                                .eq("user_id", current_user_id)
-                                .execute()
-                                .data
-                            )
-                            team_no = my_row[0]["team_no"] if my_row else None
-                            if team_no:
-                                teammates = (
+                            # Auto-log the same result for every teammate (same
+                            # team_no on this event, from the E2C import's team
+                            # grouping) who hasn't already logged one themselves —
+                            # so one person reporting a team result doesn't mean
+                            # everyone has to separately do the same thing. Only
+                            # applies to a member logging their OWN result — a
+                            # host already picked the exact people above, so
+                            # nothing extra should be implied.
+                            auto_logged = 0
+                            if not is_host:
+                                my_row = (
                                     client.table("event_volunteers")
-                                    .select("user_id")
+                                    .select("team_no")
                                     .eq("event_id", chosen_event_id)
-                                    .eq("team_no", team_no)
-                                    .neq("user_id", current_user_id)
+                                    .eq("user_id", current_user_id)
                                     .execute()
                                     .data
                                 )
-                                already_logged = {
-                                    a["user_id"]
-                                    for a in client.table("achievements")
-                                    .select("user_id").eq("event_id", chosen_event_id).execute().data
-                                }
-                                for t in teammates:
-                                    if t["user_id"] in already_logged:
-                                        continue
-                                    client.table("achievements").insert({
-                                        "user_id": t["user_id"],
-                                        "competition_id": chosen_comp_id,
-                                        "event_id": chosen_event_id,
-                                        "position": position.strip() or None,
-                                        "media_link": link or None,
-                                    }).execute()
-                                    auto_logged += 1
+                                team_no = my_row[0]["team_no"] if my_row else None
+                                if team_no:
+                                    teammates = (
+                                        client.table("event_volunteers")
+                                        .select("user_id")
+                                        .eq("event_id", chosen_event_id)
+                                        .eq("team_no", team_no)
+                                        .neq("user_id", current_user_id)
+                                        .execute()
+                                        .data
+                                    )
+                                    already_logged = {
+                                        a["user_id"]
+                                        for a in client.table("achievements")
+                                        .select("user_id").eq("event_id", chosen_event_id).execute().data
+                                    }
+                                    for t in teammates:
+                                        if t["user_id"] in already_logged:
+                                            continue
+                                        client.table("achievements").insert({
+                                            "user_id": t["user_id"],
+                                            "competition_id": chosen_comp_id,
+                                            "event_id": chosen_event_id,
+                                            "position": position.strip() or None,
+                                            "media_link": link or None,
+                                        }).execute()
+                                        auto_logged += 1
 
-                        invalidate_cache()
+                            invalidate_cache()
                         skipped = len(targets) - logged
                         if is_host:
                             msg = f"Logged this result for {logged} member(s)."
@@ -311,8 +312,9 @@ with tab_browse:
                 can_delete = is_host or any(a["user_id"] == current_user_id for a in group)
                 if can_delete:
                     if col2.button("Delete", key=f"delete_achievement_{first['achievement_id']}", icon=":material/delete:"):
-                        for a in group:
-                            client.table("achievements").delete().eq("achievement_id", a["achievement_id"]).execute()
-                        invalidate_cache()
+                        with safe_write("delete this achievement"):
+                            for a in group:
+                                client.table("achievements").delete().eq("achievement_id", a["achievement_id"]).execute()
+                            invalidate_cache()
                         st.session_state.achievement_message = "Deleted."
                         st.rerun()

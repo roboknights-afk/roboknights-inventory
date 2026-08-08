@@ -13,7 +13,7 @@ from datetime import date, time
 
 import streamlit as st
 
-from shared import cached_table, get_client, invalidate_cache, today_ist
+from shared import cached_table, get_client, invalidate_cache, safe_write, today_ist
 
 client = get_client()
 is_host = st.session_state.is_host
@@ -52,16 +52,17 @@ if is_host:
                 link = join_link.strip()
                 if link and not link.startswith(("http://", "https://")):
                     link = "https://" + link
-                client.table("meetings").insert({
-                    "title": title.strip(),
-                    "agenda": agenda.strip(),
-                    "meeting_date": meeting_date.isoformat(),
-                    "meeting_time": meeting_time.isoformat() if meeting_time else None,
-                    "join_link": link or None,
-                    "meeting_id_code": meeting_id_code.strip() or None,
-                    "meeting_password": meeting_password.strip() or None,
-                }).execute()
-                invalidate_cache()
+                with safe_write("schedule this meeting"):
+                    client.table("meetings").insert({
+                        "title": title.strip(),
+                        "agenda": agenda.strip(),
+                        "meeting_date": meeting_date.isoformat(),
+                        "meeting_time": meeting_time.isoformat() if meeting_time else None,
+                        "join_link": link or None,
+                        "meeting_id_code": meeting_id_code.strip() or None,
+                        "meeting_password": meeting_password.strip() or None,
+                    }).execute()
+                    invalidate_cache()
                 st.session_state.meeting_message = ("success", f"Scheduled {title.strip()}.")
                 del st.session_state["new_meeting_title"]
                 del st.session_state["new_meeting_agenda"]
@@ -151,16 +152,17 @@ def render_meeting_card(m):
                     link = edit_link.strip()
                     if link and not link.startswith(("http://", "https://")):
                         link = "https://" + link
-                    client.table("meetings").update({
-                        "title": edit_title.strip(),
-                        "agenda": edit_agenda.strip(),
-                        "meeting_date": edit_date.isoformat(),
-                        "meeting_time": edit_time.isoformat() if edit_time else None,
-                        "join_link": link or None,
-                        "meeting_id_code": edit_id_code.strip() or None,
-                        "meeting_password": edit_password.strip() or None,
-                    }).eq("meeting_id", m["meeting_id"]).execute()
-                    invalidate_cache()
+                    with safe_write(f"update {edit_title.strip()}"):
+                        client.table("meetings").update({
+                            "title": edit_title.strip(),
+                            "agenda": edit_agenda.strip(),
+                            "meeting_date": edit_date.isoformat(),
+                            "meeting_time": edit_time.isoformat() if edit_time else None,
+                            "join_link": link or None,
+                            "meeting_id_code": edit_id_code.strip() or None,
+                            "meeting_password": edit_password.strip() or None,
+                        }).eq("meeting_id", m["meeting_id"]).execute()
+                        invalidate_cache()
                     st.session_state.meeting_message = ("success", f"Updated {edit_title.strip()}.")
                     st.session_state.editing_meeting_id = None
                 st.rerun()
@@ -191,8 +193,9 @@ def render_meeting_card(m):
                 if delete_col.button(
                     "Delete", key=f"delete_meeting_{m['meeting_id']}", icon=":material/delete:"
                 ):
-                    client.table("meetings").delete().eq("meeting_id", m["meeting_id"]).execute()
-                    invalidate_cache()
+                    with safe_write(f"delete {m['title']}"):
+                        client.table("meetings").delete().eq("meeting_id", m["meeting_id"]).execute()
+                        invalidate_cache()
                     st.session_state.meeting_message = ("success", f"Deleted {m['title']}.")
                     st.rerun()
 
@@ -241,10 +244,11 @@ def render_meeting_card(m):
                     if rcol1.button(
                         "Can't make it", key=f"withdraw_rsvp_{m['meeting_id']}", icon=":material/close:"
                     ):
-                        client.table("meeting_rsvps").delete().eq(
-                            "meeting_id", m["meeting_id"]
-                        ).eq("user_id", current_user_id).execute()
-                        invalidate_cache()
+                        with safe_write("withdraw your RSVP"):
+                            client.table("meeting_rsvps").delete().eq(
+                                "meeting_id", m["meeting_id"]
+                            ).eq("user_id", current_user_id).execute()
+                            invalidate_cache()
                         st.session_state.meeting_message = ("success", "RSVP withdrawn.")
                         st.rerun()
                 else:
@@ -252,10 +256,11 @@ def render_meeting_card(m):
                         "I'm going", key=f"rsvp_{m['meeting_id']}", icon=":material/event_available:",
                         type="primary",
                     ):
-                        client.table("meeting_rsvps").insert({
-                            "meeting_id": m["meeting_id"], "user_id": current_user_id,
-                        }).execute()
-                        invalidate_cache()
+                        with safe_write("RSVP to this meeting"):
+                            client.table("meeting_rsvps").insert({
+                                "meeting_id": m["meeting_id"], "user_id": current_user_id,
+                            }).execute()
+                            invalidate_cache()
                         st.session_state.meeting_message = ("success", "RSVP'd!")
                         st.rerun()
 
@@ -268,10 +273,11 @@ def render_meeting_card(m):
                         if rcol2.button(
                             "I attended", key=f"checkin_{m['meeting_id']}", icon=":material/how_to_reg:"
                         ):
-                            client.table("meeting_attendance").insert({
-                                "meeting_id": m["meeting_id"], "user_id": current_user_id,
-                            }).execute()
-                            invalidate_cache()
+                            with safe_write("check yourself in"):
+                                client.table("meeting_attendance").insert({
+                                    "meeting_id": m["meeting_id"], "user_id": current_user_id,
+                                }).execute()
+                                invalidate_cache()
                             st.session_state.meeting_message = ("success", "Checked in!")
                             st.rerun()
 
@@ -293,16 +299,17 @@ def render_meeting_card(m):
                 ):
                     newly_added = set(final_attendees) - attended_ids
                     newly_removed = attended_ids - set(final_attendees)
-                    for uid in newly_added:
-                        client.table("meeting_attendance").insert({
-                            "meeting_id": m["meeting_id"], "user_id": uid,
-                        }).execute()
-                    for uid in newly_removed:
-                        client.table("meeting_attendance").delete().eq(
-                            "meeting_id", m["meeting_id"]
-                        ).eq("user_id", uid).execute()
-                    if newly_added or newly_removed:
-                        invalidate_cache()
+                    with safe_write("save the attendance list"):
+                        for uid in newly_added:
+                            client.table("meeting_attendance").insert({
+                                "meeting_id": m["meeting_id"], "user_id": uid,
+                            }).execute()
+                        for uid in newly_removed:
+                            client.table("meeting_attendance").delete().eq(
+                                "meeting_id", m["meeting_id"]
+                            ).eq("user_id", uid).execute()
+                        if newly_added or newly_removed:
+                            invalidate_cache()
                     st.session_state.meeting_message = ("success", "Attendance saved.")
                     st.rerun()
 

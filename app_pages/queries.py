@@ -13,7 +13,7 @@ import streamlit as st
 
 from shared import (
     APP_URL, HOST_EMAILS, WHATSAPP_HELP_NUMBER, cached_table, format_ist, format_relative,
-    get_client, invalidate_cache, send_email,
+    get_client, invalidate_cache, safe_write, send_email,
 )
 
 client = get_client()
@@ -85,15 +85,16 @@ def render_thread(query, all_messages, notify_email=None):
                 )
                 save_col, cancel_col = st.columns([1, 1])
                 if save_col.button("Save", key=f"save_msg_{msg['message_id']}", icon=":material/check:"):
-                    client.table("query_messages").update({
-                        "body": edited_body.strip(),
-                        # UTC-aware, matching every other timestamp in the
-                        # database — a bare datetime.now() is the server's
-                        # local wall clock with no timezone attached, which
-                        # format_ist would then wrongly treat as UTC.
-                        "edited_at": datetime.now(timezone.utc).isoformat(),
-                    }).eq("message_id", msg["message_id"]).execute()
-                    invalidate_cache()
+                    with safe_write("save this edit"):
+                        client.table("query_messages").update({
+                            "body": edited_body.strip(),
+                            # UTC-aware, matching every other timestamp in the
+                            # database — a bare datetime.now() is the server's
+                            # local wall clock with no timezone attached, which
+                            # format_ist would then wrongly treat as UTC.
+                            "edited_at": datetime.now(timezone.utc).isoformat(),
+                        }).eq("message_id", msg["message_id"]).execute()
+                        invalidate_cache()
                     st.session_state.editing_message_id = None
                     st.rerun()
                 if cancel_col.button("Cancel", key=f"cancel_msg_{msg['message_id']}", icon=":material/close:"):
@@ -129,20 +130,21 @@ def render_thread(query, all_messages, notify_email=None):
     # the old text_input did.
     reply_text = st.chat_input("Type a reply...", key=f"reply_{query_id}")
     if reply_text and reply_text.strip():
-        client.table("query_messages").insert({
-            "query_id": query_id,
-            "sender_id": current_user_id,
-            "body": reply_text.strip(),
-        }).execute()
-        invalidate_cache()
+        with safe_write("send this reply"):
+            client.table("query_messages").insert({
+                "query_id": query_id,
+                "sender_id": current_user_id,
+                "body": reply_text.strip(),
+            }).execute()
+            invalidate_cache()
 
-        if notify_email:
-            send_email(
-                notify_email,
-                "New reply to your question",
-                f"{current_user_name} replied:\n\n{reply_text.strip()}\n\n"
-                f"Log in to the app to see it: {APP_URL}",
-            )
+            if notify_email:
+                send_email(
+                    notify_email,
+                    "New reply to your question",
+                    f"{current_user_name} replied:\n\n{reply_text.strip()}\n\n"
+                    f"Log in to the app to see it: {APP_URL}",
+                )
 
         st.session_state.query_message = "Reply sent."
         # Rerun so the thread re-fetches and shows the message just sent.
@@ -199,26 +201,27 @@ else:
             if not new_question.strip():
                 st.error("Question can't be empty.")
             else:
-                new_query = client.table("queries").insert({"student_id": current_user_id}).execute()
-                query_id = new_query.data[0]["query_id"]
-                client.table("query_messages").insert({
-                    "query_id": query_id,
-                    "sender_id": current_user_id,
-                    "body": new_question.strip(),
-                }).execute()
-                invalidate_cache()
+                with safe_write("submit this question"):
+                    new_query = client.table("queries").insert({"student_id": current_user_id}).execute()
+                    query_id = new_query.data[0]["query_id"]
+                    client.table("query_messages").insert({
+                        "query_id": query_id,
+                        "sender_id": current_user_id,
+                        "body": new_question.strip(),
+                    }).execute()
+                    invalidate_cache()
 
-                host_emails = [
-                    email for uid, email in user_email_by_id.items()
-                    if email in HOST_EMAILS
-                ]
-                for email in host_emails:
-                    send_email(
-                        email,
-                        f"New question from {current_user_name}",
-                        f"{current_user_name} asked:\n\n{new_question.strip()}\n\n"
-                        f"Reply here: {APP_URL}",
-                    )
+                    host_emails = [
+                        email for uid, email in user_email_by_id.items()
+                        if email in HOST_EMAILS
+                    ]
+                    for email in host_emails:
+                        send_email(
+                            email,
+                            f"New question from {current_user_name}",
+                            f"{current_user_name} asked:\n\n{new_question.strip()}\n\n"
+                            f"Reply here: {APP_URL}",
+                        )
 
                 st.session_state.query_message = "Question submitted — a host will reply soon."
                 del st.session_state["new_question"]

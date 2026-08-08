@@ -471,17 +471,39 @@ def _teams_caption(teams):
     return ":material/group: Registered member(s) found: " + ", ".join(parts)
 
 
+def _render_e2c_scan_skeleton():
+    # The one place in this app doing a live external fetch (Google
+    # Sheets, not a cached table) right before filling a specific-shaped
+    # area with an unknown number of competition cards — a real "content
+    # is coming" wait, unlike everywhere else in this app where reads are
+    # already near-instant off the 8s cache. Shaped/styled like the real
+    # result cards below (bordered container, gold shimmer) rather than a
+    # generic grey shimmer-library look.
+    st.caption(":material/travel_explore: Scanning the E2C sheet…")
+    for i in range(3):
+        with st.container(border=True, key=f"rkskeleton_e2c_{i}"):
+            st.html(
+                '<div class="rk-skel-bar rk-skel-title"></div>'
+                '<div class="rk-skel-bar rk-skel-wide"></div>'
+                '<div class="rk-skel-bar rk-skel-narrow"></div>'
+            )
+
+
 def render_e2c_import():
     with st.container(border=True):
         st.subheader(":material/travel_explore: Import from E2C sheet")
         st.caption("Reads the club's E2C sheet directly — no link to paste.")
         if st.button("Scan for robotics competitions", icon=":material/search:"):
+            skeleton = st.empty()
+            with skeleton.container():
+                _render_e2c_scan_skeleton()
             try:
                 st.session_state.e2c_scan_results = scan_e2c_sheet(client)
                 st.session_state.e2c_scan_error = None
             except Exception as e:
                 st.session_state.e2c_scan_results = None
                 st.session_state.e2c_scan_error = str(e)
+            skeleton.empty()
 
         if st.session_state.get("e2c_scan_error"):
             st.error(f"Couldn't read the E2C sheet: {st.session_state.e2c_scan_error}")
@@ -546,11 +568,12 @@ def render_e2c_import():
                     help="Re-reads the sheet fresh, so anyone who signed up since your last Scan is included",
                 ):
                     try:
-                        # Re-scan fresh rather than reusing the cached results —
-                        # cached team data only remembers names that matched a
-                        # real member AT SCAN TIME, so replaying it can never
-                        # pick up someone who signed up since.
-                        fresh_by_name = {c["name"].strip().lower(): c for c in scan_e2c_sheet(client)}
+                        with st.spinner("Re-reading the E2C sheet…"):
+                            # Re-scan fresh rather than reusing the cached results —
+                            # cached team data only remembers names that matched a
+                            # real member AT SCAN TIME, so replaying it can never
+                            # pick up someone who signed up since.
+                            fresh_by_name = {c["name"].strip().lower(): c for c in scan_e2c_sheet(client)}
                     except Exception as e:
                         st.error(f"Couldn't re-read the E2C sheet: {e}")
                         fresh_by_name = {}
@@ -700,9 +723,10 @@ def render_e2c_import():
                     # One fresh re-scan for the whole import, not the cached
                     # data — someone could've signed up since the last Scan.
                     try:
-                        fresh_all_events_by_comp = {
-                            c["name"].strip().lower(): c.get("all_events", []) for c in scan_e2c_sheet(client)
-                        }
+                        with st.spinner("Re-reading the E2C sheet…"):
+                            fresh_all_events_by_comp = {
+                                c["name"].strip().lower(): c.get("all_events", []) for c in scan_e2c_sheet(client)
+                            }
                     except Exception as ex:
                         st.error(f"Couldn't re-read the E2C sheet: {ex}")
                         fresh_all_events_by_comp = {}
@@ -815,11 +839,12 @@ def render_e2c_import():
                                      "Scan is included",
                             ):
                                 try:
-                                    fresh_comp = next(
-                                        (c for c in scan_e2c_sheet(client)
-                                         if c["name"].strip().lower() == comp["name"].strip().lower()),
-                                        comp,
-                                    )
+                                    with st.spinner("Re-reading the E2C sheet…"):
+                                        fresh_comp = next(
+                                            (c for c in scan_e2c_sheet(client)
+                                             if c["name"].strip().lower() == comp["name"].strip().lower()),
+                                            comp,
+                                        )
                                 except Exception as e:
                                     st.error(f"Couldn't re-read the E2C sheet: {e}")
                                     fresh_comp = None
@@ -926,11 +951,12 @@ def render_e2c_import():
                                     # Re-scan fresh (not the cached teams data) so anyone who
                                     # signed up since the last Scan still gets matched here.
                                     try:
-                                        fresh_comp = next(
-                                            (c for c in scan_e2c_sheet(client)
-                                             if c["name"].strip().lower() == comp["name"].strip().lower()),
-                                            None,
-                                        )
+                                        with st.spinner("Re-reading the E2C sheet…"):
+                                            fresh_comp = next(
+                                                (c for c in scan_e2c_sheet(client)
+                                                 if c["name"].strip().lower() == comp["name"].strip().lower()),
+                                                None,
+                                            )
                                     except Exception as ex:
                                         st.error(f"Couldn't re-read the E2C sheet: {ex}")
                                         fresh_comp = None
