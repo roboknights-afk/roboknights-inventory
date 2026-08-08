@@ -1451,6 +1451,23 @@ def render_competition_card(comp):
                         else f"Grades {e['min_grade']}–{e['max_grade']}"
                     )
                     event_volunteers = [v for v in all_volunteers if v["event_id"] == e["event_id"]]
+                    # An event capped at exactly 1 team has no real
+                    # "other" team to be separate from — anyone finalized
+                    # or self-volunteered without a sheet team_no (e.g.
+                    # someone the host added by hand) is still trying for
+                    # that same single slot as whoever the sheet DID
+                    # assign a team_no. Only kicks in once the sheet has
+                    # actually given this event a real team_no to begin
+                    # with — a plain in-app-only event (no sheet team data
+                    # at all) keeps the old flat Volunteers list, since
+                    # calling that a "Team" would be misleading.
+                    single_team_merge = e["max_teams"] == 1 and any(
+                        v.get("team_no") for v in event_volunteers
+                    )
+
+                    def _effective_team_no(v):
+                        return 1 if single_team_merge else v.get("team_no")
+
                     # team_no itself is the sheet ROW position, with gaps
                     # left by rows that had no matched members (see
                     # _parse_teams in e2c_import.py — it has to stay that
@@ -1461,7 +1478,8 @@ def render_competition_card(comp):
                     team_no_display = {
                         real: i
                         for i, real in enumerate(
-                            sorted({v["team_no"] for v in event_volunteers if v.get("team_no")}), start=1
+                            sorted({_effective_team_no(v) for v in event_volunteers if _effective_team_no(v)}),
+                            start=1,
                         )
                     }
                     selected_names = [
@@ -1491,8 +1509,8 @@ def render_competition_card(comp):
                         # flat name list — makes it obvious who's actually on the
                         # same team together. Anyone without a team_no yet (regular
                         # in-app volunteering) falls back to the old flat display.
-                        teamed = [v for v in event_volunteers if v.get("team_no")]
-                        unteamed = [v for v in event_volunteers if not v.get("team_no")]
+                        teamed = [v for v in event_volunteers if _effective_team_no(v)]
+                        unteamed = [v for v in event_volunteers if not _effective_team_no(v)]
 
                         if teamed:
                             st.markdown("**Teams:**")
@@ -1502,7 +1520,7 @@ def render_competition_card(comp):
                             )
                             teams_by_no = {}
                             for v in teamed:
-                                teams_by_no.setdefault(v["team_no"], []).append(v)
+                                teams_by_no.setdefault(_effective_team_no(v), []).append(v)
                             for team_no in sorted(teams_by_no):
                                 members = ", ".join(
                                     user_name_by_id.get(v["user_id"], "Unknown")
@@ -1619,7 +1637,7 @@ def render_competition_card(comp):
                                     f"— remove some below and save to fix it."
                                 )
                             volunteer_team_no_by_uid = {
-                                v["user_id"]: v.get("team_no") for v in event_volunteers
+                                v["user_id"]: _effective_team_no(v) for v in event_volunteers
                             }
                             finalize_ids = st.multiselect(
                                 "Finalize volunteers",
