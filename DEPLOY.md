@@ -27,11 +27,15 @@ file or from a hosting platform's secrets manager.
    APP_URL = "https://your-app-name.streamlit.app"
    WHATSAPP_PHONE_NUMBER_ID = "..."
    WHATSAPP_ACCESS_TOKEN = "..."
+   GEMINI_API_KEY = "..."
    ```
 
-   The last two are optional — WhatsApp notifications silently do nothing
+   WhatsApp's two keys are optional — those notifications silently do nothing
    until both are set (see CLAUDE.md for how to get them from Meta's
-   developer console).
+   developer console). `GEMINI_API_KEY` is also optional but the AI
+   Assistant page shows a "not set up yet" message to members until it's
+   added — get a free key (no card needed) at
+   [aistudio.google.com/apikey](https://aistudio.google.com/apikey).
 
    You won't know the exact `APP_URL` until after the first deploy (Streamlit
    picks or lets you choose a subdomain) — deploy once, see the URL, then

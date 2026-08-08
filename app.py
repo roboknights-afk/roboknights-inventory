@@ -833,6 +833,7 @@ if not st.session_state.is_exun:
     pages.append(st.Page("app_pages/queries.py", title=queries_title, icon=":material/quiz:"))
 pages.append(st.Page("app_pages/meetings.py", title="Meetings", icon=":material/groups:"))
 pages.append(st.Page("app_pages/achievements.py", title="Achievements", icon=":material/military_tech:"))
+pages.append(st.Page("app_pages/assistant.py", title="AI Assistant", icon=":material/smart_toy:"))
 
 # Host-only elsewhere, but Members is also opened up to Exun (full
 # details, per an explicit call — Exun just can't edit it, unlike a host).
