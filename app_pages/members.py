@@ -22,6 +22,8 @@ st.title("Members")
 
 if "member_edit_message" not in st.session_state:
     st.session_state.member_edit_message = None
+if "confirming_delete_member_id" not in st.session_state:
+    st.session_state.confirming_delete_member_id = None
 
 if st.session_state.member_edit_message:
     st.toast(st.session_state.member_edit_message, icon=":material/check_circle:")
@@ -168,3 +170,100 @@ else:
                 f"Updated {changed} member(s)." if changed else "No changes to save."
             )
             st.rerun()
+
+        st.divider()
+        with st.expander(":material/person_remove: Delete a member"):
+            st.caption(
+                "Removes their profile from this app only — it does **not** delete their "
+                "actual Supabase Auth login (a separate system this app has no admin access "
+                "to, same limitation as editing Institutional email above). They could still "
+                "log in afterward, just with no profile data."
+            )
+            delete_target_id = st.selectbox(
+                "Member to delete",
+                options=[u["user_id"] for u in users],
+                format_func=lambda uid: next(
+                    (u["name"] for u in users if u["user_id"] == uid), "Unknown"
+                ),
+                key="delete_member_target",
+                index=None,
+                placeholder="Choose a member...",
+            )
+            if delete_target_id:
+                target = next(u for u in users if u["user_id"] == delete_target_id)
+
+                # Some tables don't cascade-delete on a user (see
+                # supabase_schema.sql) — parts/requests deliberately, so
+                # ownership/loan history can't silently vanish, and Exun
+                # channel/query messages since those belong to a shared
+                # thread, not just the sender. Deleting would otherwise
+                # crash on a raw foreign-key error, so check first and
+                # tell the host exactly what to resolve.
+                owned_parts = [p for p in cached_table("parts") if p["owner_id"] == delete_target_id]
+                their_requests = [
+                    r for r in cached_table("requests")
+                    if r["requester_id"] == delete_target_id or r["owner_id"] == delete_target_id
+                ]
+                their_exun_msgs = [
+                    m for m in cached_table("exun_channel_messages")
+                    if m["sender_id"] == delete_target_id
+                ]
+                their_query_msgs = [
+                    m for m in cached_table("query_messages") if m["sender_id"] == delete_target_id
+                ]
+
+                blockers = []
+                if owned_parts:
+                    blockers.append(f"still owns {len(owned_parts)} part(s) — reassign or delete them on Inventory first")
+                if their_requests:
+                    blockers.append(f"has {len(their_requests)} borrow request(s) on record, as borrower or lender")
+                if their_exun_msgs:
+                    blockers.append(f"sent {len(their_exun_msgs)} message(s) in the Exun channel")
+                if their_query_msgs:
+                    blockers.append(f"sent {len(their_query_msgs)} message(s) in Queries")
+
+                if blockers:
+                    st.error(f"Can't delete **{target['name']}** — they " + "; ".join(blockers) + ".")
+                elif st.session_state.confirming_delete_member_id == delete_target_id:
+                    # Everything else DOES cascade-delete with the user row
+                    # (event_volunteers, meeting_rsvps/attendance,
+                    # achievements, their own query threads) — summarized
+                    # here so the host knows what's actually going away.
+                    vol_count = sum(
+                        1 for v in cached_table("event_volunteers") if v["user_id"] == delete_target_id
+                    )
+                    rsvp_count = sum(
+                        1 for r in cached_table("meeting_rsvps") if r["user_id"] == delete_target_id
+                    )
+                    achievement_count = sum(
+                        1 for a in cached_table("achievements") if a["user_id"] == delete_target_id
+                    )
+                    query_thread_count = sum(
+                        1 for q in cached_table("queries") if q["student_id"] == delete_target_id
+                    )
+                    st.warning(
+                        f"Delete **{target['name']}**'s profile? This also removes their "
+                        f"{vol_count} competition signup(s), {rsvp_count} meeting RSVP(s), "
+                        f"{achievement_count} achievement(s), and {query_thread_count} query "
+                        f"thread(s). This can't be undone."
+                    )
+                    confirm_col, cancel_col = st.columns([1, 1])
+                    if confirm_col.button(
+                        "Confirm delete", icon=":material/delete_forever:", type="primary",
+                        key="confirm_delete_member",
+                    ):
+                        with safe_write(f"delete {target['name']}"):
+                            client.table("users").delete().eq("user_id", delete_target_id).execute()
+                            invalidate_cache()
+                        st.session_state.confirming_delete_member_id = None
+                        st.session_state.member_edit_message = f"Deleted {target['name']}."
+                        st.rerun()
+                    if cancel_col.button("Cancel", icon=":material/close:", key="cancel_delete_member"):
+                        st.session_state.confirming_delete_member_id = None
+                        st.rerun()
+                else:
+                    if st.button(
+                        "Delete this member", icon=":material/delete:", key="delete_member_btn"
+                    ):
+                        st.session_state.confirming_delete_member_id = delete_target_id
+                        st.rerun()
