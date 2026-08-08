@@ -1,10 +1,13 @@
 # AI Assistant: a chat helper that knows the logged-in member's OWN data
 # (their parts, borrow requests, competitions, achievements, meetings) and
-# can also answer general robotics/build questions. Uses Gemini's free API
-# tier (gemini-2.0-flash) — genuinely free, no card needed, fits the
-# project's zero-cost rule (see CLAUDE.md). "Unlimited tokens" isn't a real
-# thing any provider offers; the free tier is capped by requests-per-
-# minute/day instead, handled below with a plain try/except.
+# can also answer general robotics/build questions. Uses Groq's free API
+# (Llama 3.3 70B) — genuinely free, no card needed, fits the project's
+# zero-cost rule (see CLAUDE.md). Gemini's free tier was tried first but
+# isn't actually available to accounts in India (confirmed live: a brand
+# new, unbilled Google Cloud project still came back with a hard 0 free-tier
+# quota) — Groq's free tier has no such country restriction. "Unlimited
+# tokens" isn't a real thing any provider offers; the free tier is capped by
+# requests-per-minute/day instead, handled below with a plain try/except.
 #
 # Privacy: only ever built from the CURRENT user's own rows — matches the
 # app's existing rule (CLAUDE.md) that no member sees another member's
@@ -13,13 +16,12 @@
 # refreshing the page clears it, same as any other unsaved chat.
 
 import os
-from datetime import date
 
 import streamlit as st
 
 from shared import cached_table, today_ist
 
-GEMINI_MODEL = "gemini-2.0-flash"
+GROQ_MODEL = "llama-3.3-70b-versatile"
 
 current_user_id = st.session_state.current_user_id
 current_user_name = st.session_state.current_user_name
@@ -32,14 +34,14 @@ st.caption(
     "the page clears it."
 )
 
-api_key = os.environ.get("GEMINI_API_KEY")
+api_key = os.environ.get("GROQ_API_KEY")
 if not api_key:
     if is_host:
         st.warning(
-            ":material/key_off: No `GEMINI_API_KEY` is set, so the assistant can't run yet. "
-            "Get a free key at [aistudio.google.com/apikey](https://aistudio.google.com/apikey) "
-            "(no card required) and add it to `.env` as `GEMINI_API_KEY=...` — same as any "
-            "other secret in this app (see DEPLOY.md for Streamlit Cloud/GitHub Actions too)."
+            ":material/key_off: No `GROQ_API_KEY` is set, so the assistant can't run yet. "
+            "Get a free key at [console.groq.com/keys](https://console.groq.com/keys) "
+            "(no card required) and add it to `.env` as `GROQ_API_KEY=...` — same as any "
+            "other secret in this app (see DEPLOY.md for Streamlit Cloud too)."
         )
     else:
         st.info(":material/build: The AI assistant isn't set up yet — check back soon.")
@@ -169,27 +171,23 @@ if prompt:
     with st.chat_message("assistant"):
         with st.spinner("Thinking…"):
             try:
-                from google import genai
-                from google.genai import types
+                from groq import Groq
 
-                gemini_client = genai.Client(api_key=api_key)
-                contents = [
-                    types.Content(
-                        role=("model" if m["role"] == "assistant" else "user"),
-                        parts=[types.Part(text=m["content"])],
-                    )
-                    for m in st.session_state.assistant_messages
-                ]
-                response = gemini_client.models.generate_content(
-                    model=GEMINI_MODEL,
-                    contents=contents,
-                    config=types.GenerateContentConfig(
-                        system_instruction=SYSTEM_INSTRUCTION_TEMPLATE.format(
-                            context=_build_context_text()
-                        ),
+                groq_client = Groq(api_key=api_key)
+                messages = [
+                    {
+                        "role": "system",
+                        "content": SYSTEM_INSTRUCTION_TEMPLATE.format(context=_build_context_text()),
+                    },
+                    *(
+                        {"role": m["role"], "content": m["content"]}
+                        for m in st.session_state.assistant_messages
                     ),
+                ]
+                response = groq_client.chat.completions.create(
+                    model=GROQ_MODEL, messages=messages,
                 )
-                reply = response.text or "I didn't get a response — try asking again."
+                reply = response.choices[0].message.content or "I didn't get a response — try asking again."
             except Exception as e:
                 # Same best-effort spirit as the rest of this app: a free-tier
                 # rate limit or network hiccup shouldn't crash the page, just

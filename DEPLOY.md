@@ -27,15 +27,17 @@ file or from a hosting platform's secrets manager.
    APP_URL = "https://your-app-name.streamlit.app"
    WHATSAPP_PHONE_NUMBER_ID = "..."
    WHATSAPP_ACCESS_TOKEN = "..."
-   GEMINI_API_KEY = "..."
+   GROQ_API_KEY = "..."
    ```
 
    WhatsApp's two keys are optional — those notifications silently do nothing
    until both are set (see CLAUDE.md for how to get them from Meta's
-   developer console). `GEMINI_API_KEY` is also optional but the AI
+   developer console). `GROQ_API_KEY` is also optional but the AI
    Assistant page shows a "not set up yet" message to members until it's
    added — get a free key (no card needed) at
-   [aistudio.google.com/apikey](https://aistudio.google.com/apikey).
+   [console.groq.com/keys](https://console.groq.com/keys). (Gemini's free
+   tier was tried first but isn't available to India-based accounts — see
+   the comment at the top of app_pages/assistant.py.)
 
    You won't know the exact `APP_URL` until after the first deploy (Streamlit
    picks or lets you choose a subdomain) — deploy once, see the URL, then
