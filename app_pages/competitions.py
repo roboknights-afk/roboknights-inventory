@@ -9,6 +9,7 @@
 # instead, since those need to run on a schedule, not a page view.
 # Announcements moved to their own page (app_pages/announcements.py).
 
+import os
 from datetime import date, datetime
 
 import streamlit as st
@@ -1002,6 +1003,43 @@ def render_e2c_import():
                                             )
                                             st.rerun()
 
+
+def render_discord_custom_message():
+    # Free-form escape hatch alongside the automatic new-event
+    # notifications — the host doesn't have to touch code or ask for a
+    # one-off script every time they want to post something ad hoc
+    # (a reminder, a correction, anything not tied to an actual app event).
+    webhook_configured = bool(os.environ.get("DISCORD_COMPETITIONS_WEBHOOK_URL"))
+    with st.container(border=True):
+        st.subheader(":material/forum: Send a custom Discord message")
+        if not webhook_configured:
+            st.info(
+                ":material/key_off: No `DISCORD_COMPETITIONS_WEBHOOK_URL` is set yet — "
+                "see DEPLOY.md for how to create one in Discord."
+            )
+            return
+        st.caption(
+            "Posts straight to the competitions Discord channel, via the same "
+            "webhook the automatic notifications use. Discord markdown works "
+            "(**bold**, *italic*, etc.), and you can @mention someone by hand "
+            "with `<@their_discord_user_id>`."
+        )
+        custom_message = st.text_area(
+            "Message", key="custom_discord_message", label_visibility="collapsed",
+            placeholder="Type your message...",
+        )
+        if st.button(
+            "Send to Discord", icon=":material/send:", type="primary", key="send_custom_discord_btn",
+        ):
+            if not custom_message.strip():
+                st.error("Message can't be empty.")
+            else:
+                send_discord_message(custom_message.strip())
+                st.toast("Sent to Discord!", icon=":material/check_circle:")
+                del st.session_state["custom_discord_message"]
+                st.rerun()
+
+
 # Success pops as a toast; errors stay inline so they can't be missed.
 if st.session_state.competition_message:
     kind, text = st.session_state.competition_message
@@ -1820,3 +1858,4 @@ if is_host:
     with open_tabs[2]:
         render_add_competition()
         render_e2c_import()
+        render_discord_custom_message()
