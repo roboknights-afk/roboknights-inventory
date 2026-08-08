@@ -24,13 +24,16 @@ file or from a hosting platform's secrets manager.
    SMTP_USERNAME = "..."
    SMTP_PASSWORD = "..."
    SMTP_SENDER = "..."
+   GOOGLE_SHEETS_API_KEY = "..."
    APP_URL = "https://your-app-name.streamlit.app"
    WHATSAPP_PHONE_NUMBER_ID = "..."
    WHATSAPP_ACCESS_TOKEN = "..."
    GROQ_API_KEY = "..."
    ```
 
-   WhatsApp's two keys are optional — those notifications silently do nothing
+   `GOOGLE_SHEETS_API_KEY` is required, not optional — the Competitions
+   page's E2C sheet sync crashes without it (e2c_import.py reads it
+   directly, no fallback). WhatsApp's two keys are optional — those notifications silently do nothing
    until both are set (see CLAUDE.md for how to get them from Meta's
    developer console). `GROQ_API_KEY` is also optional but the AI
    Assistant page shows a "not set up yet" message to members until it's
