@@ -47,6 +47,8 @@ if "part_added_message" not in st.session_state:
     st.session_state.part_added_message = None
 if "deleted_part_message" not in st.session_state:
     st.session_state.deleted_part_message = None
+if "confirming_bulk_delete" not in st.session_state:
+    st.session_state.confirming_bulk_delete = False
 
 st.title("RoboKnights Parts Inventory")
 
@@ -913,3 +915,63 @@ with tab_manage:
                 "also closes out its active loan, so it stops showing up in the "
                 "lent-out and borrowed lists."
             )
+
+            st.divider()
+            st.markdown("**Bulk delete parts**")
+            st.caption(
+                "Pick several parts (e.g. a batch of joke or duplicate entries) and "
+                "remove them all in one go. Only available parts are listed — "
+                "anything on loan has to be returned first, same rule as deleting "
+                "one at a time."
+            )
+            deletable_parts = sorted(
+                (p for p in parts if p["status"] == "available"), key=lambda p: p["part_number"]
+            )
+            part_label_by_id = {
+                p["part_id"]: f"{p['part_number']} — {p['name']} "
+                               f"(owned by {user_name_by_id.get(p['owner_id'], 'Unknown')})"
+                for p in deletable_parts
+            }
+            bulk_delete_ids = st.multiselect(
+                "Parts to delete",
+                options=list(part_label_by_id.keys()),
+                format_func=lambda pid: part_label_by_id.get(pid, "Unknown"),
+                key="bulk_delete_part_ids",
+                placeholder="Search and select parts...",
+            )
+            if bulk_delete_ids:
+                if st.session_state.confirming_bulk_delete:
+                    names = "; ".join(part_label_by_id[pid] for pid in bulk_delete_ids)
+                    st.warning(
+                        f"Delete these {len(bulk_delete_ids)} part(s)? {names}. This also "
+                        f"deletes their request history. This can't be undone."
+                    )
+                    confirm_col, cancel_col = st.columns([1, 1])
+                    if confirm_col.button(
+                        "Confirm delete", icon=":material/delete_forever:", type="primary",
+                        key="confirm_bulk_delete_btn",
+                    ):
+                        with safe_write(f"delete {len(bulk_delete_ids)} part(s)"):
+                            for pid in bulk_delete_ids:
+                                # Same order as the single-part delete: request
+                                # history has to go first, it's what's pointing
+                                # at the part (foreign key), not the other way
+                                # round.
+                                client.table("requests").delete().eq("part_id", pid).execute()
+                                client.table("parts").delete().eq("part_id", pid).execute()
+                            invalidate_cache()
+                        st.session_state.confirming_bulk_delete = False
+                        st.session_state.deleted_part_message = f"Deleted {len(bulk_delete_ids)} part(s)."
+                        st.rerun()
+                    if cancel_col.button(
+                        "Cancel", icon=":material/close:", key="cancel_bulk_delete_btn"
+                    ):
+                        st.session_state.confirming_bulk_delete = False
+                        st.rerun()
+                else:
+                    if st.button(
+                        f"Delete {len(bulk_delete_ids)} selected part(s)",
+                        icon=":material/delete:", key="bulk_delete_btn",
+                    ):
+                        st.session_state.confirming_bulk_delete = True
+                        st.rerun()
