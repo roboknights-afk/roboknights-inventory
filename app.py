@@ -35,6 +35,11 @@ st.logo("static/roboknights_logo.svg", size="large")
 # which change between Streamlit versions and would silently break.
 st.html("""
     <style>
+    /* Stops scroll from chaining into a pull-to-refresh/bounce on the body
+       once an inner scroll container (sidebar, chat, dataframe) hits its
+       edge — most noticeable on mobile/trackpad. */
+    html, body, [data-testid="stApp"] { overscroll-behavior: none; }
+
     /* Page content fades up on every page load / page switch */
     @keyframes rk-fade-up {
         from { opacity: 0; transform: translateY(10px); }
