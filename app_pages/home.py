@@ -23,6 +23,10 @@ from shared import cached_table, format_ist, today_ist
 current_user_id = st.session_state.current_user_id
 current_user_name = st.session_state.current_user_name
 is_host = st.session_state.is_host
+# Exun (sister club) accounts don't get Inventory, Announcements, or Queries
+# in the nav at all (see app.py's st.navigation list) — st.page_link to any
+# of those crashes the whole page for them if not guarded the same way here.
+is_exun = st.session_state.is_exun
 
 # IST "today", not the UTC server's — otherwise everything date-sensitive
 # here (overdue warnings, "meeting is today" check-ins) runs up to 5.5
@@ -184,7 +188,7 @@ with feed_col:
                 st.markdown(f":material/schedule: :orange[Due in {days_left} day(s)] — {label}")
             st.caption(f"Return it to its owner • was due {due}")
 
-    if pending_for_me:
+    if pending_for_me and not is_exun:
         nothing_pending = False
         with st.container(border=True, key="rkcard_home_approvals"):
             st.markdown(
@@ -195,7 +199,7 @@ with feed_col:
                 st.caption(f"{part.get('part_number', '?')} — {part.get('name', 'Unknown')}")
             st.page_link("app_pages/inventory.py", label="Review requests", icon=":material/arrow_forward:")
 
-    if queries_waiting:
+    if queries_waiting and not is_exun:
         nothing_pending = False
         with st.container(border=True, key="rkcard_home_queries"):
             if is_host:
@@ -280,14 +284,17 @@ with side_col:
                 # Keep the sidebar column skimmable — the full text is one
                 # click away on the Announcements page.
                 st.write(body if len(body) <= 180 else body[:177] + "...")
-        st.page_link("app_pages/announcements.py", label="All announcements", icon=":material/arrow_forward:")
+        if not is_exun:
+            st.page_link("app_pages/announcements.py", label="All announcements", icon=":material/arrow_forward:")
 
     st.subheader(":material/link: Quick links")
     with st.container(border=True, key="rkcard_home_links"):
-        st.page_link("app_pages/inventory.py", label="Inventory", icon=":material/inventory_2:")
+        if not is_exun:
+            st.page_link("app_pages/inventory.py", label="Inventory", icon=":material/inventory_2:")
         st.page_link("app_pages/competitions.py", label="Competitions", icon=":material/emoji_events:")
         st.page_link("app_pages/meetings.py", label="Meetings", icon=":material/groups:")
         st.page_link("app_pages/achievements.py", label="Achievements", icon=":material/military_tech:")
-        st.page_link("app_pages/queries.py", label="Queries", icon=":material/quiz:")
-        if is_host:
+        if not is_exun:
+            st.page_link("app_pages/queries.py", label="Queries", icon=":material/quiz:")
+        if is_host or is_exun:
             st.page_link("app_pages/members.py", label="Members", icon=":material/badge:")
