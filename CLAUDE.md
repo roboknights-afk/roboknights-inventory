@@ -165,9 +165,12 @@ Branding/UI/deployment chunk (done):
 - Done: deployment provisions for Streamlit Community Cloud — added
   `requirements.txt`, made `APP_URL` read from an environment variable
   (falls back to localhost) so deploying doesn't need a code change, and
-  wrote full deploy steps in `DEPLOY.md`. Not yet actually deployed —
-  that's the student's call to make (needs their own
-  share.streamlit.io login), instructions are just ready to go.
+  wrote full deploy steps in `DEPLOY.md`. **Deployed** (confirmed
+  2026-08-09) at roboknights-dashboard.streamlit.app — Streamlit Cloud
+  auto-redeploys on every push to `master`, but its Secrets (Settings →
+  Secrets in the app's own dashboard) are separate from `.env` and don't
+  update automatically; any new secret added locally (e.g. `GROQ_API_KEY`
+  for the AI Assistant) has to be added there by hand too.
 - Deferred, too vague to build yet: "add other features" (which ones?)
   and "link to the roboknights.in website in the future" (not actionable
   until there's a concrete integration to build — ask what "link" means
@@ -671,6 +674,27 @@ selected" writes to `competitions`/`competition_events`/
 `competition_links`. Do not build the parser until the real structure is
 confirmed — a wrong guess here means either missed competitions or
 garbage rows getting imported.
+
+## AI Assistant (2026-08-08/09)
+
+New `app_pages/assistant.py`, added to nav unconditionally. A chat page
+that answers using ONLY the logged-in member's own data (parts they own,
+their borrow requests, competition volunteering, achievements, upcoming
+meeting RSVPs) — never another member's, matching the existing privacy
+rule elsewhere in this file. Also answers general robotics/build
+questions on the model's own knowledge. Context is rebuilt fresh from
+`cached_table` on every message; conversation history is session-only
+(not saved to Supabase).
+
+Provider: Groq's free tier (`llama-3.3-70b-versatile`), not Gemini or
+OpenAI. Gemini was tried first (fits the zero-cost rule on paper) but a
+brand-new, unbilled Google Cloud project still returned a hard 0 free-tier
+quota on the very first request — confirmed live that Gemini's free API
+tier simply isn't offered to India-based accounts, not a config mistake.
+OpenAI has no comparable free API tier at all (free tier is web-only).
+Groq has neither restriction and is faster besides. Needs `GROQ_API_KEY`
+(free, no card, from console.groq.com/keys) — the page shows a host-only
+setup message instead of crashing when it's unset.
 
 ## Explicitly NOT in v1
 
