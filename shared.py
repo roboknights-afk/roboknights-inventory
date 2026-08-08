@@ -313,3 +313,20 @@ def send_whatsapp(to_phone, template_name, params=None, language_code="en_US"):
         )
     except Exception:
         pass
+
+
+def send_discord_message(content):
+    # A Discord Incoming Webhook is a plain HTTP POST — unlike a real bot,
+    # it needs no persistent gateway connection or separate 24/7 process,
+    # so it fits this app's existing hosting (only runs when someone's
+    # using it, or during a scheduled GitHub Actions job) with no new
+    # infra. Silently no-ops if the webhook isn't set up yet, same best-
+    # effort spirit as send_email/send_whatsapp — safe to wire in
+    # anywhere before the Discord side is finished.
+    webhook_url = os.environ.get("DISCORD_COMPETITIONS_WEBHOOK_URL")
+    if not webhook_url:
+        return
+    try:
+        requests.post(webhook_url, json={"content": content}, timeout=10)
+    except Exception:
+        pass

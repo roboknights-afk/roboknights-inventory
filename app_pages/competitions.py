@@ -15,7 +15,8 @@ import streamlit as st
 
 from e2c_import import scan_e2c_sheet
 from shared import (
-    EXUN_EMAILS, HOST_EMAILS, IST, cached_table, get_client, invalidate_cache, safe_write, send_email,
+    EXUN_EMAILS, HOST_EMAILS, IST, cached_table, get_client, invalidate_cache, safe_write,
+    send_discord_message, send_email,
 )
 
 # The page-local name everything below already uses — the implementation
@@ -112,18 +113,32 @@ def _notify_new_event(comp_name, event_name, min_grade, max_grade):
     # view every event but can never volunteer for one (see the
     # is_eligible check further down this file), so "you're eligible for
     # this" doesn't apply to them.
-    eligible_emails = [
-        u["email"] for u in cached_table("users")
+    eligible_users = [
+        u for u in cached_table("users")
         if u.get("grade") is not None and min_grade <= u["grade"] <= max_grade
         and u["email"] not in EXUN_EMAILS
     ]
-    for email in eligible_emails:
+    for u in eligible_users:
         send_email(
-            email,
+            u["email"],
             f"New event you're eligible for: {event_name}",
             f"A new event, {event_name}, was just added to {comp_name} — open to your grade.\n\n"
             f"Log in to the app to volunteer.",
         )
+
+    # Discord: same eligible-by-grade audience as the email above, tagged
+    # individually via each member's own linked discord_user_id (self-
+    # linked on Home, or host-fixed on Members) — anyone who hasn't
+    # linked one yet just isn't tagged; the announcement still posts
+    # either way. No-ops entirely if the webhook isn't configured.
+    tags = " ".join(f"<@{u['discord_user_id']}>" for u in eligible_users if u.get("discord_user_id"))
+    message = (
+        f":loudspeaker: **New competition added: {comp_name}**\n"
+        f"New event: **{event_name}** — open to Grade {min_grade}–{max_grade}."
+    )
+    if tags:
+        message += f"\n{tags}"
+    send_discord_message(message)
 
 
 def render_add_competition():

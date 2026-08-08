@@ -15,7 +15,7 @@ from datetime import date
 
 import streamlit as st
 
-from shared import cached_table, format_ist, today_ist
+from shared import cached_table, format_ist, get_client, invalidate_cache, safe_write, today_ist
 
 # Read-only page — every table it needs goes through the shared 8-second
 # cache instead of a fresh Supabase round trip per query, so landing here
@@ -298,3 +298,34 @@ with side_col:
             st.page_link("app_pages/queries.py", label="Queries", icon=":material/quiz:")
         if is_host or is_exun:
             st.page_link("app_pages/members.py", label="Members", icon=":material/badge:")
+
+    # Exun never volunteers for events (see competitions.py's is_eligible
+    # check), so the Discord tagging this feeds — "you're eligible for a
+    # new event" — never applies to them either.
+    if not is_exun:
+        st.subheader(":material/forum: Discord")
+        with st.container(border=True, key="rkcard_home_discord"):
+            st.caption(
+                "Link your Discord account to get tagged in the club's Discord "
+                "server whenever a new competition event you're eligible for is "
+                "posted."
+            )
+            my_row = next(
+                (u for u in cached_table("users") if u["user_id"] == current_user_id), None
+            )
+            new_discord_id = st.text_input(
+                "Your Discord User ID",
+                value=(my_row or {}).get("discord_user_id") or "",
+                key="home_discord_id_input",
+                placeholder="e.g. 123456789012345678",
+                help="In Discord: Settings → Advanced → turn on Developer Mode, then "
+                     "right-click your own name anywhere and choose Copy User ID.",
+            )
+            if st.button("Save", icon=":material/check:", key="save_discord_id_btn"):
+                with safe_write("link your Discord account"):
+                    get_client().table("users").update({
+                        "discord_user_id": new_discord_id.strip() or None,
+                    }).eq("user_id", current_user_id).execute()
+                    invalidate_cache()
+                st.toast("Discord linked!", icon=":material/check_circle:")
+                st.rerun()

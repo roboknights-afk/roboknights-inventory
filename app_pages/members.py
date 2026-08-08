@@ -109,6 +109,7 @@ else:
             "Section": u.get("section") or "",
             "Admission no.": u.get("admission_no") or "",
             "Phone no.": u.get("phone_no") or "",
+            "Discord ID": u.get("discord_user_id") or "",
         }
         for u in visible_users
     ]
@@ -133,6 +134,10 @@ else:
                 "Section": st.column_config.TextColumn("Section", width="small"),
                 "Admission no.": st.column_config.TextColumn("Admission no.", width="small"),
                 "Phone no.": st.column_config.TextColumn("Phone no.", width="small"),
+                "Discord ID": st.column_config.TextColumn(
+                    "Discord ID", width="small",
+                    help="Their numeric Discord User ID — normally self-linked on the Home page.",
+                ),
             },
             key="members_editor",
         )
@@ -159,6 +164,8 @@ else:
                         updates["admission_no"] = edited["Admission no."].strip()
                     if edited["Phone no."].strip() != (original.get("phone_no") or ""):
                         updates["phone_no"] = edited["Phone no."].strip()
+                    if edited["Discord ID"].strip() != (original.get("discord_user_id") or ""):
+                        updates["discord_user_id"] = edited["Discord ID"].strip() or None
 
                     if updates:
                         client.table("users").update(updates).eq("user_id", original["user_id"]).execute()

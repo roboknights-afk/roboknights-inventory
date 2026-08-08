@@ -696,6 +696,45 @@ Groq has neither restriction and is faster besides. Needs `GROQ_API_KEY`
 (free, no card, from console.groq.com/keys) — the page shows a host-only
 setup message instead of crashing when it's unset.
 
+## Discord integration (2026-08-09, in progress)
+
+Chunk 1 — new competition event notifications — done: student wants
+notifications posted to the club's Discord server for "everything," but
+scoped this to competitions first (more categories are a later chunk, not
+built yet). A real Discord BOT (persistent gateway connection, can
+respond to commands) needs its own always-on process this project has no
+hosting for — Streamlit Cloud only runs the dashboard itself. Built as a
+Discord **Incoming Webhook** instead (plain HTTP POST, same shape as
+`send_email`/`send_whatsapp`), which needs no separate hosting at all.
+`send_discord_message()` in shared.py reads `DISCORD_COMPETITIONS_WEBHOOK_URL`
+and silently no-ops if unset, same best-effort spirit as the other
+notification senders.
+
+Student explicitly chose **individual member tags** over a role-ping or
+`@here` (the other two options offered), which meant this needed a new
+`users.discord_user_id` column — nullable, self-linked on the Home page
+("Discord" card: paste in your numeric User ID, found via Discord's
+Developer Mode → right-click your own name → Copy User ID), also editable
+by a host on the Members page for anyone who needs it fixed for them.
+Nobody's tagged until they've linked their own ID; the announcement still
+posts either way.
+
+Wired into the existing `_notify_new_event()` in competitions.py (already
+emailed grade-eligible members when a new competition event is added —
+this just adds a Discord post to the same call, tagging whoever in that
+eligible set has a linked ID). One thing still needed from the student:
+create the Incoming Webhook in Discord itself (target channel → Settings
+→ Integrations → Webhooks → New Webhook) and add the URL as
+`DISCORD_COMPETITIONS_WEBHOOK_URL` in `.env` (and Streamlit Cloud secrets
+once deployed — see DEPLOY.md) — not something doable without their own
+Discord server access.
+
+Deferred, explicitly next per the student ("also things related to
+competitions"): more competition-lifecycle notifications beyond "new
+event added" — e.g. someone selected for an event, a registration
+deadline approaching. Same webhook, same tagging mechanism, just more
+call sites once asked for.
+
 ## Explicitly NOT in v1
 
 No PDF-to-spreadsheet feature. (WhatsApp notifications used to be listed

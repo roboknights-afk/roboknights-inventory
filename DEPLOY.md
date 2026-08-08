@@ -29,6 +29,7 @@ file or from a hosting platform's secrets manager.
    WHATSAPP_PHONE_NUMBER_ID = "..."
    WHATSAPP_ACCESS_TOKEN = "..."
    GROQ_API_KEY = "..."
+   DISCORD_COMPETITIONS_WEBHOOK_URL = "..."
    ```
 
    `GOOGLE_SHEETS_API_KEY` is required, not optional — the Competitions
@@ -40,7 +41,10 @@ file or from a hosting platform's secrets manager.
    added — get a free key (no card needed) at
    [console.groq.com/keys](https://console.groq.com/keys). (Gemini's free
    tier was tried first but isn't available to India-based accounts — see
-   the comment at the top of app_pages/assistant.py.)
+   the comment at the top of app_pages/assistant.py.) `DISCORD_COMPETITIONS_WEBHOOK_URL`
+   is also optional — new-event notifications to Discord silently do
+   nothing until it's set. Get it from the target channel's Settings →
+   Integrations → Webhooks → New Webhook in Discord itself.
 
    You won't know the exact `APP_URL` until after the first deploy (Streamlit
    picks or lets you choose a subdomain) — deploy once, see the URL, then

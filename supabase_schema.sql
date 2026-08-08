@@ -308,3 +308,11 @@ create table if not exists query_messages (
     created_at timestamptz not null default now(),
     edited_at  timestamptz
 );
+
+-- Discord integration, Chunk 1: notify + individually tag eligible
+-- members in the club's Discord server when a new competition event is
+-- added. Nullable and self-linked (Home page) — a member only shows up
+-- tagged once THEY'VE pasted in their own Discord User ID; nobody else
+-- can see or set it for them but a host (Members page edit, same as
+-- every other profile field there).
+alter table users add column if not exists discord_user_id text;
