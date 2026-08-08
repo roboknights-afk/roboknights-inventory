@@ -323,10 +323,31 @@ def send_discord_message(content):
     # infra. Silently no-ops if the webhook isn't set up yet, same best-
     # effort spirit as send_email/send_whatsapp — safe to wire in
     # anywhere before the Discord side is finished.
+    #
+    # ?wait=true makes Discord return the created message (instead of a
+    # bare 204) so the caller gets its id back — needed to delete this
+    # specific message later via delete_discord_message, without that
+    # meaning "wait for real delivery confirmation" or anything slower.
     webhook_url = os.environ.get("DISCORD_COMPETITIONS_WEBHOOK_URL")
     if not webhook_url:
+        return None
+    try:
+        response = requests.post(
+            webhook_url, json={"content": content}, params={"wait": "true"}, timeout=10
+        )
+        return response.json().get("id")
+    except Exception:
+        return None
+
+
+def delete_discord_message(message_id):
+    # A webhook can only delete messages IT sent (not just anyone's in the
+    # channel) — exactly the scope needed here: undoing a message this
+    # app itself just posted, via the same webhook, nothing broader.
+    webhook_url = os.environ.get("DISCORD_COMPETITIONS_WEBHOOK_URL")
+    if not webhook_url or not message_id:
         return
     try:
-        requests.post(webhook_url, json={"content": content}, timeout=10)
+        requests.delete(f"{webhook_url}/messages/{message_id}", timeout=10)
     except Exception:
         pass

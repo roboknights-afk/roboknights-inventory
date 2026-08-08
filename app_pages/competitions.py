@@ -16,8 +16,8 @@ import streamlit as st
 
 from e2c_import import scan_e2c_sheet
 from shared import (
-    EXUN_EMAILS, HOST_EMAILS, IST, cached_table, get_client, invalidate_cache, safe_write,
-    send_discord_message, send_email,
+    EXUN_EMAILS, HOST_EMAILS, IST, cached_table, delete_discord_message, get_client, invalidate_cache,
+    safe_write, send_discord_message, send_email,
 )
 
 # The page-local name everything below already uses — the implementation
@@ -1028,15 +1028,28 @@ def render_discord_custom_message():
             "Message", key="custom_discord_message", label_visibility="collapsed",
             placeholder="Type your message...",
         )
-        if st.button(
+        send_col, delete_col = st.columns([1, 1])
+        if send_col.button(
             "Send to Discord", icon=":material/send:", type="primary", key="send_custom_discord_btn",
         ):
             if not custom_message.strip():
                 st.error("Message can't be empty.")
             else:
-                send_discord_message(custom_message.strip())
+                # The id comes back from Discord itself (via ?wait=true in
+                # send_discord_message) — kept only long enough to offer
+                # deleting THIS specific message right after sending, not
+                # as a running history of everything ever posted.
+                st.session_state.last_discord_message_id = send_discord_message(custom_message.strip())
                 st.toast("Sent to Discord!", icon=":material/check_circle:")
                 del st.session_state["custom_discord_message"]
+                st.rerun()
+        if st.session_state.get("last_discord_message_id"):
+            if delete_col.button(
+                "Delete that message", icon=":material/delete:", key="delete_last_discord_btn",
+            ):
+                delete_discord_message(st.session_state.last_discord_message_id)
+                st.session_state.last_discord_message_id = None
+                st.toast("Deleted from Discord.", icon=":material/delete:")
                 st.rerun()
 
 
