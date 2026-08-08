@@ -71,6 +71,16 @@ part_by_id = {p["part_id"]: p for p in parts}
 all_requests = cached_table("requests")
 approved_requests = [r for r in all_requests if r["status"] == "approved"]
 
+# Caps how many requests you can have sitting pending at once — nothing
+# stopped someone from spamming a dozen joke requests in one go before
+# this (same spirit as the Govind fake-MacBooks incident, just the
+# request side instead of the add-a-part side). Once one of yours gets
+# approved or rejected, it drops out of this count and frees up a slot.
+MAX_PENDING_REQUESTS = 5
+my_pending_count = sum(
+    1 for r in all_requests if r["requester_id"] == current_user_id and r["status"] == "pending"
+)
+
 # For bulk items, how many are currently out on loan — derived from the
 # outstanding approved requests rather than stored on the part, so the count
 # can't drift out of sync with reality. Everyone needs this (it's what makes
@@ -200,6 +210,12 @@ with tab_parts:
         st.toast(st.session_state.returned_message, icon=":material/check_circle:")
         st.session_state.returned_message = None
 
+    if my_pending_count >= MAX_PENDING_REQUESTS:
+        st.info(
+            f":material/block: You have {MAX_PENDING_REQUESTS} requests pending already — "
+            f"wait for an owner to approve or reject one before requesting more."
+        )
+
     # Identical parts (same name, same owner) are shown as ONE card with a
     # count — "Johnson 600rpm, 4 available" — rather than four near-identical
     # rows. Under the hood each physical unit is still its own row with its
@@ -225,7 +241,7 @@ with tab_parts:
         # both inputs are hidden on your own parts and on anything already on
         # loan, so otherwise the headers sit above permanently empty columns
         # and read like a bug.
-        any_requestable = any(
+        any_requestable = my_pending_count < MAX_PENDING_REQUESTS and any(
             p["owner_id"] != current_user_id
             and (bulk_available(p) > 0 if p.get("is_bulk") else p["status"] == "available")
             for p in visible_parts
@@ -268,7 +284,7 @@ with tab_parts:
                         icon=":material/schedule:", color="orange",
                     )
 
-            if available_units and not is_mine:
+            if available_units and not is_mine and my_pending_count < MAX_PENDING_REQUESTS:
                 # How many units, and for how long. The owner can still change
                 # the number of days when they approve.
                 qty_wanted = col4.number_input(
@@ -472,7 +488,7 @@ with tab_parts:
                 if out_qty:
                     st.badge(f"{out_qty} on loan", icon=":material/schedule:", color="orange")
 
-            if free_qty > 0 and not is_mine:
+            if free_qty > 0 and not is_mine and my_pending_count < MAX_PENDING_REQUESTS:
                 qty_wanted = col4.number_input(
                     "Qty", min_value=1, max_value=free_qty, value=1,
                     key=f"bulkqty_{part['part_id']}", label_visibility="collapsed",
