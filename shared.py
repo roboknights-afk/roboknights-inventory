@@ -202,6 +202,17 @@ def format_relative(created_at):
     return format_ist(created_at)
 
 
+def _progressive(action_description):
+    # "approve this request" -> "Approving this request…" for a spinner
+    # label. Every safe_write() call site already phrases its description
+    # as a plain imperative verb phrase, so one standard English gerund
+    # rule (drop a trailing silent e, else just add -ing) covers all of
+    # them without a per-call-site lookup table.
+    verb, _, rest = action_description.partition(" ")
+    gerund = verb[:-1] + "ing" if verb.endswith("e") and not verb.endswith("ee") else verb + "ing"
+    return f"{gerund[0].upper()}{gerund[1:]}{' ' + rest if rest else ''}…"
+
+
 @contextmanager
 def safe_write(action_description):
     # Wraps a block of Supabase writes so a transient failure (network
@@ -210,8 +221,16 @@ def safe_write(action_description):
     # around st.rerun()/st.stop() too: those work by raising exceptions
     # that inherit from BaseException specifically so a broad
     # "except Exception" like this one can't swallow them.
+    #
+    # Also the one spinner every write action in the app gets "for free" —
+    # every safe_write() call site already has a specific, human
+    # description, so this reads as real per-action feedback ("Approving
+    # this request…") rather than a generic "Loading..." — instead of
+    # writes (Supabase round trip + often an outgoing email) looking like
+    # a dead click on a slow connection.
     try:
-        yield
+        with st.spinner(_progressive(action_description)):
+            yield
     except Exception as e:
         st.error(f"Couldn't {action_description}: {e}")
 
