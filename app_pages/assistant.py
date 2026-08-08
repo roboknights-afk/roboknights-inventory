@@ -16,10 +16,11 @@
 # refreshing the page clears it, same as any other unsaved chat.
 
 import os
+from datetime import datetime
 
 import streamlit as st
 
-from shared import cached_table, today_ist
+from shared import IST, cached_table, today_ist
 
 GROQ_MODEL = "llama-3.3-70b-versatile"
 
@@ -147,16 +148,46 @@ You can also help with general robotics/FTC/coding/build/competition-strategy \
 questions using your own knowledge, unrelated to their account. Keep answers \
 concise and friendly.
 
+If a question has NOTHING to do with robotics, this club, or the member's \
+own data below (e.g. general trivia, unrelated homework, personal advice), \
+do not answer it — reply only that you can help with robotics and \
+RoboKnights-related questions, and nothing else.
+
 {context}"""
+
+
+def _build_export_text():
+    lines = [
+        "RoboKnights AI Assistant — conversation export",
+        f"Member: {current_user_name}",
+        f"Exported: {datetime.now(IST).strftime('%d %b %Y, %I:%M %p IST')}",
+        "",
+    ]
+    for m in st.session_state.assistant_messages:
+        lines.append(f"[{'You' if m['role'] == 'user' else 'Assistant'}]")
+        lines.append(m["content"])
+        lines.append("")
+    return "\n".join(lines)
+
 
 if "assistant_messages" not in st.session_state:
     st.session_state.assistant_messages = []
 
-if st.session_state.assistant_messages and st.button(
-    "Clear conversation", icon=":material/delete_sweep:", type="tertiary"
-):
-    st.session_state.assistant_messages = []
-    st.rerun()
+if st.session_state.assistant_messages:
+    button_col1, button_col2 = st.columns([1, 1])
+    with button_col1:
+        if st.button("Clear conversation", icon=":material/delete_sweep:", type="tertiary"):
+            st.session_state.assistant_messages = []
+            st.rerun()
+    with button_col2:
+        st.download_button(
+            "Export chat",
+            data=_build_export_text(),
+            file_name=f"roboknights_ai_chat_{today_ist().isoformat()}.txt",
+            mime="text/plain",
+            icon=":material/download:",
+            type="tertiary",
+        )
 
 for msg in st.session_state.assistant_messages:
     with st.chat_message(msg["role"]):
