@@ -12,15 +12,19 @@
 # Privacy: only ever built from the CURRENT user's own rows — matches the
 # app's existing rule (CLAUDE.md) that no member sees another member's
 # private info. Nobody else's name, parts, or requests ever go into the
-# prompt. Conversation history is session-only (not saved to Supabase) —
-# refreshing the page clears it, same as any other unsaved chat.
+# prompt. Conversation history is session-only in the app (not saved to
+# Supabase) — refreshing the page clears it. "Save chat" is the deliberate
+# escape hatch: emails the member a Groq-generated resume summary plus the
+# full transcript, rather than adding a whole chat-history table/UI for
+# something used occasionally.
 
 import os
 from datetime import datetime
 
 import streamlit as st
+from groq import Groq
 
-from shared import IST, cached_table, today_ist
+from shared import IST, cached_table, send_email, today_ist
 
 GROQ_MODEL = "llama-3.3-70b-versatile"
 
@@ -47,6 +51,8 @@ if not api_key:
     else:
         st.info(":material/build: The AI assistant isn't set up yet — check back soon.")
     st.stop()
+
+groq_client = Groq(api_key=api_key)
 
 
 # --- Gather ONLY this member's own data ---------------------------------------
@@ -170,11 +176,45 @@ def _build_export_text():
     return "\n".join(lines)
 
 
+RESUME_SUMMARY_PROMPT = """Summarize the conversation below into a compact briefing a NEW \
+conversation can paste in to resume it naturally. Capture what was asked, what was \
+answered, and any open/unfinished questions. Write it as instructions for the next \
+assistant instance to read, not as a message to the member. Under 200 words."""
+
+
+def _save_chat_by_email():
+    transcript = _build_export_text()
+    summary_response = groq_client.chat.completions.create(
+        model=GROQ_MODEL,
+        messages=[
+            {"role": "system", "content": RESUME_SUMMARY_PROMPT},
+            {"role": "user", "content": transcript},
+        ],
+    )
+    summary = summary_response.choices[0].message.content or "(couldn't summarize)"
+    to_email = st.session_state.user_email_by_id.get(current_user_id)
+    send_email(
+        to_email,
+        "Your RoboKnights AI Assistant chat, saved",
+        f"Hi {current_user_name.split()[0]},\n\n"
+        "Here's your saved AI Assistant conversation.\n\n"
+        "To continue where you left off, paste the section below into a new chat with "
+        "the AI Assistant:\n\n"
+        "----- RESUME THIS CONVERSATION -----\n"
+        f"{summary}\n"
+        "----- END -----\n\n"
+        "Full transcript, for your reference:\n\n"
+        f"{transcript}\n"
+        "— RoboKnights AI Assistant",
+    )
+    return to_email
+
+
 if "assistant_messages" not in st.session_state:
     st.session_state.assistant_messages = []
 
 if st.session_state.assistant_messages:
-    button_col1, button_col2 = st.columns([1, 1])
+    button_col1, button_col2, button_col3 = st.columns([1, 1, 1])
     with button_col1:
         if st.button("Clear conversation", icon=":material/delete_sweep:", type="tertiary"):
             st.session_state.assistant_messages = []
@@ -188,6 +228,18 @@ if st.session_state.assistant_messages:
             icon=":material/download:",
             type="tertiary",
         )
+    with button_col3:
+        if st.button(
+            "Save chat", icon=":material/mail:", type="tertiary",
+            help="Emails you a summary you can paste into a new chat to resume this one, "
+                 "plus the full transcript.",
+        ):
+            with st.spinner("Summarizing and emailing your chat…"):
+                try:
+                    sent_to = _save_chat_by_email()
+                    st.toast(f"Emailed to {sent_to}!", icon=":material/mail:")
+                except Exception as e:
+                    st.error(f"Couldn't save chat: {e}")
 
 for msg in st.session_state.assistant_messages:
     with st.chat_message(msg["role"]):
@@ -202,9 +254,6 @@ if prompt:
     with st.chat_message("assistant"):
         with st.spinner("Thinking…"):
             try:
-                from groq import Groq
-
-                groq_client = Groq(api_key=api_key)
                 messages = [
                     {
                         "role": "system",
