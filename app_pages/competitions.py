@@ -16,8 +16,8 @@ import streamlit as st
 
 from e2c_import import scan_e2c_sheet
 from shared import (
-    EXUN_EMAILS, HOST_EMAILS, IST, cached_table, delete_discord_message, get_client, invalidate_cache,
-    safe_write, send_discord_message, send_email,
+    EXUN_EMAILS, HOST_EMAILS, IST, cached_table, delete_discord_message, format_ist, get_client,
+    invalidate_cache, safe_write, send_discord_message, send_email,
 )
 
 # The page-local name everything below already uses — the implementation
@@ -1028,27 +1028,38 @@ def render_discord_custom_message():
             "Message", key="custom_discord_message", label_visibility="collapsed",
             placeholder="Type your message...",
         )
-        send_col, delete_col = st.columns([1, 1])
-        if send_col.button(
+        if st.button(
             "Send to Discord", icon=":material/send:", type="primary", key="send_custom_discord_btn",
         ):
             if not custom_message.strip():
                 st.error("Message can't be empty.")
             else:
-                # The id comes back from Discord itself (via ?wait=true in
-                # send_discord_message) — kept only long enough to offer
-                # deleting THIS specific message right after sending, not
-                # as a running history of everything ever posted.
-                st.session_state.last_discord_message_id = send_discord_message(custom_message.strip())
+                send_discord_message(custom_message.strip())
+                invalidate_cache()
                 st.toast("Sent to Discord!", icon=":material/check_circle:")
                 del st.session_state["custom_discord_message"]
                 st.rerun()
-        if st.session_state.get("last_discord_message_id"):
+
+        st.divider()
+        st.markdown("**Recent Discord messages**")
+        st.caption(
+            "Every message this app has sent — automatic new-event notifications "
+            "included, not just the custom ones above. Delete any of them here."
+        )
+        recent_messages = sorted(
+            cached_table("discord_messages"), key=lambda m: m["sent_at"], reverse=True
+        )[:20]
+        if not recent_messages:
+            st.caption("Nothing sent yet.")
+        for m in recent_messages:
+            row_col, delete_col = st.columns([5, 1], vertical_alignment="center")
+            preview = m["content"] if len(m["content"]) <= 150 else m["content"][:147] + "..."
+            row_col.caption(f":material/schedule: {format_ist(m['sent_at'])} — {preview}")
             if delete_col.button(
-                "Delete that message", icon=":material/delete:", key="delete_last_discord_btn",
+                "Delete", key=f"delete_discord_msg_{m['id']}", icon=":material/delete:",
             ):
-                delete_discord_message(st.session_state.last_discord_message_id)
-                st.session_state.last_discord_message_id = None
+                delete_discord_message(m["message_id"])
+                invalidate_cache()
                 st.toast("Deleted from Discord.", icon=":material/delete:")
                 st.rerun()
 

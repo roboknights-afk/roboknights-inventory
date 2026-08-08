@@ -328,6 +328,9 @@ def send_discord_message(content):
     # bare 204) so the caller gets its id back — needed to delete this
     # specific message later via delete_discord_message, without that
     # meaning "wait for real delivery confirmation" or anything slower.
+    # Logged to discord_messages on success (both this and the automatic
+    # new-event notifications go through here) so a host can come back
+    # later and delete an OLDER message too, not just the one just sent.
     webhook_url = os.environ.get("DISCORD_COMPETITIONS_WEBHOOK_URL")
     if not webhook_url:
         return None
@@ -335,7 +338,12 @@ def send_discord_message(content):
         response = requests.post(
             webhook_url, json={"content": content}, params={"wait": "true"}, timeout=10
         )
-        return response.json().get("id")
+        message_id = response.json().get("id")
+        if message_id:
+            get_client().table("discord_messages").insert({
+                "message_id": message_id, "content": content,
+            }).execute()
+        return message_id
     except Exception:
         return None
 
@@ -343,11 +351,14 @@ def send_discord_message(content):
 def delete_discord_message(message_id):
     # A webhook can only delete messages IT sent (not just anyone's in the
     # channel) — exactly the scope needed here: undoing a message this
-    # app itself just posted, via the same webhook, nothing broader.
+    # app itself posted, via the same webhook, nothing broader. Also
+    # removes its discord_messages row, so that log only ever reflects
+    # what's currently still live in Discord.
     webhook_url = os.environ.get("DISCORD_COMPETITIONS_WEBHOOK_URL")
     if not webhook_url or not message_id:
         return
     try:
         requests.delete(f"{webhook_url}/messages/{message_id}", timeout=10)
+        get_client().table("discord_messages").delete().eq("message_id", message_id).execute()
     except Exception:
         pass
