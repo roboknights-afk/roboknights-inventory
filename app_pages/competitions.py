@@ -92,6 +92,10 @@ if "custom_discord_preview" not in st.session_state:
     st.session_state.custom_discord_preview = None
 if "editing_discord_msg_id" not in st.session_state:
     st.session_state.editing_discord_msg_id = None
+if "editing_vacant_events_preview" not in st.session_state:
+    st.session_state.editing_vacant_events_preview = False
+if "editing_custom_discord_preview" not in st.session_state:
+    st.session_state.editing_custom_discord_preview = False
 
 
 def _notify_date_change(name, old_date, new_date):
@@ -1094,22 +1098,41 @@ def render_vacant_events_reminder():
         preview = st.session_state.get("vacant_events_preview")
         if preview:
             st.markdown("**Preview** (exactly what will post, before the automated-message footer):")
-            st.text_area(
-                "Preview", value=preview, height=220, key="vacant_events_preview_box",
-                label_visibility="collapsed", disabled=True,
-            )
-            send_col, discard_col = st.columns([1, 1])
-            if send_col.button(
-                "Send to Discord", icon=":material/send:", type="primary", key="send_vacant_events_btn",
-            ):
-                send_discord_message(preview)
-                invalidate_cache()
-                st.session_state.vacant_events_preview = None
-                st.toast("Sent to Discord!", icon=":material/check_circle:")
-                st.rerun()
-            if discard_col.button("Discard", icon=":material/close:", key="discard_vacant_events_btn"):
-                st.session_state.vacant_events_preview = None
-                st.rerun()
+            if st.session_state.get("editing_vacant_events_preview"):
+                edited = st.text_area(
+                    "Edit preview", value=preview, height=220,
+                    key="vacant_events_edit_box", label_visibility="collapsed",
+                )
+                save_col, cancel_col = st.columns([1, 1])
+                if save_col.button(
+                    "Save edits", icon=":material/check:", type="primary", key="save_vacant_events_edit_btn",
+                ):
+                    st.session_state.vacant_events_preview = edited
+                    st.session_state.editing_vacant_events_preview = False
+                    st.rerun()
+                if cancel_col.button("Cancel", icon=":material/close:", key="cancel_vacant_events_edit_btn"):
+                    st.session_state.editing_vacant_events_preview = False
+                    st.rerun()
+            else:
+                st.text_area(
+                    "Preview", value=preview, height=220, key="vacant_events_preview_box",
+                    label_visibility="collapsed", disabled=True,
+                )
+                edit_col, send_col, discard_col = st.columns([1, 1, 1])
+                if edit_col.button("Edit", icon=":material/edit:", key="edit_vacant_events_btn"):
+                    st.session_state.editing_vacant_events_preview = True
+                    st.rerun()
+                if send_col.button(
+                    "Send to Discord", icon=":material/send:", type="primary", key="send_vacant_events_btn",
+                ):
+                    send_discord_message(preview)
+                    invalidate_cache()
+                    st.session_state.vacant_events_preview = None
+                    st.toast("Sent to Discord!", icon=":material/check_circle:")
+                    st.rerun()
+                if discard_col.button("Discard", icon=":material/close:", key="discard_vacant_events_btn"):
+                    st.session_state.vacant_events_preview = None
+                    st.rerun()
 
 
 def render_discord_custom_message():
@@ -1138,32 +1161,50 @@ def render_discord_custom_message():
             "Message", key="custom_discord_message", label_visibility="collapsed",
             placeholder="Type your message...",
         )
-        preview_col, send_col = st.columns([1, 1])
-        if preview_col.button(
-            "Preview", icon=":material/visibility:", key="preview_custom_discord_btn",
-        ):
+        if st.button("Preview", icon=":material/visibility:", key="preview_custom_discord_btn"):
             if not custom_message.strip():
                 st.error("Message can't be empty.")
             else:
                 st.session_state.custom_discord_preview = custom_message.strip()
+                st.session_state.editing_custom_discord_preview = False
                 st.rerun()
 
-        if st.session_state.get("custom_discord_preview"):
+        preview = st.session_state.get("custom_discord_preview")
+        if preview:
             st.markdown("**Preview** (with the automated-message footer that gets added):")
-            st.text_area(
-                "Custom preview",
-                value=st.session_state.custom_discord_preview + DISCORD_AUTOMATED_FOOTER,
-                height=140, key="custom_discord_preview_box", label_visibility="collapsed", disabled=True,
-            )
-            if send_col.button(
-                "Send to Discord", icon=":material/send:", type="primary", key="send_custom_discord_btn",
-            ):
-                send_discord_message(st.session_state.custom_discord_preview)
-                invalidate_cache()
-                st.session_state.custom_discord_preview = None
-                st.toast("Sent to Discord!", icon=":material/check_circle:")
-                del st.session_state["custom_discord_message"]
-                st.rerun()
+            if st.session_state.get("editing_custom_discord_preview"):
+                edited = st.text_area(
+                    "Edit custom preview", value=preview, height=140,
+                    key="custom_discord_edit_box", label_visibility="collapsed",
+                )
+                save_col, cancel_col = st.columns([1, 1])
+                if save_col.button(
+                    "Save edits", icon=":material/check:", type="primary", key="save_custom_discord_edit_btn",
+                ):
+                    st.session_state.custom_discord_preview = edited
+                    st.session_state.editing_custom_discord_preview = False
+                    st.rerun()
+                if cancel_col.button("Cancel", icon=":material/close:", key="cancel_custom_discord_edit_btn"):
+                    st.session_state.editing_custom_discord_preview = False
+                    st.rerun()
+            else:
+                st.text_area(
+                    "Custom preview", value=preview + DISCORD_AUTOMATED_FOOTER, height=140,
+                    key="custom_discord_preview_box", label_visibility="collapsed", disabled=True,
+                )
+                edit_col, send_col = st.columns([1, 1])
+                if edit_col.button("Edit", icon=":material/edit:", key="edit_custom_discord_btn"):
+                    st.session_state.editing_custom_discord_preview = True
+                    st.rerun()
+                if send_col.button(
+                    "Send to Discord", icon=":material/send:", type="primary", key="send_custom_discord_btn",
+                ):
+                    send_discord_message(preview)
+                    invalidate_cache()
+                    st.session_state.custom_discord_preview = None
+                    st.toast("Sent to Discord!", icon=":material/check_circle:")
+                    del st.session_state["custom_discord_message"]
+                    st.rerun()
 
         st.divider()
         st.markdown("**Recent Discord messages**")
