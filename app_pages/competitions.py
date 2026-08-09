@@ -1008,24 +1008,16 @@ def render_e2c_import():
                                             st.rerun()
 
 
-# Only these two competitions get the "vacant events" nag below — matched
-# by a substring so "Robotronics '26" and "QUANTUM QUEST 6.0" both match
-# without hardcoding this year's exact edition number.
-VACANT_EVENT_COMPETITION_KEYWORDS = ("robotronics", "quantum quest")
-
-
 def _build_vacant_events_message():
     # "Vacant" = still has open participation slots (team_size * max_teams
     # per event) that no one has volunteered for yet — same capacity math
     # the Volunteer button elsewhere on this page already uses. An event
     # with MORE volunteers than capacity (already oversubscribed) or
     # exactly full isn't vacant, so it's skipped rather than shown with a
-    # confusing negative or zero number.
-    competitions_of_interest = [
-        c for c in cached_table("competitions")
-        if not c.get("is_past")
-        and any(kw in c["name"].lower() for kw in VACANT_EVENT_COMPETITION_KEYWORDS)
-    ]
+    # confusing negative or zero number. Covers every upcoming competition,
+    # not just specific ones — a competition with nothing vacant just
+    # doesn't get a section below.
+    competitions_of_interest = [c for c in cached_table("competitions") if not c.get("is_past")]
     if not competitions_of_interest:
         return None
 
@@ -1074,12 +1066,12 @@ def _build_vacant_events_message():
 
 
 def render_vacant_events_reminder():
-    # A one-click nag for exactly the two competitions asked about
-    # (Robotronics, Quantum Quest), not a general "any competition with a
-    # vacancy" tool — matches what was actually asked for. Same
-    # generate-then-review-then-send shape as everything else that posts
-    # to Discord: nothing goes out until the host explicitly hits Send,
-    # and the exact text (including who gets tagged) is visible first.
+    # A one-click nag across every upcoming competition, not just one or
+    # two named ones — a competition with nothing vacant just contributes
+    # no section to the message. Same generate-then-review-then-send shape
+    # as everything else that posts to Discord: nothing goes out until the
+    # host explicitly hits Send, and the exact text (including who gets
+    # tagged) is visible first.
     webhook_configured = bool(os.environ.get("DISCORD_COMPETITIONS_WEBHOOK_URL"))
     with st.container(border=True):
         st.subheader(":material/campaign: Vacant events reminder")
@@ -1090,9 +1082,10 @@ def render_vacant_events_reminder():
             )
             return
         st.caption(
-            "Builds a message listing every Robotronics / Quantum Quest event that "
-            "still has open slots, tagging the members eligible by grade for each "
-            "one. Review it below before it actually posts."
+            "Builds a message listing every upcoming event (across every "
+            "competition) that still has open slots, tagging the members "
+            "eligible by grade for each one. Review it below before it "
+            "actually posts."
         )
         if st.button("Generate message", icon=":material/auto_awesome:", key="gen_vacant_events_msg"):
             message = _build_vacant_events_message()
