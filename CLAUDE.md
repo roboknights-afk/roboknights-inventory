@@ -1,8 +1,6 @@
 # RoboKnights Parts Inventory
 
-A parts-inventory web app for a school robotics club (RoboKnights). Built by a
-Class XI student new to programming, with heavy AI help — the working rules
-below matter as much as the technical spec.
+An events management dashboard for a school robotics club (RoboKnights).
 
 ## The project
 
