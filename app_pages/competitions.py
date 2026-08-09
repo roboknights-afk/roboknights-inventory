@@ -16,8 +16,9 @@ import streamlit as st
 
 from e2c_import import scan_e2c_sheet
 from shared import (
-    EXUN_EMAILS, HOST_EMAILS, IST, cached_table, delete_discord_message, discord_role_tags, format_ist,
-    get_client, invalidate_cache, safe_write, send_discord_message, send_email,
+    DISCORD_AUTOMATED_FOOTER, EXUN_EMAILS, HOST_EMAILS, IST, cached_table, delete_discord_message,
+    discord_role_tags, edit_discord_message, format_ist, get_client, invalidate_cache, safe_write,
+    send_discord_message, send_email,
 )
 
 # The page-local name everything below already uses — the implementation
@@ -89,6 +90,8 @@ if "vacant_events_preview" not in st.session_state:
     st.session_state.vacant_events_preview = None
 if "custom_discord_preview" not in st.session_state:
     st.session_state.custom_discord_preview = None
+if "editing_discord_msg_id" not in st.session_state:
+    st.session_state.editing_discord_msg_id = None
 
 
 def _notify_date_change(name, old_date, new_date):
@@ -1149,7 +1152,7 @@ def render_discord_custom_message():
             st.markdown("**Preview** (with the automated-message footer that gets added):")
             st.text_area(
                 "Custom preview",
-                value=st.session_state.custom_discord_preview + "\n\n***This is automated message***",
+                value=st.session_state.custom_discord_preview + DISCORD_AUTOMATED_FOOTER,
                 height=140, key="custom_discord_preview_box", label_visibility="collapsed", disabled=True,
             )
             if send_col.button(
@@ -1166,7 +1169,7 @@ def render_discord_custom_message():
         st.markdown("**Recent Discord messages**")
         st.caption(
             "Every message this app has sent — automatic new-event notifications "
-            "included, not just the custom ones above. Delete any of them here."
+            "included, not just the custom ones above. Edit or delete any of them here."
         )
         recent_messages = sorted(
             cached_table("discord_messages"), key=lambda m: m["sent_at"], reverse=True
@@ -1174,9 +1177,14 @@ def render_discord_custom_message():
         if not recent_messages:
             st.caption("Nothing sent yet.")
         for m in recent_messages:
-            row_col, delete_col = st.columns([5, 1], vertical_alignment="center")
+            row_col, edit_col, delete_col = st.columns([5, 1, 1], vertical_alignment="center")
             preview = m["content"] if len(m["content"]) <= 150 else m["content"][:147] + "..."
             row_col.caption(f":material/schedule: {format_ist(m['sent_at'])} — {preview}")
+            if edit_col.button(
+                "Edit", key=f"edit_discord_msg_{m['id']}", icon=":material/edit:",
+            ):
+                st.session_state.editing_discord_msg_id = m["id"]
+                st.rerun()
             if delete_col.button(
                 "Delete", key=f"delete_discord_msg_{m['id']}", icon=":material/delete:",
             ):
@@ -1184,6 +1192,39 @@ def render_discord_custom_message():
                 invalidate_cache()
                 st.toast("Deleted from Discord.", icon=":material/delete:")
                 st.rerun()
+
+            if st.session_state.editing_discord_msg_id == m["id"]:
+                # Edited body only — the footer is stripped for editing and
+                # re-appended on save, same as the Preview boxes above, so
+                # it can't be accidentally edited out.
+                current_body = (
+                    m["content"][: -len(DISCORD_AUTOMATED_FOOTER)]
+                    if m["content"].endswith(DISCORD_AUTOMATED_FOOTER) else m["content"]
+                )
+                new_body = st.text_area(
+                    "Edit message", value=current_body, height=140,
+                    key=f"discord_edit_box_{m['id']}", label_visibility="collapsed",
+                )
+                save_col, cancel_col = st.columns([1, 1])
+                if save_col.button(
+                    "Save changes", key=f"save_discord_edit_{m['id']}",
+                    icon=":material/check:", type="primary",
+                ):
+                    if not new_body.strip():
+                        st.error("Message can't be empty.")
+                    else:
+                        with st.spinner("Updating this message on Discord…"):
+                            ok = edit_discord_message(m["message_id"], new_body.strip())
+                        if ok:
+                            invalidate_cache()
+                            st.session_state.editing_discord_msg_id = None
+                            st.toast("Updated on Discord.", icon=":material/check_circle:")
+                            st.rerun()
+                        else:
+                            st.error("Couldn't update that message on Discord — try again.")
+                if cancel_col.button("Cancel", key=f"cancel_discord_edit_{m['id']}", icon=":material/close:"):
+                    st.session_state.editing_discord_msg_id = None
+                    st.rerun()
 
 
 # Success pops as a toast; errors stay inline so they can't be missed.

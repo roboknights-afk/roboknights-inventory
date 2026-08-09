@@ -331,6 +331,9 @@ def discord_role_tags():
     return " ".join(f"<@&{rid}>" for rid in role_ids if rid)
 
 
+DISCORD_AUTOMATED_FOOTER = "\n\n***This is automated message***"
+
+
 def send_discord_message(content):
     # A Discord Incoming Webhook is a plain HTTP POST — unlike a real bot,
     # it needs no persistent gateway connection or separate 24/7 process,
@@ -341,12 +344,13 @@ def send_discord_message(content):
     # anywhere before the Discord side is finished.
     #
     # ?wait=true makes Discord return the created message (instead of a
-    # bare 204) so the caller gets its id back — needed to delete this
-    # specific message later via delete_discord_message, without that
-    # meaning "wait for real delivery confirmation" or anything slower.
+    # bare 204) so the caller gets its id back — needed to delete/edit
+    # this specific message later, without that meaning "wait for real
+    # delivery confirmation" or anything slower.
     # Logged to discord_messages on success (both this and the automatic
     # new-event notifications go through here) so a host can come back
-    # later and delete an OLDER message too, not just the one just sent.
+    # later and edit or delete an OLDER message too, not just the one
+    # just sent.
     #
     # Every message this app sends gets the "This is automated message"
     # footer, bold+italic, with zero exceptions — added HERE (not at each
@@ -354,7 +358,7 @@ def send_discord_message(content):
     webhook_url = os.environ.get("DISCORD_COMPETITIONS_WEBHOOK_URL")
     if not webhook_url:
         return None
-    full_content = f"{content}\n\n***This is automated message***"
+    full_content = f"{content}{DISCORD_AUTOMATED_FOOTER}"
     try:
         response = requests.post(
             webhook_url, json={"content": full_content}, params={"wait": "true"}, timeout=10
@@ -383,3 +387,29 @@ def delete_discord_message(message_id):
         get_client().table("discord_messages").delete().eq("message_id", message_id).execute()
     except Exception:
         pass
+
+
+def edit_discord_message(message_id, new_content):
+    # Same "a webhook can only touch messages IT sent" scope as delete,
+    # just PATCHing instead. Re-appends the automated-message footer
+    # itself (the caller passes just the body, same as send_discord_message)
+    # so an edit can't accidentally drop it. Returns True/False instead of
+    # silently no-oping like send/delete, since the caller here is an
+    # inline edit box that needs to tell the host whether it actually
+    # worked before clearing the editor.
+    webhook_url = os.environ.get("DISCORD_COMPETITIONS_WEBHOOK_URL")
+    if not webhook_url or not message_id:
+        return False
+    full_content = f"{new_content}{DISCORD_AUTOMATED_FOOTER}"
+    try:
+        response = requests.patch(
+            f"{webhook_url}/messages/{message_id}", json={"content": full_content}, timeout=10
+        )
+        if response.status_code >= 400:
+            return False
+        get_client().table("discord_messages").update(
+            {"content": full_content}
+        ).eq("message_id", message_id).execute()
+        return True
+    except Exception:
+        return False
