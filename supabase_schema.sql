@@ -329,3 +329,17 @@ create table if not exists discord_messages (
     content    text not null,
     sent_at    timestamptz not null default now()
 );
+
+-- Discord integration, Chunk 2: a second channel (the private Exun<>RK
+-- channel, its own separate webhook) alongside the original competitions
+-- channel. "channel" says which webhook a logged message actually went
+-- to, so a later edit/delete knows which one to call — defaults to
+-- 'competitions' for every row logged before this column existed.
+alter table discord_messages add column if not exists channel text not null default 'competitions';
+
+-- Tracks whether the "all event names finalized" notification (posted to
+-- the exun_rk channel once every event under a competition has its full
+-- SELECTED roster) has already fired for this competition, so it isn't
+-- re-sent on every page load once complete — reset back to false the
+-- moment it's no longer complete, so a later re-completion notifies again.
+alter table competitions add column if not exists roster_complete_notified boolean not null default false;

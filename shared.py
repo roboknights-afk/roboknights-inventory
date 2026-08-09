@@ -331,33 +331,44 @@ def discord_role_tags():
     return " ".join(f"<@&{rid}>" for rid in role_ids if rid)
 
 
-# Appended to the end of EVERY message this app sends to Discord — the
-# app link so anyone reading in Discord can jump straight to it, then the
-# bold-italic "automated message" marker — added centrally here (not at
-# each call site) specifically so neither can be forgotten by a future
-# call site. Built once at import time; fine since APP_URL itself doesn't
-# change while the process is running.
+# Appended to the end of EVERY message this app sends to Discord, on
+# EITHER channel — the app link so anyone reading in Discord can jump
+# straight to it, then the bold-italic "automated message" marker — added
+# centrally here (not at each call site) specifically so neither can be
+# forgotten by a future call site. Built once at import time; fine since
+# APP_URL itself doesn't change while the process is running.
 DISCORD_MESSAGE_SUFFIX = f"\n\n:link: {APP_URL}\n\n***This is automated message***"
 
+# Two separate Discord channels this app can post to, each its own
+# Incoming Webhook (a webhook is tied to exactly one channel — there's no
+# such thing as "one webhook, pick a channel"), each its own env secret.
+# "competitions" is the default everywhere below since it's the original,
+# far more common case (every automatic notification), so existing call
+# sites that don't care about the Exun channel don't need to change.
+DISCORD_CHANNELS = {
+    "competitions": "DISCORD_COMPETITIONS_WEBHOOK_URL",
+    "exun_rk": "DISCORD_EXUN_WEBHOOK_URL",
+}
 
-def send_discord_message(content):
+
+def send_discord_message(content, channel="competitions"):
     # A Discord Incoming Webhook is a plain HTTP POST — unlike a real bot,
     # it needs no persistent gateway connection or separate 24/7 process,
     # so it fits this app's existing hosting (only runs when someone's
     # using it, or during a scheduled GitHub Actions job) with no new
-    # infra. Silently no-ops if the webhook isn't set up yet, same best-
-    # effort spirit as send_email/send_whatsapp — safe to wire in
-    # anywhere before the Discord side is finished.
+    # infra. Silently no-ops if that channel's webhook isn't set up yet,
+    # same best-effort spirit as send_email/send_whatsapp — safe to wire
+    # in anywhere before the Discord side is finished.
     #
     # ?wait=true makes Discord return the created message (instead of a
     # bare 204) so the caller gets its id back — needed to delete/edit
     # this specific message later, without that meaning "wait for real
     # delivery confirmation" or anything slower.
-    # Logged to discord_messages on success (both this and the automatic
-    # new-event notifications go through here) so a host can come back
-    # later and edit or delete an OLDER message too, not just the one
-    # just sent.
-    webhook_url = os.environ.get("DISCORD_COMPETITIONS_WEBHOOK_URL")
+    # Logged to discord_messages (with which channel it went to, so a
+    # later edit/delete knows which webhook to use) on success, so a host
+    # can come back later and edit or delete an OLDER message too, not
+    # just the one just sent.
+    webhook_url = os.environ.get(DISCORD_CHANNELS[channel])
     if not webhook_url:
         return None
     full_content = f"{content}{DISCORD_MESSAGE_SUFFIX}"
@@ -368,20 +379,20 @@ def send_discord_message(content):
         message_id = response.json().get("id")
         if message_id:
             get_client().table("discord_messages").insert({
-                "message_id": message_id, "content": full_content,
+                "message_id": message_id, "content": full_content, "channel": channel,
             }).execute()
         return message_id
     except Exception:
         return None
 
 
-def delete_discord_message(message_id):
+def delete_discord_message(channel, message_id):
     # A webhook can only delete messages IT sent (not just anyone's in the
     # channel) — exactly the scope needed here: undoing a message this
     # app itself posted, via the same webhook, nothing broader. Also
     # removes its discord_messages row, so that log only ever reflects
     # what's currently still live in Discord.
-    webhook_url = os.environ.get("DISCORD_COMPETITIONS_WEBHOOK_URL")
+    webhook_url = os.environ.get(DISCORD_CHANNELS[channel])
     if not webhook_url or not message_id:
         return
     try:
@@ -391,7 +402,7 @@ def delete_discord_message(message_id):
         pass
 
 
-def edit_discord_message(message_id, new_content):
+def edit_discord_message(channel, message_id, new_content):
     # Same "a webhook can only touch messages IT sent" scope as delete,
     # just PATCHing instead. Re-appends the app-link + automated-message
     # suffix itself (the caller passes just the body, same as
@@ -399,7 +410,7 @@ def edit_discord_message(message_id, new_content):
     # True/False instead of silently no-oping like send/delete, since the
     # caller here is an inline edit box that needs to tell the host
     # whether it actually worked before clearing the editor.
-    webhook_url = os.environ.get("DISCORD_COMPETITIONS_WEBHOOK_URL")
+    webhook_url = os.environ.get(DISCORD_CHANNELS[channel])
     if not webhook_url or not message_id:
         return False
     full_content = f"{new_content}{DISCORD_MESSAGE_SUFFIX}"
@@ -415,3 +426,122 @@ def edit_discord_message(message_id, new_content):
         return True
     except Exception:
         return False
+
+
+def build_vacant_events_message():
+    # "Vacant" = still has open participation slots (team_size * max_teams
+    # per event) that no one has volunteered for yet — same capacity math
+    # the Volunteer button on the Competitions page already uses. An event
+    # with MORE volunteers than capacity (already oversubscribed) or
+    # exactly full isn't vacant, so it's skipped rather than shown with a
+    # confusing negative or zero number. Covers every upcoming competition,
+    # not just specific ones — a competition with nothing vacant just
+    # doesn't get a section below. Lives here (not in competitions.py) so
+    # the Discord Messages page can call it without executing that whole
+    # page script.
+    competitions_of_interest = [c for c in cached_table("competitions") if not c.get("is_past")]
+    if not competitions_of_interest:
+        return None
+
+    all_events = cached_table("competition_events")
+    all_volunteers = cached_table("event_volunteers")
+
+    sections = []
+    for comp in sorted(competitions_of_interest, key=lambda c: c["name"]):
+        comp_events = [e for e in all_events if e["competition_id"] == comp["competition_id"]]
+        vacant_lines = []
+        for e in sorted(comp_events, key=lambda e: e["name"]):
+            capacity = e["team_size"] * e["max_teams"]
+            filled = len([v for v in all_volunteers if v["event_id"] == e["event_id"]])
+            vacant = capacity - filled
+            if vacant <= 0:
+                continue
+            spot_word = "spot" if vacant == 1 else "spots"
+            vacant_lines.append(
+                f"- **{e['name']}** (Grade {e['min_grade']}–{e['max_grade']}) — {vacant} {spot_word} open"
+            )
+        if vacant_lines:
+            sections.append(f"**{comp['name']}**\n" + "\n".join(vacant_lines))
+
+    if not sections:
+        return None
+
+    # Pings the @member / @adhoc SERVER ROLES once at the end, not
+    # individual members per event.
+    tags = discord_role_tags()
+    message = (
+        ":rotating_light: **Vacant events — sign up now!**\n\n"
+        + "\n\n".join(sections)
+        + "\n\nLog in to the app to volunteer."
+    )
+    if tags:
+        message += f"\n{tags}"
+    return message
+
+
+def notify_if_roster_complete(competition_id):
+    # "Complete" = every event under this competition has as many SELECTED
+    # (finalized, not just volunteered) people as its capacity
+    # (team_size * max_teams) — i.e. the actual team NAMES are locked in
+    # for the whole competition, not just "enough people signed up".
+    # Posts to the exun_rk channel specifically (that's what this was
+    # asked for), once per time the competition transitions from
+    # incomplete to complete — competitions.roster_complete_notified
+    # tracks that, and gets reset back to False the moment it's no longer
+    # complete (someone unselected), so a LATER re-completion notifies
+    # again instead of staying silently stuck "already notified".
+    #
+    # Deliberately NOT cached_table: called right after a write that
+    # changes `selected`, so it needs the true current state, not up to
+    # 8s old — same reasoning as _insert_matched_participants in
+    # competitions.py.
+    #
+    # Best-effort, same spirit as send_discord_message/send_email: this
+    # runs as a side effect tacked onto a real write (saving a selection,
+    # syncing from E2C) that must still succeed even if this check can't
+    # (e.g. the roster_complete_notified column hasn't been migrated in
+    # yet) — a notification failing here should never make safe_write
+    # report the actual save itself as failed.
+    try:
+        client = get_client()
+        comp_rows = client.table("competitions").select(
+            "competition_id, name, roster_complete_notified"
+        ).eq("competition_id", competition_id).execute().data
+        if not comp_rows:
+            return
+        comp = comp_rows[0]
+
+        events = client.table("competition_events").select(
+            "event_id, name, team_size, max_teams"
+        ).eq("competition_id", competition_id).execute().data
+        if not events:
+            return
+
+        event_ids = [e["event_id"] for e in events]
+        volunteers = client.table("event_volunteers").select("event_id, selected").in_(
+            "event_id", event_ids
+        ).execute().data
+        selected_counts = {}
+        for v in volunteers:
+            if v.get("selected"):
+                selected_counts[v["event_id"]] = selected_counts.get(v["event_id"], 0) + 1
+        is_complete = all(
+            selected_counts.get(e["event_id"], 0) >= e["team_size"] * e["max_teams"] for e in events
+        )
+
+        already_notified = bool(comp.get("roster_complete_notified"))
+        if is_complete and not already_notified:
+            message = (
+                f":white_check_mark: **Team names finalized: {comp['name']}**\n"
+                f"Every event now has its full roster selected — nothing left vacant."
+            )
+            send_discord_message(message, channel="exun_rk")
+            client.table("competitions").update({"roster_complete_notified": True}).eq(
+                "competition_id", competition_id
+            ).execute()
+        elif not is_complete and already_notified:
+            client.table("competitions").update({"roster_complete_notified": False}).eq(
+                "competition_id", competition_id
+            ).execute()
+    except Exception:
+        pass

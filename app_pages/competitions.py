@@ -9,16 +9,14 @@
 # instead, since those need to run on a schedule, not a page view.
 # Announcements moved to their own page (app_pages/announcements.py).
 
-import os
 from datetime import date, datetime
 
 import streamlit as st
 
 from e2c_import import scan_e2c_sheet
 from shared import (
-    DISCORD_MESSAGE_SUFFIX, EXUN_EMAILS, HOST_EMAILS, IST, cached_table, delete_discord_message,
-    discord_role_tags, edit_discord_message, format_ist, get_client, invalidate_cache, safe_write,
-    send_discord_message, send_email,
+    EXUN_EMAILS, HOST_EMAILS, IST, cached_table, discord_role_tags, get_client, invalidate_cache,
+    notify_if_roster_complete, safe_write, send_discord_message, send_email,
 )
 
 # The page-local name everything below already uses — the implementation
@@ -86,16 +84,6 @@ if "confirming_e2c_bulk_sync" not in st.session_state:
     st.session_state.confirming_e2c_bulk_sync = False
 if "pending_e2c_bulk_sync" not in st.session_state:
     st.session_state.pending_e2c_bulk_sync = None
-if "vacant_events_preview" not in st.session_state:
-    st.session_state.vacant_events_preview = None
-if "custom_discord_preview" not in st.session_state:
-    st.session_state.custom_discord_preview = None
-if "editing_discord_msg_id" not in st.session_state:
-    st.session_state.editing_discord_msg_id = None
-if "editing_vacant_events_preview" not in st.session_state:
-    st.session_state.editing_vacant_events_preview = False
-if "editing_custom_discord_preview" not in st.session_state:
-    st.session_state.editing_custom_discord_preview = False
 
 
 def _notify_date_change(name, old_date, new_date):
@@ -332,6 +320,7 @@ def _apply_e2c_single_sync(fresh_comp, accept_date):
             if e.get("existing_event_id"):
                 _insert_matched_participants(
                     client, e.get("existing_event_id"), e.get("teams", []), e["name"], fresh_comp["name"],
+                    fresh_comp.get("existing_id"),
                 )
         st.session_state.confirming_e2c_single_sync_idx = None
         st.session_state.pending_e2c_single_sync = None
@@ -359,6 +348,7 @@ def _apply_e2c_bulk_sync(fresh_by_name, already_imported, accept_dates):
                 if e.get("existing_event_id"):
                     _insert_matched_participants(
                         client, e.get("existing_event_id"), e.get("teams", []), e["name"], fresh_comp["name"],
+                        fresh_comp.get("existing_id"),
                     )
         st.session_state.confirming_e2c_bulk_sync = False
         st.session_state.pending_e2c_bulk_sync = None
@@ -366,7 +356,7 @@ def _apply_e2c_bulk_sync(fresh_by_name, already_imported, accept_dates):
         st.rerun()
 
 
-def _insert_matched_participants(client, event_id, teams, event_name, comp_name):
+def _insert_matched_participants(client, event_id, teams, event_name, comp_name, competition_id):
     # teams: list of team-rows, each {"team_no", "participants": [{"user_id",
     # "name", "selected"}]} matched against real members off the sheet —
     # "selected" reflects that specific cell's green/white color.
@@ -459,6 +449,7 @@ def _insert_matched_participants(client, event_id, teams, event_name, comp_name)
 
     if changed:
         invalidate_cache()
+        notify_if_roster_complete(competition_id)
 
 
 def _send_selected_email(user_id, event_name, comp_name):
@@ -807,7 +798,8 @@ def render_e2c_import():
                                     e,
                                 )
                                 _insert_matched_participants(
-                                    client, new_event_id, fresh_event.get("teams", []), e["name"], data["name"]
+                                    client, new_event_id, fresh_event.get("teams", []), e["name"], data["name"],
+                                    competition_id,
                                 )
                             # _insert_matched_participants already invalidates when IT
                             # changes something; this covers the competition/links/
@@ -1003,7 +995,8 @@ def render_e2c_import():
                                                 e,
                                             )
                                             _insert_matched_participants(
-                                                client, new_event_id, fresh_event.get("teams", []), e["name"], comp["name"]
+                                                client, new_event_id, fresh_event.get("teams", []), e["name"],
+                                                comp["name"], comp["existing_id"],
                                             )
                                         if to_add:
                                             invalidate_cache()  # covers the competition_events inserts above
@@ -1012,260 +1005,6 @@ def render_e2c_import():
                                                 icon=":material/check_circle:",
                                             )
                                             st.rerun()
-
-
-def _build_vacant_events_message():
-    # "Vacant" = still has open participation slots (team_size * max_teams
-    # per event) that no one has volunteered for yet — same capacity math
-    # the Volunteer button elsewhere on this page already uses. An event
-    # with MORE volunteers than capacity (already oversubscribed) or
-    # exactly full isn't vacant, so it's skipped rather than shown with a
-    # confusing negative or zero number. Covers every upcoming competition,
-    # not just specific ones — a competition with nothing vacant just
-    # doesn't get a section below.
-    competitions_of_interest = [c for c in cached_table("competitions") if not c.get("is_past")]
-    if not competitions_of_interest:
-        return None
-
-    all_events = cached_table("competition_events")
-    all_volunteers = cached_table("event_volunteers")
-
-    sections = []
-    for comp in sorted(competitions_of_interest, key=lambda c: c["name"]):
-        comp_events = [e for e in all_events if e["competition_id"] == comp["competition_id"]]
-        vacant_lines = []
-        for e in sorted(comp_events, key=lambda e: e["name"]):
-            capacity = e["team_size"] * e["max_teams"]
-            filled = len([v for v in all_volunteers if v["event_id"] == e["event_id"]])
-            vacant = capacity - filled
-            if vacant <= 0:
-                continue
-            spot_word = "spot" if vacant == 1 else "spots"
-            vacant_lines.append(
-                f"- **{e['name']}** (Grade {e['min_grade']}–{e['max_grade']}) — {vacant} {spot_word} open"
-            )
-        if vacant_lines:
-            sections.append(f"**{comp['name']}**\n" + "\n".join(vacant_lines))
-
-    if not sections:
-        return None
-
-    # Pings the @member / @adhoc SERVER ROLES once at the end, not
-    # individual members per event — no per-event grade eligibility lookup
-    # needed here anymore.
-    tags = discord_role_tags()
-    message = (
-        ":rotating_light: **Vacant events — sign up now!**\n\n"
-        + "\n\n".join(sections)
-        + "\n\nLog in to the app to volunteer."
-    )
-    if tags:
-        message += f"\n{tags}"
-    return message
-
-
-def render_vacant_events_reminder():
-    # A one-click nag across every upcoming competition, not just one or
-    # two named ones — a competition with nothing vacant just contributes
-    # no section to the message. Same generate-then-review-then-send shape
-    # as everything else that posts to Discord: nothing goes out until the
-    # host explicitly hits Send, and the exact text (including who gets
-    # tagged) is visible first.
-    webhook_configured = bool(os.environ.get("DISCORD_COMPETITIONS_WEBHOOK_URL"))
-    with st.container(border=True):
-        st.subheader(":material/campaign: Vacant events reminder")
-        if not webhook_configured:
-            st.info(
-                ":material/key_off: No `DISCORD_COMPETITIONS_WEBHOOK_URL` is set yet — "
-                "see DEPLOY.md for how to create one in Discord."
-            )
-            return
-        st.caption(
-            "Builds a message listing every upcoming event (across every "
-            "competition) that still has open slots, pinging the @member / "
-            "@adhoc server roles (see DEPLOY.md to set those up). Review it "
-            "below before it actually posts."
-        )
-        if st.button("Generate message", icon=":material/auto_awesome:", key="gen_vacant_events_msg"):
-            message = _build_vacant_events_message()
-            if message is None:
-                st.session_state.vacant_events_preview = None
-                st.toast("No vacant events right now — nothing to send.", icon=":material/info:")
-            else:
-                st.session_state.vacant_events_preview = message
-            st.rerun()
-
-        preview = st.session_state.get("vacant_events_preview")
-        if preview:
-            st.markdown("**Preview** (exactly what will post, before the app link + automated-message footer):")
-            if st.session_state.get("editing_vacant_events_preview"):
-                edited = st.text_area(
-                    "Edit preview", value=preview, height=220,
-                    key="vacant_events_edit_box", label_visibility="collapsed",
-                )
-                save_col, cancel_col = st.columns([1, 1])
-                if save_col.button(
-                    "Save edits", icon=":material/check:", type="primary", key="save_vacant_events_edit_btn",
-                ):
-                    st.session_state.vacant_events_preview = edited
-                    st.session_state.editing_vacant_events_preview = False
-                    st.rerun()
-                if cancel_col.button("Cancel", icon=":material/close:", key="cancel_vacant_events_edit_btn"):
-                    st.session_state.editing_vacant_events_preview = False
-                    st.rerun()
-            else:
-                st.text_area(
-                    "Preview", value=preview, height=220, key="vacant_events_preview_box",
-                    label_visibility="collapsed", disabled=True,
-                )
-                edit_col, send_col, discard_col = st.columns([1, 1, 1])
-                if edit_col.button("Edit", icon=":material/edit:", key="edit_vacant_events_btn"):
-                    st.session_state.editing_vacant_events_preview = True
-                    st.rerun()
-                if send_col.button(
-                    "Send to Discord", icon=":material/send:", type="primary", key="send_vacant_events_btn",
-                ):
-                    send_discord_message(preview)
-                    invalidate_cache()
-                    st.session_state.vacant_events_preview = None
-                    st.toast("Sent to Discord!", icon=":material/check_circle:")
-                    st.rerun()
-                if discard_col.button("Discard", icon=":material/close:", key="discard_vacant_events_btn"):
-                    st.session_state.vacant_events_preview = None
-                    st.rerun()
-
-
-def render_discord_custom_message():
-    # Free-form escape hatch alongside the automatic new-event
-    # notifications — the host doesn't have to touch code or ask for a
-    # one-off script every time they want to post something ad hoc
-    # (a reminder, a correction, anything not tied to an actual app event).
-    webhook_configured = bool(os.environ.get("DISCORD_COMPETITIONS_WEBHOOK_URL"))
-    with st.container(border=True):
-        st.subheader(":material/forum: Send a custom Discord message")
-        if not webhook_configured:
-            st.info(
-                ":material/key_off: No `DISCORD_COMPETITIONS_WEBHOOK_URL` is set yet — "
-                "see DEPLOY.md for how to create one in Discord."
-            )
-            return
-        st.caption(
-            "Posts straight to the competitions Discord channel, via the same "
-            "webhook the automatic notifications use. Discord markdown works "
-            "(**bold**, *italic*, etc.), and you can @mention someone by hand "
-            "with `<@their_discord_user_id>`. Every message — this or automatic — "
-            "gets the app link and a bold-italic \"This is automated message\" "
-            "line added at the end automatically."
-        )
-        custom_message = st.text_area(
-            "Message", key="custom_discord_message", label_visibility="collapsed",
-            placeholder="Type your message...",
-        )
-        if st.button("Preview", icon=":material/visibility:", key="preview_custom_discord_btn"):
-            if not custom_message.strip():
-                st.error("Message can't be empty.")
-            else:
-                st.session_state.custom_discord_preview = custom_message.strip()
-                st.session_state.editing_custom_discord_preview = False
-                st.rerun()
-
-        preview = st.session_state.get("custom_discord_preview")
-        if preview:
-            st.markdown("**Preview** (with the app link + automated-message footer that gets added):")
-            if st.session_state.get("editing_custom_discord_preview"):
-                edited = st.text_area(
-                    "Edit custom preview", value=preview, height=140,
-                    key="custom_discord_edit_box", label_visibility="collapsed",
-                )
-                save_col, cancel_col = st.columns([1, 1])
-                if save_col.button(
-                    "Save edits", icon=":material/check:", type="primary", key="save_custom_discord_edit_btn",
-                ):
-                    st.session_state.custom_discord_preview = edited
-                    st.session_state.editing_custom_discord_preview = False
-                    st.rerun()
-                if cancel_col.button("Cancel", icon=":material/close:", key="cancel_custom_discord_edit_btn"):
-                    st.session_state.editing_custom_discord_preview = False
-                    st.rerun()
-            else:
-                st.text_area(
-                    "Custom preview", value=preview + DISCORD_MESSAGE_SUFFIX, height=140,
-                    key="custom_discord_preview_box", label_visibility="collapsed", disabled=True,
-                )
-                edit_col, send_col = st.columns([1, 1])
-                if edit_col.button("Edit", icon=":material/edit:", key="edit_custom_discord_btn"):
-                    st.session_state.editing_custom_discord_preview = True
-                    st.rerun()
-                if send_col.button(
-                    "Send to Discord", icon=":material/send:", type="primary", key="send_custom_discord_btn",
-                ):
-                    send_discord_message(preview)
-                    invalidate_cache()
-                    st.session_state.custom_discord_preview = None
-                    st.toast("Sent to Discord!", icon=":material/check_circle:")
-                    del st.session_state["custom_discord_message"]
-                    st.rerun()
-
-        st.divider()
-        st.markdown("**Recent Discord messages**")
-        st.caption(
-            "Every message this app has sent — automatic new-event notifications "
-            "included, not just the custom ones above. Edit or delete any of them here."
-        )
-        recent_messages = sorted(
-            cached_table("discord_messages"), key=lambda m: m["sent_at"], reverse=True
-        )[:20]
-        if not recent_messages:
-            st.caption("Nothing sent yet.")
-        for m in recent_messages:
-            row_col, edit_col, delete_col = st.columns([5, 1, 1], vertical_alignment="center")
-            preview = m["content"] if len(m["content"]) <= 150 else m["content"][:147] + "..."
-            row_col.caption(f":material/schedule: {format_ist(m['sent_at'])} — {preview}")
-            if edit_col.button(
-                "Edit", key=f"edit_discord_msg_{m['id']}", icon=":material/edit:",
-            ):
-                st.session_state.editing_discord_msg_id = m["id"]
-                st.rerun()
-            if delete_col.button(
-                "Delete", key=f"delete_discord_msg_{m['id']}", icon=":material/delete:",
-            ):
-                delete_discord_message(m["message_id"])
-                invalidate_cache()
-                st.toast("Deleted from Discord.", icon=":material/delete:")
-                st.rerun()
-
-            if st.session_state.editing_discord_msg_id == m["id"]:
-                # Edited body only — the footer is stripped for editing and
-                # re-appended on save, same as the Preview boxes above, so
-                # it can't be accidentally edited out.
-                current_body = (
-                    m["content"][: -len(DISCORD_MESSAGE_SUFFIX)]
-                    if m["content"].endswith(DISCORD_MESSAGE_SUFFIX) else m["content"]
-                )
-                new_body = st.text_area(
-                    "Edit message", value=current_body, height=140,
-                    key=f"discord_edit_box_{m['id']}", label_visibility="collapsed",
-                )
-                save_col, cancel_col = st.columns([1, 1])
-                if save_col.button(
-                    "Save changes", key=f"save_discord_edit_{m['id']}",
-                    icon=":material/check:", type="primary",
-                ):
-                    if not new_body.strip():
-                        st.error("Message can't be empty.")
-                    else:
-                        with st.spinner("Updating this message on Discord…"):
-                            ok = edit_discord_message(m["message_id"], new_body.strip())
-                        if ok:
-                            invalidate_cache()
-                            st.session_state.editing_discord_msg_id = None
-                            st.toast("Updated on Discord.", icon=":material/check_circle:")
-                            st.rerun()
-                        else:
-                            st.error("Couldn't update that message on Discord — try again.")
-                if cancel_col.button("Cancel", key=f"cancel_discord_edit_{m['id']}", icon=":material/close:"):
-                    st.session_state.editing_discord_msg_id = None
-                    st.rerun()
 
 
 # Success pops as a toast; errors stay inline so they can't be missed.
@@ -1990,6 +1729,7 @@ def render_competition_card(comp):
 
                                     if newly_selected or newly_deselected:
                                         invalidate_cache()
+                                        notify_if_roster_complete(cid)
                                     st.session_state.volunteer_message = f"Saved selection for {e['name']}."
                                     st.rerun()
 
@@ -2086,5 +1826,8 @@ if is_host:
     with open_tabs[2]:
         render_add_competition()
         render_e2c_import()
-        render_vacant_events_reminder()
-        render_discord_custom_message()
+        st.caption(
+            ":material/forum: Discord messaging tools (custom messages, the "
+            "vacant-events reminder, editing/deleting sent messages) moved to "
+            "their own **Discord Messages** page — see the sidebar."
+        )

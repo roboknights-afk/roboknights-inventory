@@ -871,6 +871,11 @@ pages.append(st.Page("app_pages/assistant.py", title="AI Assistant", icon=":mate
 if st.session_state.is_host or st.session_state.is_exun:
     pages.append(st.Page("app_pages/members.py", title="Members", icon=":material/badge:"))
 
+# Host-only: everything this app sends to Discord, across both the
+# competitions channel and the private Exun<>RK channel.
+if st.session_state.is_host:
+    pages.append(st.Page("app_pages/discord_messages.py", title="Discord Messages", icon=":material/forum:"))
+
 # The private RoboKnights <> Exun channel — only the specific hand-picked
 # people in EXUN_CHANNEL_MEMBERS ever see this page exists at all.
 if st.session_state.auth_user["email"] in EXUN_CHANNEL_MEMBERS:

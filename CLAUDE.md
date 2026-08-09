@@ -729,20 +729,54 @@ appended centrally inside `send_discord_message()`, so no call site can
 forget it.
 
 Wired into `_notify_new_event()` in competitions.py (new competition
-event added) and a host-only "Vacant events reminder" tool (Competitions
-→ Add & import tab) that previews a message — every upcoming event across
-every competition still under capacity, pinging the two roles once — for
-the host to review before Send. One thing still needed from the student:
+event added). One thing needed from the student for either channel:
 create the Incoming Webhook in Discord itself (target channel → Settings
-→ Integrations → Webhooks → New Webhook) and add the URL as
-`DISCORD_COMPETITIONS_WEBHOOK_URL` in `.env` (and Streamlit Cloud secrets
-once deployed — see DEPLOY.md) — not something doable without their own
-Discord server access.
+→ Integrations → Webhooks → New Webhook) and add the URL as the right
+secret in `.env` (and Streamlit Cloud secrets once deployed — see
+DEPLOY.md) — not something doable without their own Discord server access.
+
+Chunk 2 — a second channel + a roster-complete notification + a
+dedicated page — done: student got the Exun<>RK channel's own webhook and
+asked for three things. `send_discord_message()` / `delete_discord_message()`
+/ `edit_discord_message()` in shared.py all took a `channel` parameter
+("competitions" or "exun_rk", via the new `DISCORD_CHANNELS` dict mapping
+each to its own env secret name) — `discord_messages` got a matching
+`channel` column (defaults to 'competitions' for pre-migration rows) so a
+later edit/delete knows which webhook to hit.
+
+1. **"All event names complete" notification**, to the exun_rk channel:
+   `notify_if_roster_complete()` in shared.py fires once a competition's
+   EVERY event has as many SELECTED people as its capacity — i.e. the
+   real team rosters are finalized, not just "enough volunteers signed
+   up". Tracked via a new `competitions.roster_complete_notified` column,
+   reset back to False the moment it's no longer complete (someone
+   unselected) so a later re-completion notifies again rather than
+   staying stuck silent. Wired into both places `selected` can change:
+   the manual "Save selection" finalize button, and `_insert_matched_participants`
+   (E2C sync) — now takes a `competition_id` parameter for this. Wrapped
+   in its own try/except (best-effort, matches every other Discord
+   sender) specifically so a stale/pre-migration schema can't turn an
+   otherwise-successful "Save selection" into a scary `safe_write` error.
+
+2. **Custom message tool**, now available for EITHER channel via the new
+   page.
+
+3. **A dedicated "Discord Messages" page** (`app_pages/discord_messages.py`,
+   host-only, added to nav in app.py): the custom-message tool, its
+   "Recent messages" edit/delete list, and the vacant-events reminder
+   ALL moved here from the Competitions page's "Add & import" tab (which
+   now just has a one-line pointer to this page) — one place for every
+   Discord messaging tool instead of it being scattered inside a
+   competitions-specific tab. `build_vacant_events_message()` also moved
+   into shared.py (from a competitions.py-local `_build_vacant_events_message`)
+   specifically so this new page could call it without executing the
+   whole Competitions page script — app_pages/*.py files run top-to-bottom
+   as scripts on import, not as plain importable modules.
 
 Deferred, explicitly next per the student ("also things related to
 competitions"): more competition-lifecycle notifications beyond "new
 event added" — e.g. someone selected for an event, a registration
-deadline approaching. Same webhook, same role-tagging mechanism, just
+deadline approaching. Same webhooks, same role-tagging mechanism, just
 more call sites once asked for.
 
 ## Explicitly NOT in v1

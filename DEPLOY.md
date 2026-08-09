@@ -30,6 +30,7 @@ file or from a hosting platform's secrets manager.
    WHATSAPP_ACCESS_TOKEN = "..."
    GROQ_API_KEY = "..."
    DISCORD_COMPETITIONS_WEBHOOK_URL = "..."
+   DISCORD_EXUN_WEBHOOK_URL = "..."
    DISCORD_MEMBER_ROLE_ID = "..."
    DISCORD_ADHOC_ROLE_ID = "..."
    ```
@@ -47,6 +48,14 @@ file or from a hosting platform's secrets manager.
    is also optional — new-event notifications to Discord silently do
    nothing until it's set. Get it from the target channel's Settings →
    Integrations → Webhooks → New Webhook in Discord itself.
+
+   `DISCORD_EXUN_WEBHOOK_URL` works the same way, for a SECOND, separate
+   channel (the private Exun<>RK channel) — its own Incoming Webhook, made
+   the same way in that channel's own Settings → Integrations → Webhooks.
+   The "team names finalized" notification (every event under a
+   competition has its full selected roster) posts here, and it's also
+   available for custom messages on the new Discord Messages page (host
+   only). Also optional — silently does nothing until it's set.
 
    `DISCORD_MEMBER_ROLE_ID` and `DISCORD_ADHOC_ROLE_ID` are also optional —
    every Discord notification (new event, vacant-events reminder) pings
