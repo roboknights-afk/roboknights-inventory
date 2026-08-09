@@ -11,8 +11,8 @@ import os
 import streamlit as st
 
 from shared import (
-    DISCORD_CHANNELS, DISCORD_MESSAGE_SUFFIX, build_vacant_events_message, cached_table,
-    delete_discord_message, edit_discord_message, format_ist, invalidate_cache, send_discord_message,
+    DISCORD_CHANNELS, build_vacant_events_message, cached_table, delete_discord_message,
+    discord_message_suffix, edit_discord_message, format_ist, invalidate_cache, send_discord_message,
 )
 
 is_host = st.session_state.is_host
@@ -25,8 +25,10 @@ if not is_host:
 
 st.caption(
     "Send, preview, and manage every message this app posts to Discord — "
-    "both channels. Every message, on either channel, automatically ends "
-    "with the app link and a bold-italic \"This is automated message\" line."
+    "both channels. Every message automatically ends with a bold-italic "
+    "\"This is automated message\" line; competitions-channel messages also "
+    "get the app link (exun_rk ones don't — those are FYI-only, not a "
+    "\"go do something\" prompt)."
 )
 
 CHANNEL_LABELS = {
@@ -65,13 +67,12 @@ def render_recent_messages(channel):
             st.rerun()
 
         if st.session_state[editing_key] == m["id"]:
-            # Edited body only — the app-link + automated-message suffix is
+            # Edited body only — the suffix (app link on the competitions
+            # channel, just the automated-message marker on exun_rk) is
             # stripped for editing and re-appended on save, so it can't be
             # accidentally edited out.
-            current_body = (
-                m["content"][: -len(DISCORD_MESSAGE_SUFFIX)]
-                if m["content"].endswith(DISCORD_MESSAGE_SUFFIX) else m["content"]
-            )
+            suffix = discord_message_suffix(channel)
+            current_body = m["content"][: -len(suffix)] if m["content"].endswith(suffix) else m["content"]
             new_body = st.text_area(
                 "Edit message", value=current_body, height=140,
                 key=f"discord_edit_box_{channel}_{m['id']}", label_visibility="collapsed",
@@ -131,7 +132,11 @@ def render_custom_message_section(channel):
 
     preview = st.session_state.get(preview_key)
     if preview:
-        st.markdown("**Preview** (with the app link + automated-message footer that gets added):")
+        footer_note = (
+            "app link + automated-message footer" if channel == "competitions"
+            else "automated-message footer (no app link on this channel)"
+        )
+        st.markdown(f"**Preview** (with the {footer_note} that gets added):")
         if st.session_state.get(editing_key):
             edited = st.text_area(
                 "Edit custom preview", value=preview, height=140,
@@ -149,7 +154,7 @@ def render_custom_message_section(channel):
                 st.rerun()
         else:
             st.text_area(
-                "Custom preview", value=preview + DISCORD_MESSAGE_SUFFIX, height=140,
+                "Custom preview", value=preview + discord_message_suffix(channel), height=140,
                 key=f"custom_discord_preview_box_{channel}", label_visibility="collapsed", disabled=True,
             )
             edit_col, send_col = st.columns([1, 1])

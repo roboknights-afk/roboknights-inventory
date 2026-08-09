@@ -332,12 +332,21 @@ def discord_role_tags():
 
 
 # Appended to the end of EVERY message this app sends to Discord, on
-# EITHER channel — the app link so anyone reading in Discord can jump
-# straight to it, then the bold-italic "automated message" marker — added
-# centrally here (not at each call site) specifically so neither can be
-# forgotten by a future call site. Built once at import time; fine since
-# APP_URL itself doesn't change while the process is running.
-DISCORD_MESSAGE_SUFFIX = f"\n\n:link: {APP_URL}\n\n***This is automated message***"
+# EITHER channel — the bold-italic "automated message" marker, always.
+# The app link is competitions-channel only: the competitions channel's
+# messages are all "go do something in the app" (volunteer, check a new
+# event), where a link back genuinely helps; the exun_rk channel's aren't
+# (e.g. "team names finalized" is just an FYI), so it stays off there.
+# Added centrally here (not at each call site) specifically so the
+# footer can't be forgotten by a future call site.
+DISCORD_AUTOMATED_MARKER = "\n\n***This is automated message***"
+
+
+def discord_message_suffix(channel):
+    if channel == "competitions":
+        return f"\n\n:link: {APP_URL}{DISCORD_AUTOMATED_MARKER}"
+    return DISCORD_AUTOMATED_MARKER
+
 
 # Two separate Discord channels this app can post to, each its own
 # Incoming Webhook (a webhook is tied to exactly one channel — there's no
@@ -371,7 +380,7 @@ def send_discord_message(content, channel="competitions"):
     webhook_url = os.environ.get(DISCORD_CHANNELS[channel])
     if not webhook_url:
         return None
-    full_content = f"{content}{DISCORD_MESSAGE_SUFFIX}"
+    full_content = f"{content}{discord_message_suffix(channel)}"
     try:
         response = requests.post(
             webhook_url, json={"content": full_content}, params={"wait": "true"}, timeout=10
@@ -404,16 +413,15 @@ def delete_discord_message(channel, message_id):
 
 def edit_discord_message(channel, message_id, new_content):
     # Same "a webhook can only touch messages IT sent" scope as delete,
-    # just PATCHing instead. Re-appends the app-link + automated-message
-    # suffix itself (the caller passes just the body, same as
-    # send_discord_message) so an edit can't accidentally drop it. Returns
-    # True/False instead of silently no-oping like send/delete, since the
-    # caller here is an inline edit box that needs to tell the host
-    # whether it actually worked before clearing the editor.
+    # just PATCHing instead. Re-appends the same suffix send_discord_message
+    # would (the caller passes just the body) so an edit can't accidentally
+    # drop it. Returns True/False instead of silently no-oping like
+    # send/delete, since the caller here is an inline edit box that needs
+    # to tell the host whether it actually worked before clearing the editor.
     webhook_url = os.environ.get(DISCORD_CHANNELS[channel])
     if not webhook_url or not message_id:
         return False
-    full_content = f"{new_content}{DISCORD_MESSAGE_SUFFIX}"
+    full_content = f"{new_content}{discord_message_suffix(channel)}"
     try:
         response = requests.patch(
             f"{webhook_url}/messages/{message_id}", json={"content": full_content}, timeout=10
