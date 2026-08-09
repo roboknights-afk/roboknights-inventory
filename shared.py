@@ -331,17 +331,22 @@ def send_discord_message(content):
     # Logged to discord_messages on success (both this and the automatic
     # new-event notifications go through here) so a host can come back
     # later and delete an OLDER message too, not just the one just sent.
+    #
+    # Every message this app sends gets the "This is automated message"
+    # footer, bold+italic, with zero exceptions — added HERE (not at each
+    # call site) specifically so a future call site can't forget it.
     webhook_url = os.environ.get("DISCORD_COMPETITIONS_WEBHOOK_URL")
     if not webhook_url:
         return None
+    full_content = f"{content}\n\n***This is automated message***"
     try:
         response = requests.post(
-            webhook_url, json={"content": content}, params={"wait": "true"}, timeout=10
+            webhook_url, json={"content": full_content}, params={"wait": "true"}, timeout=10
         )
         message_id = response.json().get("id")
         if message_id:
             get_client().table("discord_messages").insert({
-                "message_id": message_id, "content": content,
+                "message_id": message_id, "content": full_content,
             }).execute()
         return message_id
     except Exception:

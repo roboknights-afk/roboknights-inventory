@@ -85,6 +85,10 @@ if "confirming_e2c_bulk_sync" not in st.session_state:
     st.session_state.confirming_e2c_bulk_sync = False
 if "pending_e2c_bulk_sync" not in st.session_state:
     st.session_state.pending_e2c_bulk_sync = None
+if "vacant_events_preview" not in st.session_state:
+    st.session_state.vacant_events_preview = None
+if "custom_discord_preview" not in st.session_state:
+    st.session_state.custom_discord_preview = None
 
 
 def _notify_date_change(name, old_date, new_date):
@@ -1004,6 +1008,122 @@ def render_e2c_import():
                                             st.rerun()
 
 
+# Only these two competitions get the "vacant events" nag below — matched
+# by a substring so "Robotronics '26" and "QUANTUM QUEST 6.0" both match
+# without hardcoding this year's exact edition number.
+VACANT_EVENT_COMPETITION_KEYWORDS = ("robotronics", "quantum quest")
+
+
+def _build_vacant_events_message():
+    # "Vacant" = still has open participation slots (team_size * max_teams
+    # per event) that no one has volunteered for yet — same capacity math
+    # the Volunteer button elsewhere on this page already uses. An event
+    # with MORE volunteers than capacity (already oversubscribed) or
+    # exactly full isn't vacant, so it's skipped rather than shown with a
+    # confusing negative or zero number.
+    competitions_of_interest = [
+        c for c in cached_table("competitions")
+        if not c.get("is_past")
+        and any(kw in c["name"].lower() for kw in VACANT_EVENT_COMPETITION_KEYWORDS)
+    ]
+    if not competitions_of_interest:
+        return None
+
+    all_events = cached_table("competition_events")
+    all_volunteers = cached_table("event_volunteers")
+    all_users = cached_table("users")
+
+    sections = []
+    for comp in sorted(competitions_of_interest, key=lambda c: c["name"]):
+        comp_events = [e for e in all_events if e["competition_id"] == comp["competition_id"]]
+        vacant_lines = []
+        for e in sorted(comp_events, key=lambda e: e["name"]):
+            capacity = e["team_size"] * e["max_teams"]
+            filled = len([v for v in all_volunteers if v["event_id"] == e["event_id"]])
+            vacant = capacity - filled
+            if vacant <= 0:
+                continue
+            # Same eligible-by-grade, individually-tagged audience as the
+            # automatic new-event notification — just scoped to this one
+            # event's own grade range, not the whole competition's.
+            eligible = [
+                u for u in all_users
+                if u.get("grade") is not None and e["min_grade"] <= u["grade"] <= e["max_grade"]
+                and u["email"] not in EXUN_EMAILS
+            ]
+            tags = " ".join(f"<@{u['discord_user_id']}>" for u in eligible if u.get("discord_user_id"))
+            spot_word = "spot" if vacant == 1 else "spots"
+            line = f"- **{e['name']}** (Grade {e['min_grade']}–{e['max_grade']}) — {vacant} {spot_word} open"
+            # Right now most eligible members haven't self-linked their
+            # Discord ID yet (see Home page), which would otherwise render
+            # as a silent gap with no @mentions at all under an event —
+            # this makes that explicit instead of looking like a mistake.
+            line += f"\n{tags}" if tags else "\n*(no eligible members have linked their Discord ID yet)*"
+            vacant_lines.append(line)
+        if vacant_lines:
+            sections.append(f"**{comp['name']}**\n" + "\n".join(vacant_lines))
+
+    if not sections:
+        return None
+
+    return (
+        ":rotating_light: **Vacant events — sign up now!**\n\n"
+        + "\n\n".join(sections)
+        + "\n\nLog in to the app to volunteer."
+    )
+
+
+def render_vacant_events_reminder():
+    # A one-click nag for exactly the two competitions asked about
+    # (Robotronics, Quantum Quest), not a general "any competition with a
+    # vacancy" tool — matches what was actually asked for. Same
+    # generate-then-review-then-send shape as everything else that posts
+    # to Discord: nothing goes out until the host explicitly hits Send,
+    # and the exact text (including who gets tagged) is visible first.
+    webhook_configured = bool(os.environ.get("DISCORD_COMPETITIONS_WEBHOOK_URL"))
+    with st.container(border=True):
+        st.subheader(":material/campaign: Vacant events reminder")
+        if not webhook_configured:
+            st.info(
+                ":material/key_off: No `DISCORD_COMPETITIONS_WEBHOOK_URL` is set yet — "
+                "see DEPLOY.md for how to create one in Discord."
+            )
+            return
+        st.caption(
+            "Builds a message listing every Robotronics / Quantum Quest event that "
+            "still has open slots, tagging the members eligible by grade for each "
+            "one. Review it below before it actually posts."
+        )
+        if st.button("Generate message", icon=":material/auto_awesome:", key="gen_vacant_events_msg"):
+            message = _build_vacant_events_message()
+            if message is None:
+                st.session_state.vacant_events_preview = None
+                st.toast("No vacant events right now — nothing to send.", icon=":material/info:")
+            else:
+                st.session_state.vacant_events_preview = message
+            st.rerun()
+
+        preview = st.session_state.get("vacant_events_preview")
+        if preview:
+            st.markdown("**Preview** (exactly what will post, before the automated-message footer):")
+            st.text_area(
+                "Preview", value=preview, height=220, key="vacant_events_preview_box",
+                label_visibility="collapsed", disabled=True,
+            )
+            send_col, discard_col = st.columns([1, 1])
+            if send_col.button(
+                "Send to Discord", icon=":material/send:", type="primary", key="send_vacant_events_btn",
+            ):
+                send_discord_message(preview)
+                invalidate_cache()
+                st.session_state.vacant_events_preview = None
+                st.toast("Sent to Discord!", icon=":material/check_circle:")
+                st.rerun()
+            if discard_col.button("Discard", icon=":material/close:", key="discard_vacant_events_btn"):
+                st.session_state.vacant_events_preview = None
+                st.rerun()
+
+
 def render_discord_custom_message():
     # Free-form escape hatch alongside the automatic new-event
     # notifications — the host doesn't have to touch code or ask for a
@@ -1022,20 +1142,37 @@ def render_discord_custom_message():
             "Posts straight to the competitions Discord channel, via the same "
             "webhook the automatic notifications use. Discord markdown works "
             "(**bold**, *italic*, etc.), and you can @mention someone by hand "
-            "with `<@their_discord_user_id>`."
+            "with `<@their_discord_user_id>`. Every message — this or automatic — "
+            "gets a bold-italic \"This is automated message\" line added at the "
+            "end automatically."
         )
         custom_message = st.text_area(
             "Message", key="custom_discord_message", label_visibility="collapsed",
             placeholder="Type your message...",
         )
-        if st.button(
-            "Send to Discord", icon=":material/send:", type="primary", key="send_custom_discord_btn",
+        preview_col, send_col = st.columns([1, 1])
+        if preview_col.button(
+            "Preview", icon=":material/visibility:", key="preview_custom_discord_btn",
         ):
             if not custom_message.strip():
                 st.error("Message can't be empty.")
             else:
-                send_discord_message(custom_message.strip())
+                st.session_state.custom_discord_preview = custom_message.strip()
+                st.rerun()
+
+        if st.session_state.get("custom_discord_preview"):
+            st.markdown("**Preview** (with the automated-message footer that gets added):")
+            st.text_area(
+                "Custom preview",
+                value=st.session_state.custom_discord_preview + "\n\n***This is automated message***",
+                height=140, key="custom_discord_preview_box", label_visibility="collapsed", disabled=True,
+            )
+            if send_col.button(
+                "Send to Discord", icon=":material/send:", type="primary", key="send_custom_discord_btn",
+            ):
+                send_discord_message(st.session_state.custom_discord_preview)
                 invalidate_cache()
+                st.session_state.custom_discord_preview = None
                 st.toast("Sent to Discord!", icon=":material/check_circle:")
                 del st.session_state["custom_discord_message"]
                 st.rerun()
@@ -1882,4 +2019,5 @@ if is_host:
     with open_tabs[2]:
         render_add_competition()
         render_e2c_import()
+        render_vacant_events_reminder()
         render_discord_custom_message()
