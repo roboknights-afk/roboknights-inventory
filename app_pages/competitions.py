@@ -16,7 +16,7 @@ import streamlit as st
 
 from e2c_import import scan_e2c_sheet
 from shared import (
-    DISCORD_AUTOMATED_FOOTER, EXUN_EMAILS, HOST_EMAILS, IST, cached_table, delete_discord_message,
+    DISCORD_MESSAGE_SUFFIX, EXUN_EMAILS, HOST_EMAILS, IST, cached_table, delete_discord_message,
     discord_role_tags, edit_discord_message, format_ist, get_client, invalidate_cache, safe_write,
     send_discord_message, send_email,
 )
@@ -1097,7 +1097,7 @@ def render_vacant_events_reminder():
 
         preview = st.session_state.get("vacant_events_preview")
         if preview:
-            st.markdown("**Preview** (exactly what will post, before the automated-message footer):")
+            st.markdown("**Preview** (exactly what will post, before the app link + automated-message footer):")
             if st.session_state.get("editing_vacant_events_preview"):
                 edited = st.text_area(
                     "Edit preview", value=preview, height=220,
@@ -1154,8 +1154,8 @@ def render_discord_custom_message():
             "webhook the automatic notifications use. Discord markdown works "
             "(**bold**, *italic*, etc.), and you can @mention someone by hand "
             "with `<@their_discord_user_id>`. Every message — this or automatic — "
-            "gets a bold-italic \"This is automated message\" line added at the "
-            "end automatically."
+            "gets the app link and a bold-italic \"This is automated message\" "
+            "line added at the end automatically."
         )
         custom_message = st.text_area(
             "Message", key="custom_discord_message", label_visibility="collapsed",
@@ -1171,7 +1171,7 @@ def render_discord_custom_message():
 
         preview = st.session_state.get("custom_discord_preview")
         if preview:
-            st.markdown("**Preview** (with the automated-message footer that gets added):")
+            st.markdown("**Preview** (with the app link + automated-message footer that gets added):")
             if st.session_state.get("editing_custom_discord_preview"):
                 edited = st.text_area(
                     "Edit custom preview", value=preview, height=140,
@@ -1189,7 +1189,7 @@ def render_discord_custom_message():
                     st.rerun()
             else:
                 st.text_area(
-                    "Custom preview", value=preview + DISCORD_AUTOMATED_FOOTER, height=140,
+                    "Custom preview", value=preview + DISCORD_MESSAGE_SUFFIX, height=140,
                     key="custom_discord_preview_box", label_visibility="collapsed", disabled=True,
                 )
                 edit_col, send_col = st.columns([1, 1])
@@ -1239,8 +1239,8 @@ def render_discord_custom_message():
                 # re-appended on save, same as the Preview boxes above, so
                 # it can't be accidentally edited out.
                 current_body = (
-                    m["content"][: -len(DISCORD_AUTOMATED_FOOTER)]
-                    if m["content"].endswith(DISCORD_AUTOMATED_FOOTER) else m["content"]
+                    m["content"][: -len(DISCORD_MESSAGE_SUFFIX)]
+                    if m["content"].endswith(DISCORD_MESSAGE_SUFFIX) else m["content"]
                 )
                 new_body = st.text_area(
                     "Edit message", value=current_body, height=140,

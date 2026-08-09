@@ -331,7 +331,13 @@ def discord_role_tags():
     return " ".join(f"<@&{rid}>" for rid in role_ids if rid)
 
 
-DISCORD_AUTOMATED_FOOTER = "\n\n***This is automated message***"
+# Appended to the end of EVERY message this app sends to Discord — the
+# app link so anyone reading in Discord can jump straight to it, then the
+# bold-italic "automated message" marker — added centrally here (not at
+# each call site) specifically so neither can be forgotten by a future
+# call site. Built once at import time; fine since APP_URL itself doesn't
+# change while the process is running.
+DISCORD_MESSAGE_SUFFIX = f"\n\n:link: {APP_URL}\n\n***This is automated message***"
 
 
 def send_discord_message(content):
@@ -351,14 +357,10 @@ def send_discord_message(content):
     # new-event notifications go through here) so a host can come back
     # later and edit or delete an OLDER message too, not just the one
     # just sent.
-    #
-    # Every message this app sends gets the "This is automated message"
-    # footer, bold+italic, with zero exceptions — added HERE (not at each
-    # call site) specifically so a future call site can't forget it.
     webhook_url = os.environ.get("DISCORD_COMPETITIONS_WEBHOOK_URL")
     if not webhook_url:
         return None
-    full_content = f"{content}{DISCORD_AUTOMATED_FOOTER}"
+    full_content = f"{content}{DISCORD_MESSAGE_SUFFIX}"
     try:
         response = requests.post(
             webhook_url, json={"content": full_content}, params={"wait": "true"}, timeout=10
@@ -391,16 +393,16 @@ def delete_discord_message(message_id):
 
 def edit_discord_message(message_id, new_content):
     # Same "a webhook can only touch messages IT sent" scope as delete,
-    # just PATCHing instead. Re-appends the automated-message footer
-    # itself (the caller passes just the body, same as send_discord_message)
-    # so an edit can't accidentally drop it. Returns True/False instead of
-    # silently no-oping like send/delete, since the caller here is an
-    # inline edit box that needs to tell the host whether it actually
-    # worked before clearing the editor.
+    # just PATCHing instead. Re-appends the app-link + automated-message
+    # suffix itself (the caller passes just the body, same as
+    # send_discord_message) so an edit can't accidentally drop it. Returns
+    # True/False instead of silently no-oping like send/delete, since the
+    # caller here is an inline edit box that needs to tell the host
+    # whether it actually worked before clearing the editor.
     webhook_url = os.environ.get("DISCORD_COMPETITIONS_WEBHOOK_URL")
     if not webhook_url or not message_id:
         return False
-    full_content = f"{new_content}{DISCORD_AUTOMATED_FOOTER}"
+    full_content = f"{new_content}{DISCORD_MESSAGE_SUFFIX}"
     try:
         response = requests.patch(
             f"{webhook_url}/messages/{message_id}", json={"content": full_content}, timeout=10

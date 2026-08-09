@@ -68,8 +68,9 @@ file or from a hosting platform's secrets manager.
    You won't know the exact `APP_URL` until after the first deploy (Streamlit
    picks or lets you choose a subdomain) — deploy once, see the URL, then
    come back to Advanced settings and add/update the `APP_URL` secret to
-   match it, so the "New request" email links point to the real address
-   instead of localhost.
+   match it, so the "New request" email links — and now every Discord
+   message this app sends, which always ends with a link back to
+   `APP_URL` — point to the real address instead of localhost.
 
 5. Click **Deploy**. First deploy takes a few minutes.
 
