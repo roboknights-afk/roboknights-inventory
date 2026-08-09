@@ -315,6 +315,22 @@ def send_whatsapp(to_phone, template_name, params=None, language_code="en_US"):
         pass
 
 
+def discord_role_tags():
+    # <@&ROLE_ID> pings a Discord ROLE (the & is what distinguishes it from
+    # <@USER_ID>, which pings one person). Used instead of tagging members
+    # individually: every notification just pings whoever's currently in
+    # these two server roles — "Member" for registered students, "Adhoc"
+    # for guest/ad-hoc participants who have no account in this app at
+    # all — rather than this app trying to work out who's eligible and
+    # look up their personal discord_user_id. Skips a role entirely if its
+    # ID isn't set, so this still works with only one of the two configured.
+    role_ids = [
+        os.environ.get("DISCORD_MEMBER_ROLE_ID"),
+        os.environ.get("DISCORD_ADHOC_ROLE_ID"),
+    ]
+    return " ".join(f"<@&{rid}>" for rid in role_ids if rid)
+
+
 def send_discord_message(content):
     # A Discord Incoming Webhook is a plain HTTP POST — unlike a real bot,
     # it needs no persistent gateway connection or separate 24/7 process,

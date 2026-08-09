@@ -16,8 +16,8 @@ import streamlit as st
 
 from e2c_import import scan_e2c_sheet
 from shared import (
-    EXUN_EMAILS, HOST_EMAILS, IST, cached_table, delete_discord_message, format_ist, get_client,
-    invalidate_cache, safe_write, send_discord_message, send_email,
+    EXUN_EMAILS, HOST_EMAILS, IST, cached_table, delete_discord_message, discord_role_tags, format_ist,
+    get_client, invalidate_cache, safe_write, send_discord_message, send_email,
 )
 
 # The page-local name everything below already uses — the implementation
@@ -131,12 +131,11 @@ def _notify_new_event(comp_name, event_name, min_grade, max_grade):
             f"Log in to the app to volunteer.",
         )
 
-    # Discord: same eligible-by-grade audience as the email above, tagged
-    # individually via each member's own linked discord_user_id (self-
-    # linked on Home, or host-fixed on Members) — anyone who hasn't
-    # linked one yet just isn't tagged; the announcement still posts
-    # either way. No-ops entirely if the webhook isn't configured.
-    tags = " ".join(f"<@{u['discord_user_id']}>" for u in eligible_users if u.get("discord_user_id"))
+    # Discord: pings the @member / @adhoc SERVER ROLES (see DEPLOY.md for
+    # how those role IDs are set up), not individual members — no per-
+    # person eligibility lookup needed here. No-ops entirely if the
+    # webhook isn't configured.
+    tags = discord_role_tags()
     message = (
         f":loudspeaker: **New competition added: {comp_name}**\n"
         f"New event: **{event_name}** — open to Grade {min_grade}–{max_grade}."
@@ -1023,7 +1022,6 @@ def _build_vacant_events_message():
 
     all_events = cached_table("competition_events")
     all_volunteers = cached_table("event_volunteers")
-    all_users = cached_table("users")
 
     sections = []
     for comp in sorted(competitions_of_interest, key=lambda c: c["name"]):
@@ -1035,34 +1033,28 @@ def _build_vacant_events_message():
             vacant = capacity - filled
             if vacant <= 0:
                 continue
-            # Same eligible-by-grade, individually-tagged audience as the
-            # automatic new-event notification — just scoped to this one
-            # event's own grade range, not the whole competition's.
-            eligible = [
-                u for u in all_users
-                if u.get("grade") is not None and e["min_grade"] <= u["grade"] <= e["max_grade"]
-                and u["email"] not in EXUN_EMAILS
-            ]
-            tags = " ".join(f"<@{u['discord_user_id']}>" for u in eligible if u.get("discord_user_id"))
             spot_word = "spot" if vacant == 1 else "spots"
-            line = f"- **{e['name']}** (Grade {e['min_grade']}–{e['max_grade']}) — {vacant} {spot_word} open"
-            # Right now most eligible members haven't self-linked their
-            # Discord ID yet (see Home page), which would otherwise render
-            # as a silent gap with no @mentions at all under an event —
-            # this makes that explicit instead of looking like a mistake.
-            line += f"\n{tags}" if tags else "\n*(no eligible members have linked their Discord ID yet)*"
-            vacant_lines.append(line)
+            vacant_lines.append(
+                f"- **{e['name']}** (Grade {e['min_grade']}–{e['max_grade']}) — {vacant} {spot_word} open"
+            )
         if vacant_lines:
             sections.append(f"**{comp['name']}**\n" + "\n".join(vacant_lines))
 
     if not sections:
         return None
 
-    return (
+    # Pings the @member / @adhoc SERVER ROLES once at the end, not
+    # individual members per event — no per-event grade eligibility lookup
+    # needed here anymore.
+    tags = discord_role_tags()
+    message = (
         ":rotating_light: **Vacant events — sign up now!**\n\n"
         + "\n\n".join(sections)
         + "\n\nLog in to the app to volunteer."
     )
+    if tags:
+        message += f"\n{tags}"
+    return message
 
 
 def render_vacant_events_reminder():
@@ -1083,9 +1075,9 @@ def render_vacant_events_reminder():
             return
         st.caption(
             "Builds a message listing every upcoming event (across every "
-            "competition) that still has open slots, tagging the members "
-            "eligible by grade for each one. Review it below before it "
-            "actually posts."
+            "competition) that still has open slots, pinging the @member / "
+            "@adhoc server roles (see DEPLOY.md to set those up). Review it "
+            "below before it actually posts."
         )
         if st.button("Generate message", icon=":material/auto_awesome:", key="gen_vacant_events_msg"):
             message = _build_vacant_events_message()

@@ -30,6 +30,8 @@ file or from a hosting platform's secrets manager.
    WHATSAPP_ACCESS_TOKEN = "..."
    GROQ_API_KEY = "..."
    DISCORD_COMPETITIONS_WEBHOOK_URL = "..."
+   DISCORD_MEMBER_ROLE_ID = "..."
+   DISCORD_ADHOC_ROLE_ID = "..."
    ```
 
    `GOOGLE_SHEETS_API_KEY` is required, not optional — the Competitions
@@ -45,6 +47,23 @@ file or from a hosting platform's secrets manager.
    is also optional — new-event notifications to Discord silently do
    nothing until it's set. Get it from the target channel's Settings →
    Integrations → Webhooks → New Webhook in Discord itself.
+
+   `DISCORD_MEMBER_ROLE_ID` and `DISCORD_ADHOC_ROLE_ID` are also optional —
+   every Discord notification (new event, vacant-events reminder) pings
+   these two roles instead of tagging individual members. Either can be
+   left unset (that role just isn't pinged), but both work the same way
+   to get the ID:
+   1. In Discord, open **User Settings → Advanced** and turn on
+      **Developer Mode**.
+   2. Open the server, go to **Server Settings → Roles**, right-click the
+      role (e.g. "Member" or "Adhoc"), and choose **Copy Role ID**. Paste
+      that numeric ID as the secret's value (no `<@&...>` wrapper — the
+      app adds that itself).
+   3. Still in **Server Settings → Roles**, click the role and turn on
+      **"Allow anyone to @mention this role"**. Without this, Discord
+      silently ignores the ping — it'll show as plain text but nobody
+      with that role gets notified — since an incoming webhook has no
+      elevated permission to mention a non-mentionable role.
 
    You won't know the exact `APP_URL` until after the first deploy (Streamlit
    picks or lets you choose a subdomain) — deploy once, see the URL, then

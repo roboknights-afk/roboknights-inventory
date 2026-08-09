@@ -299,16 +299,17 @@ with side_col:
         if is_host or is_exun:
             st.page_link("app_pages/members.py", label="Members", icon=":material/badge:")
 
-    # Exun never volunteers for events (see competitions.py's is_eligible
-    # check), so the Discord tagging this feeds — "you're eligible for a
-    # new event" — never applies to them either.
+    # Automatic notifications now ping the @member / @adhoc server roles
+    # instead of individual members, so this ID is no longer read by any
+    # automatic tagging — it's stored purely so a host can look it up on
+    # the Members page and @mention you directly in a one-off custom
+    # Discord message, without having to ask you for it each time.
     if not is_exun:
         st.subheader(":material/forum: Discord")
         with st.container(border=True, key="rkcard_home_discord"):
             st.caption(
-                "Link your Discord account to get tagged in the club's Discord "
-                "server whenever a new competition event you're eligible for is "
-                "posted."
+                "Link your Discord account so a host can @mention you directly "
+                "in a one-off Discord message, if they ever need to."
             )
             my_row = next(
                 (u for u in cached_table("users") if u["user_id"] == current_user_id), None

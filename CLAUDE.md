@@ -710,19 +710,29 @@ Discord **Incoming Webhook** instead (plain HTTP POST, same shape as
 and silently no-ops if unset, same best-effort spirit as the other
 notification senders.
 
-Student explicitly chose **individual member tags** over a role-ping or
-`@here` (the other two options offered), which meant this needed a new
-`users.discord_user_id` column — nullable, self-linked on the Home page
-("Discord" card: paste in your numeric User ID, found via Discord's
-Developer Mode → right-click your own name → Copy User ID), also editable
-by a host on the Members page for anyone who needs it fixed for them.
-Nobody's tagged until they've linked their own ID; the announcement still
-posts either way.
+Student initially chose individual member tags over a role-ping, which
+needed a new `users.discord_user_id` column (nullable, self-linked on the
+Home page, also editable by a host on the Members page) — **later
+reversed**: student decided against per-member tagging and switched to
+pinging two Discord SERVER ROLES instead (`@member` / `@adhoc`), via
+`discord_role_tags()` in shared.py, which builds `<@&ROLE_ID>` mentions
+from `DISCORD_MEMBER_ROLE_ID` / `DISCORD_ADHOC_ROLE_ID` (see DEPLOY.md for
+how to get a role's ID, and the "Allow anyone to @mention this role"
+toggle a role needs turned on or a webhook's ping is silently swallowed).
+The `discord_user_id` column and its Home/Members UI were kept, but only
+for optional manual @mentions in the free-form custom-message tool — no
+automatic notification reads it anymore.
 
-Wired into the existing `_notify_new_event()` in competitions.py (already
-emailed grade-eligible members when a new competition event is added —
-this just adds a Discord post to the same call, tagging whoever in that
-eligible set has a linked ID). One thing still needed from the student:
+Every Discord message this app sends — automatic or the free-form custom
+one — also always gets a `***This is automated message***` footer
+appended centrally inside `send_discord_message()`, so no call site can
+forget it.
+
+Wired into `_notify_new_event()` in competitions.py (new competition
+event added) and a host-only "Vacant events reminder" tool (Competitions
+→ Add & import tab) that previews a message — every upcoming event across
+every competition still under capacity, pinging the two roles once — for
+the host to review before Send. One thing still needed from the student:
 create the Incoming Webhook in Discord itself (target channel → Settings
 → Integrations → Webhooks → New Webhook) and add the URL as
 `DISCORD_COMPETITIONS_WEBHOOK_URL` in `.env` (and Streamlit Cloud secrets
@@ -732,8 +742,8 @@ Discord server access.
 Deferred, explicitly next per the student ("also things related to
 competitions"): more competition-lifecycle notifications beyond "new
 event added" — e.g. someone selected for an event, a registration
-deadline approaching. Same webhook, same tagging mechanism, just more
-call sites once asked for.
+deadline approaching. Same webhook, same role-tagging mechanism, just
+more call sites once asked for.
 
 ## Explicitly NOT in v1
 
