@@ -24,16 +24,16 @@ if not is_host:
     st.stop()
 
 st.caption(
-    "Send, preview, and manage every message this app posts to Discord — "
-    "both channels. Every message automatically ends with a bold-italic "
-    "\"This is automated message\" line; competitions-channel messages also "
-    "get the app link (exun_rk ones don't — those are FYI-only, not a "
-    "\"go do something\" prompt)."
+    "Send, preview, and manage every message this app posts to Discord. Every "
+    "message automatically ends with a bold-italic \"automated\" line; "
+    "competitions-channel messages also get the app link (the other channels' "
+    "are FYI-only, not a \"go do something\" prompt)."
 )
 
 CHANNEL_LABELS = {
     "competitions": "Competitions channel",
     "exun_rk": "Exun RK channel",
+    "dashboard": "Dashboard updates",
 }
 
 for _channel in DISCORD_CHANNELS:
@@ -238,7 +238,9 @@ def render_vacant_events_reminder():
                     st.rerun()
 
 
-tab_competitions, tab_exun_rk = st.tabs(["Competitions channel", "Exun RK channel"])
+tab_competitions, tab_exun_rk, tab_dashboard = st.tabs(
+    [CHANNEL_LABELS["competitions"], CHANNEL_LABELS["exun_rk"], CHANNEL_LABELS["dashboard"]]
+)
 
 with tab_competitions:
     st.caption(
@@ -255,3 +257,13 @@ with tab_exun_rk:
         "for that either."
     )
     render_custom_message_section("exun_rk")
+
+with tab_dashboard:
+    st.caption(
+        "Posted automatically by GitHub every time the dashboard itself is "
+        "updated — a short summary of what changed for members. That comes "
+        "from send_dashboard_update.py, not from this app, so there's nothing "
+        "to trigger here; the box below is only for a one-off message, and "
+        "the list under it can edit or delete anything already posted."
+    )
+    render_custom_message_section("dashboard")

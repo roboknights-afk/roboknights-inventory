@@ -1,0 +1,37 @@
+name: Dashboard update notice
+
+# Fires on every push to master — the same moment Streamlit Cloud redeploys
+# the app — so the Discord notice lands when the update actually goes live.
+on:
+  push:
+    branches: [master]
+  workflow_dispatch: # lets us trigger it manually from the Actions tab, for testing
+
+jobs:
+  post-update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The script diffs the pushed range, so it needs more than the
+          # single commit a shallow clone would give it.
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # Deliberately not the full requirements.txt — this script doesn't
+      # import shared.py (and so doesn't need streamlit), same as the
+      # reminder scripts. groq is only used for the summary and the script
+      # falls back to raw commit subjects without it.
+      - run: pip install requests python-dotenv supabase groq
+      - name: Post the update summary to Discord
+        run: python send_dashboard_update.py
+        env:
+          # On a manual run there's no push range, so BEFORE_SHA is empty and
+          # the script summarises just the latest commit.
+          BEFORE_SHA: ${{ github.event.before }}
+          AFTER_SHA: ${{ github.sha }}
+          DISCORD_DASHBOARD_WEBHOOK_URL: ${{ secrets.DISCORD_DASHBOARD_WEBHOOK_URL }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}

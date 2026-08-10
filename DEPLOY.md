@@ -31,6 +31,7 @@ file or from a hosting platform's secrets manager.
    GROQ_API_KEY = "..."
    DISCORD_COMPETITIONS_WEBHOOK_URL = "..."
    DISCORD_EXUN_WEBHOOK_URL = "..."
+   DISCORD_DASHBOARD_WEBHOOK_URL = "..."
    DISCORD_MEMBER_ROLE_ID = "..."
    DISCORD_ADHOC_ROLE_ID = "..."
    ```
@@ -56,6 +57,14 @@ file or from a hosting platform's secrets manager.
    competition has its full selected roster) posts here, and it's also
    available for custom messages on the new Discord Messages page (host
    only). Also optional — silently does nothing until it's set.
+
+   `DISCORD_DASHBOARD_WEBHOOK_URL` is a THIRD channel, for "the dashboard
+   itself was just updated" notices. **This one is different: it's posted by
+   GitHub Actions, not by the app**, so it also has to be added as a GitHub
+   repo secret (Settings → Secrets and variables → Actions), not only in
+   Streamlit Cloud. Adding it to Streamlit Cloud is still worth doing — that's
+   what lets a host edit or delete those posts from the Discord Messages page.
+   See "Dashboard update notices" below.
 
    `DISCORD_MEMBER_ROLE_ID` and `DISCORD_ADHOC_ROLE_ID` are also optional —
    every Discord notification (new event, vacant-events reminder) pings
@@ -92,6 +101,32 @@ file or from a hosting platform's secrets manager.
 - **GitHub Actions reminders**: `send_due_reminders.py` doesn't need
   `APP_URL` at all — its emails don't contain a link — so nothing to change
   there.
+
+## Dashboard update notices (Discord)
+
+`.github/workflows/dashboard-update.yml` runs `send_dashboard_update.py` on
+every push to `master` — the same moment Streamlit Cloud redeploys — and
+posts "The dashboard just got an update" plus a 3-line plain-English summary
+of what changed to the Discord dashboard channel.
+
+The summary is written by Groq (the same free model the AI Assistant uses)
+from the push's commit messages. If `GROQ_API_KEY` isn't set, or the call
+fails, it falls back to listing the three most recent commit subject lines —
+it never blocks the notification.
+
+To turn it on, add these as **GitHub repo secrets** (Settings → Secrets and
+variables → Actions), since this runs on GitHub's servers, not in the app:
+
+- `DISCORD_DASHBOARD_WEBHOOK_URL` — required; without it the workflow runs
+  and exits quietly, posting nothing.
+- `GROQ_API_KEY` — optional, but without it the summary is raw commit
+  subjects rather than member-friendly wording.
+- `SUPABASE_URL` / `SUPABASE_KEY` — optional; these only log the post so a
+  host can delete or edit it later from the Discord Messages page. Both are
+  already set for the reminder workflow.
+
+A push containing nothing but merge commits posts nothing at all — a
+"we updated!" notice with no content is worse than staying quiet.
 
 ## What doesn't change
 

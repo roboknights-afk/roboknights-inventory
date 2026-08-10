@@ -331,32 +331,45 @@ def discord_role_tags():
     return " ".join(f"<@&{rid}>" for rid in role_ids if rid)
 
 
-# Appended to the end of EVERY message this app sends to Discord, on
-# EITHER channel — the bold-italic "automated message" marker, always.
-# The app link is competitions-channel only: the competitions channel's
-# messages are all "go do something in the app" (volunteer, check a new
-# event), where a link back genuinely helps; the exun_rk channel's aren't
-# (e.g. "team names finalized" is just an FYI), so it stays off there.
-# Added centrally here (not at each call site) specifically so the
-# footer can't be forgotten by a future call site.
+# Appended to the end of EVERY message this app sends to Discord, whichever
+# channel — a bold-italic marker saying it wasn't typed by a person.
+#
+# Two things vary by channel:
+#  - The app link is competitions-only. Those messages are all "go do
+#    something in the app" (volunteer, check a new event), where a link back
+#    genuinely helps; the other channels' aren't (e.g. "team names finalized"
+#    and the dashboard changelog are both just FYI).
+#  - The dashboard channel says "an automated channel" rather than "automated
+#    message", since literally everything in it is posted by this app.
+#
+# Added centrally here (not at each call site) so the footer can't be
+# forgotten by a future call site.
 DISCORD_AUTOMATED_MARKER = "\n\n***This is automated message***"
+DISCORD_AUTOMATED_CHANNEL_MARKER = "\n\n***This is an automated channel***"
 
 
 def discord_message_suffix(channel):
     if channel == "competitions":
         return f"\n\n:link: {APP_URL}{DISCORD_AUTOMATED_MARKER}"
+    if channel == "dashboard":
+        return DISCORD_AUTOMATED_CHANNEL_MARKER
     return DISCORD_AUTOMATED_MARKER
 
 
-# Two separate Discord channels this app can post to, each its own
-# Incoming Webhook (a webhook is tied to exactly one channel — there's no
-# such thing as "one webhook, pick a channel"), each its own env secret.
-# "competitions" is the default everywhere below since it's the original,
-# far more common case (every automatic notification), so existing call
-# sites that don't care about the Exun channel don't need to change.
+# The Discord channels this app can post to, each its own Incoming Webhook
+# (a webhook is tied to exactly one channel — there's no such thing as "one
+# webhook, pick a channel"), each its own env secret. "competitions" is the
+# default everywhere below since it's the original, far more common case
+# (every automatic notification), so call sites that don't care about the
+# other channels don't need to change.
+#
+# "dashboard" is written to by send_dashboard_update.py (a GitHub Action on
+# every push to master), not by the app itself — it's listed here so the
+# Discord Messages page can still show, edit and delete what got posted.
 DISCORD_CHANNELS = {
     "competitions": "DISCORD_COMPETITIONS_WEBHOOK_URL",
     "exun_rk": "DISCORD_EXUN_WEBHOOK_URL",
+    "dashboard": "DISCORD_DASHBOARD_WEBHOOK_URL",
 }
 
 

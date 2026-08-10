@@ -771,6 +771,25 @@ later edit/delete knows which webhook to hit.
    whole Competitions page script — app_pages/*.py files run top-to-bottom
    as scripts on import, not as plain importable modules.
 
+Chunk 3 — a dashboard-changelog channel — done: a THIRD channel
+(`DISCORD_DASHBOARD_WEBHOOK_URL`) that announces the app itself being
+updated. Unlike everything else here, this is NOT posted by the app —
+`.github/workflows/dashboard-update.yml` runs `send_dashboard_update.py`
+on every push to master, which is also when Streamlit Cloud redeploys, so
+the notice lands when the update actually goes live. That script
+deliberately doesn't import shared.py (same reasoning as
+send_due_reminders.py — the Actions runner shouldn't need streamlit), so
+its footer wording is duplicated there and must be kept in sync with
+`discord_message_suffix()`.
+
+The 3-line summary comes from Groq (the same free model the AI Assistant
+uses) fed the push's commit messages, with a hard fallback to raw commit
+subject lines if the key is missing or the call fails — a summary failure
+must never block the notification. A push of nothing but merge commits
+posts nothing. Student asked for this channel's footer to read "it's an
+automated channel" rather than the usual "this is automated message",
+hence `DISCORD_AUTOMATED_CHANNEL_MARKER` in shared.py.
+
 Deferred, explicitly next per the student ("also things related to
 competitions"): more competition-lifecycle notifications beyond "new
 event added" — e.g. someone selected for an event, a registration
