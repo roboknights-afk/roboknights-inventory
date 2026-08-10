@@ -27,49 +27,76 @@ if "meeting_message" not in st.session_state:
     st.session_state.meeting_message = None
 if "editing_meeting_id" not in st.session_state:
     st.session_state.editing_meeting_id = None
+# Held open by a flag rather than being called straight from its button: a
+# dialog only stays on screen while something re-calls its function each run,
+# and the st.rerun() below is a full-app rerun. Clearing the flag closes it.
+if "show_schedule_meeting" not in st.session_state:
+    st.session_state.show_schedule_meeting = False
+
+
+def _close_schedule_meeting():
+    st.session_state.show_schedule_meeting = False
+
+
+def _open_schedule_meeting():
+    st.session_state.show_schedule_meeting = True
+
+
+@st.dialog("Schedule a meeting", on_dismiss=_close_schedule_meeting)
+def render_schedule_meeting():
+    title = st.text_input("Title", key="new_meeting_title")
+    agenda = st.text_area("Agenda", key="new_meeting_agenda")
+    mcol1, mcol2 = st.columns(2)
+    meeting_date = mcol1.date_input("Date", key="new_meeting_date", value=None)
+    meeting_time = mcol2.time_input("Time", key="new_meeting_time", value=None)
+    join_link = st.text_input(
+        "Join link (Google Meet, Jitsi, etc.)", key="new_meeting_link", placeholder="https://..."
+    )
+    # Both optional — plenty of meetings don't need a separate ID/password
+    # (e.g. a plain Jitsi link), so nothing here is required to schedule.
+    idcol, pwcol = st.columns(2)
+    meeting_id_code = idcol.text_input("Meeting ID (optional)", key="new_meeting_id_code")
+    meeting_password = pwcol.text_input("Meeting password (optional)", key="new_meeting_password")
+    if st.button("Schedule", icon=":material/check:", type="primary", key="confirm_schedule_meeting"):
+        # Validation errors show here inside the dialog — stashing them for the
+        # page behind would mean closing the form and losing what was typed.
+        if not title.strip():
+            st.error("Title is required.")
+        elif not meeting_date:
+            st.error("Date is required.")
+        else:
+            link = join_link.strip()
+            if link and not link.startswith(("http://", "https://")):
+                link = "https://" + link
+            with safe_write("schedule this meeting"):
+                client.table("meetings").insert({
+                    "title": title.strip(),
+                    "agenda": agenda.strip(),
+                    "meeting_date": meeting_date.isoformat(),
+                    "meeting_time": meeting_time.isoformat() if meeting_time else None,
+                    "join_link": link or None,
+                    "meeting_id_code": meeting_id_code.strip() or None,
+                    "meeting_password": meeting_password.strip() or None,
+                }).execute()
+                invalidate_cache()
+            st.session_state.meeting_message = ("success", f"Scheduled {title.strip()}.")
+            # Clear the form so reopening the dialog starts blank.
+            for k in (
+                "new_meeting_title", "new_meeting_agenda", "new_meeting_link",
+                "new_meeting_id_code", "new_meeting_password",
+            ):
+                st.session_state.pop(k, None)
+            _close_schedule_meeting()
+            st.rerun()
+
 
 if is_host:
-    with st.expander(":material/add_box: Schedule a meeting"):
-        title = st.text_input("Title", key="new_meeting_title")
-        agenda = st.text_area("Agenda", key="new_meeting_agenda")
-        mcol1, mcol2 = st.columns(2)
-        meeting_date = mcol1.date_input("Date", key="new_meeting_date", value=None)
-        meeting_time = mcol2.time_input("Time", key="new_meeting_time", value=None)
-        join_link = st.text_input(
-            "Join link (Google Meet, Jitsi, etc.)", key="new_meeting_link", placeholder="https://..."
-        )
-        # Both optional — plenty of meetings don't need a separate ID/password
-        # (e.g. a plain Jitsi link), so nothing here is required to schedule.
-        idcol, pwcol = st.columns(2)
-        meeting_id_code = idcol.text_input("Meeting ID (optional)", key="new_meeting_id_code")
-        meeting_password = pwcol.text_input("Meeting password (optional)", key="new_meeting_password")
-        if st.button("Schedule", icon=":material/check:", type="primary"):
-            if not title.strip():
-                st.session_state.meeting_message = ("error", "Title is required.")
-            elif not meeting_date:
-                st.session_state.meeting_message = ("error", "Date is required.")
-            else:
-                link = join_link.strip()
-                if link and not link.startswith(("http://", "https://")):
-                    link = "https://" + link
-                with safe_write("schedule this meeting"):
-                    client.table("meetings").insert({
-                        "title": title.strip(),
-                        "agenda": agenda.strip(),
-                        "meeting_date": meeting_date.isoformat(),
-                        "meeting_time": meeting_time.isoformat() if meeting_time else None,
-                        "join_link": link or None,
-                        "meeting_id_code": meeting_id_code.strip() or None,
-                        "meeting_password": meeting_password.strip() or None,
-                    }).execute()
-                    invalidate_cache()
-                st.session_state.meeting_message = ("success", f"Scheduled {title.strip()}.")
-                del st.session_state["new_meeting_title"]
-                del st.session_state["new_meeting_agenda"]
-                del st.session_state["new_meeting_link"]
-                del st.session_state["new_meeting_id_code"]
-                del st.session_state["new_meeting_password"]
-                st.rerun()
+    st.button(
+        "Schedule a meeting", icon=":material/add_box:", type="primary",
+        key="open_schedule_meeting", on_click=_open_schedule_meeting,
+    )
+    if st.session_state.show_schedule_meeting:
+        render_schedule_meeting()
 
 # Success pops as a toast; errors stay inline so they can't be missed.
 if st.session_state.meeting_message:

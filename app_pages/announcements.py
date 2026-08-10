@@ -19,38 +19,63 @@ st.title("Announcements")
 
 if "announcement_message" not in st.session_state:
     st.session_state.announcement_message = None
+# See the Inventory/Competitions pages for why this is a flag rather than a
+# straight call from the button: a dialog only stays up while something
+# re-calls its function, and the st.rerun() below is a full-app rerun.
+if "show_send_announcement" not in st.session_state:
+    st.session_state.show_send_announcement = False
+
+
+def _close_send_announcement():
+    st.session_state.show_send_announcement = False
+
+
+def _open_send_announcement():
+    st.session_state.show_send_announcement = True
+
+
+@st.dialog("Send an announcement", on_dismiss=_close_send_announcement)
+def render_send_announcement():
+    st.caption("Goes to every member's inbox as well as this page.")
+    announcement_subject = st.text_input("Subject", key="announcement_subject")
+    announcement_body = st.text_area("Message", key="announcement_body")
+    if st.button("Send to everyone", key="send_announcement", icon=":material/send:", type="primary"):
+        if not announcement_subject.strip() or not announcement_body.strip():
+            # Inline, so the dialog doesn't close and discard the draft.
+            st.error("Subject and message are both required.")
+        else:
+            with safe_write("send this announcement"):
+                client.table("announcements").insert({
+                    "subject": announcement_subject.strip(),
+                    "body": announcement_body.strip(),
+                }).execute()
+                invalidate_cache()
+
+                # Exun deliberately excluded: announcements are an
+                # internal RoboKnights channel they don't have access to
+                # in the app, so they shouldn't get the emails either.
+                all_emails = [
+                    email for email in user_email_by_id.values()
+                    if email and email not in EXUN_EMAILS
+                ]
+                for email in all_emails:
+                    send_email(email, announcement_subject.strip(), announcement_body.strip())
+                st.session_state.announcement_message = ("success", f"Sent to {len(all_emails)} member(s).")
+                # Clear the form for next time — deleting the keys before
+                # the widgets are recreated on rerun resets them to blank.
+                st.session_state.pop("announcement_subject", None)
+                st.session_state.pop("announcement_body", None)
+                _close_send_announcement()
+                st.rerun()
+
 
 if is_host:
-    with st.expander(":material/campaign: Send an announcement"):
-        announcement_subject = st.text_input("Subject", key="announcement_subject")
-        announcement_body = st.text_area("Message", key="announcement_body")
-        if st.button("Send to everyone", key="send_announcement", icon=":material/send:", type="primary"):
-            if not announcement_subject.strip() or not announcement_body.strip():
-                st.session_state.announcement_message = ("error", "Subject and message are both required.")
-                st.rerun()
-            else:
-                with safe_write("send this announcement"):
-                    client.table("announcements").insert({
-                        "subject": announcement_subject.strip(),
-                        "body": announcement_body.strip(),
-                    }).execute()
-                    invalidate_cache()
-
-                    # Exun deliberately excluded: announcements are an
-                    # internal RoboKnights channel they don't have access to
-                    # in the app, so they shouldn't get the emails either.
-                    all_emails = [
-                        email for email in user_email_by_id.values()
-                        if email and email not in EXUN_EMAILS
-                    ]
-                    for email in all_emails:
-                        send_email(email, announcement_subject.strip(), announcement_body.strip())
-                    st.session_state.announcement_message = ("success", f"Sent to {len(all_emails)} member(s).")
-                    # Clear the form for next time — deleting the keys before
-                    # the widgets are recreated on rerun resets them to blank.
-                    del st.session_state["announcement_subject"]
-                    del st.session_state["announcement_body"]
-                    st.rerun()
+    st.button(
+        "Send an announcement", icon=":material/campaign:", type="primary",
+        key="open_send_announcement", on_click=_open_send_announcement,
+    )
+    if st.session_state.show_send_announcement:
+        render_send_announcement()
 
 # Success pops as a toast; errors stay inline so they can't be missed.
 if st.session_state.announcement_message:

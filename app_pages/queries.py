@@ -29,10 +29,59 @@ if "query_message" not in st.session_state:
     st.session_state.query_message = None
 if "editing_message_id" not in st.session_state:
     st.session_state.editing_message_id = None
+# Held open by a flag, same reasoning as the other pages' dialogs: the
+# st.rerun() after submitting is a full-app rerun, so the dialog has to be
+# re-called each run to stay up, and clearing the flag is what closes it.
+if "show_ask_question" not in st.session_state:
+    st.session_state.show_ask_question = False
 
 if st.session_state.query_message:
     st.toast(st.session_state.query_message, icon=":material/check_circle:")
     st.session_state.query_message = None
+
+
+def _close_ask_question():
+    st.session_state.show_ask_question = False
+
+
+def _open_ask_question():
+    st.session_state.show_ask_question = True
+
+
+@st.dialog("Ask a question", on_dismiss=_close_ask_question)
+def render_ask_question():
+    st.caption("Goes privately to the hosts — nobody else sees it.")
+    new_question = st.text_area("Your question", key="new_question")
+    if st.button("Submit", icon=":material/send:", type="primary", key="confirm_ask_question"):
+        if not new_question.strip():
+            st.error("Question can't be empty.")
+        else:
+            with safe_write("submit this question"):
+                new_query = client.table("queries").insert({"student_id": current_user_id}).execute()
+                query_id = new_query.data[0]["query_id"]
+                client.table("query_messages").insert({
+                    "query_id": query_id,
+                    "sender_id": current_user_id,
+                    "body": new_question.strip(),
+                }).execute()
+                invalidate_cache()
+
+                host_emails = [
+                    email for uid, email in user_email_by_id.items()
+                    if email in HOST_EMAILS
+                ]
+                for email in host_emails:
+                    send_email(
+                        email,
+                        f"New question from {current_user_name}",
+                        f"{current_user_name} asked:\n\n{new_question.strip()}\n\n"
+                        f"Reply here: {APP_URL}",
+                    )
+
+            st.session_state.query_message = "Question submitted — a host will reply soon."
+            st.session_state.pop("new_question", None)
+            _close_ask_question()
+            st.rerun()
 
 
 def render_thread(query, all_messages, notify_email=None):
@@ -195,37 +244,12 @@ else:
     whatsapp_url = f"https://wa.me/{WHATSAPP_HELP_NUMBER}?text={whatsapp_text}"
     st.markdown(f'<a href="{whatsapp_url}" target="_blank" style="position: fixed; bottom: 24px; right: 24px; z-index: 9999; display: flex; align-items: center; gap: 10px; background: #1f2b2b; color: white; padding: 10px 20px 10px 10px; border-radius: 999px; text-decoration: none; box-shadow: 0 4px 14px rgba(0,0,0,0.35); font-weight: 600;"><span style="background: #25D366; border-radius: 50%; width: 36px; height: 36px; display: flex; align-items: center; justify-content: center; flex-shrink: 0;"><svg width="20" height="20" viewBox="0 0 24 24" fill="white"><path d="M12.04 2C6.58 2 2.13 6.45 2.13 11.91C2.13 13.66 2.59 15.36 3.46 16.86L2.05 22L7.3 20.62C8.75 21.41 10.38 21.83 12.04 21.83C17.5 21.83 21.95 17.38 21.95 11.92C21.95 9.27 20.92 6.78 19.05 4.91C17.18 3.03 14.69 2 12.04 2M12.05 3.67C14.25 3.67 16.31 4.53 17.87 6.09C19.42 7.65 20.28 9.72 20.28 11.92C20.28 16.46 16.58 20.15 12.04 20.15C10.56 20.15 9.11 19.76 7.85 19L7.55 18.83L4.43 19.65L5.26 16.61L5.06 16.29C4.24 15 3.8 13.47 3.8 11.91C3.81 7.37 7.5 3.67 12.05 3.67M8.53 6.75C8.37 6.75 8.1 6.81 7.87 7.06C7.65 7.31 7 7.91 7 9.14C7 10.37 7.89 11.56 8 11.72C8.14 11.88 9.76 14.44 12.31 15.47C13.5 15.97 13.83 15.9 14.19 15.87C14.72 15.82 15.4 15.44 15.56 15C15.72 14.6 15.72 14.25 15.68 14.18C15.63 14.11 15.5 14.07 15.28 13.96C15.06 13.85 14 13.32 13.8 13.25C13.6 13.18 13.45 13.14 13.31 13.36C13.16 13.58 12.75 14.07 12.63 14.21C12.5 14.36 12.37 14.38 12.15 14.27C11.94 14.16 11.23 13.92 10.39 13.18C9.73 12.6 9.29 11.87 9.16 11.65C9.04 11.44 9.14 11.32 9.25 11.21C9.35 11.11 9.5 10.94 9.6 10.82C9.71 10.7 9.75 10.61 9.82 10.46C9.9 10.32 9.86 10.19 9.81 10.08C9.75 9.97 9.32 8.9 9.13 8.47C8.95 8.05 8.77 8.11 8.63 8.1C8.5 8.1 8.35 8.09 8.19 8.09Z"/></svg></span><span>Chat with us</span></a>', unsafe_allow_html=True)
 
-    with st.expander(":material/add_box: Ask a question"):
-        new_question = st.text_area("Your question", key="new_question")
-        if st.button("Submit", icon=":material/send:", type="primary"):
-            if not new_question.strip():
-                st.error("Question can't be empty.")
-            else:
-                with safe_write("submit this question"):
-                    new_query = client.table("queries").insert({"student_id": current_user_id}).execute()
-                    query_id = new_query.data[0]["query_id"]
-                    client.table("query_messages").insert({
-                        "query_id": query_id,
-                        "sender_id": current_user_id,
-                        "body": new_question.strip(),
-                    }).execute()
-                    invalidate_cache()
-
-                    host_emails = [
-                        email for uid, email in user_email_by_id.items()
-                        if email in HOST_EMAILS
-                    ]
-                    for email in host_emails:
-                        send_email(
-                            email,
-                            f"New question from {current_user_name}",
-                            f"{current_user_name} asked:\n\n{new_question.strip()}\n\n"
-                            f"Reply here: {APP_URL}",
-                        )
-
-                st.session_state.query_message = "Question submitted — a host will reply soon."
-                del st.session_state["new_question"]
-                st.rerun()
+    st.button(
+        "Ask a question", icon=":material/add_box:", type="primary",
+        key="open_ask_question", on_click=_open_ask_question,
+    )
+    if st.session_state.show_ask_question:
+        render_ask_question()
 
     st.subheader(":material/list_alt: Your questions")
     my_queries = sorted(
