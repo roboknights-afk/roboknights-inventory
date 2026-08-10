@@ -501,6 +501,226 @@ tab_parts, tab_loans, tab_manage = st.tabs(
 )
 
 
+def _render_serialised_card(group_name, group_owner_id, units):
+    # Identical serialised parts (same name, same owner) share one card with
+    # a count; each physical unit underneath keeps its own serial and its own
+    # lend/return lifecycle.
+    units = sorted(units, key=lambda u: u["part_number"])
+    available_units = [u for u in units if u["status"] == "available"]
+    on_loan_units = [u for u in units if u["status"] == "on loan"]
+    is_mine = group_owner_id == current_user_id
+
+    owner_name = user_name_by_id.get(group_owner_id, "Unknown")
+    if is_mine:
+        owner_name += " (yours)"
+
+    # Stable per-group key for the hover animation in app.py. Uses the
+    # lowest part_id in the group so it doesn't change as units come and go.
+    group_key = min(u["part_id"] for u in units)
+
+    with st.container(border=True, key=f"rkcard_group_{group_key}"):
+        col1, col2, col3, col4 = st.columns([3, 2, 2, 2], vertical_alignment="center")
+        col1.markdown(f"**{group_name}**")
+        col2.write(owner_name)
+        with col3:
+            if available_units:
+                st.badge(
+                    f"{len(available_units)} available",
+                    icon=":material/check_circle:", color="green",
+                )
+            if on_loan_units:
+                st.badge(
+                    f"{len(on_loan_units)} on loan",
+                    icon=":material/schedule:", color="orange",
+                )
+
+        if available_units and not is_mine and my_pending_count < MAX_PENDING_REQUESTS:
+            # How many, and for how long, are asked in the dialog — they
+            # used to be two number inputs sitting in this row on every
+            # requestable part.
+            col4.button(
+                "Request", key=f"request_{group_key}", icon=":material/send:",
+                width="stretch", on_click=_open_request, args=(("group", group_key),),
+            )
+            if st.session_state.requesting_key == ("group", group_key):
+                render_request_dialog(
+                    group_name, group_owner_id, owner_name,
+                    max_qty=len(available_units), units=available_units,
+                )
+
+        st.caption(f":material/tag: {', '.join(u['part_number'] for u in units)}")
+
+        # Who's actually got the on-loan ones. Owners see this for their
+        # own parts, hosts see it for every part.
+        if (is_mine or is_host) and on_loan_units:
+            for u in on_loan_units:
+                loan = active_loan_by_part_id.get(u["part_id"])
+                if loan:
+                    borrower = user_name_by_id.get(loan["requester_id"], "Unknown")
+                    st.caption(f":material/person: {u['part_number']} lent to {borrower}")
+
+        # Per-unit actions (return, delete, host edit) live behind an
+        # expander so the card stays readable — they're per physical unit,
+        # which is the whole reason each one is still its own row.
+        if is_mine or is_host:
+            with st.expander(f"Manage units ({len(units)})"):
+                for part in units:
+                    is_available = part["status"] == "available"
+                    is_on_loan = part["status"] == "on loan"
+
+                    ucol1, ucol2, ucol3 = st.columns([2, 2, 2], vertical_alignment="center")
+                    ucol1.write(part["part_number"])
+                    if is_available:
+                        ucol2.badge("Available", icon=":material/check_circle:", color="green")
+                    else:
+                        ucol2.badge("On loan", icon=":material/schedule:", color="orange")
+
+                    # The owner can mark their own on-loan part as returned —
+                    # finishes the lifecycle: on loan -> returned -> available.
+                    # Hosts can do this for ANY part too, as an admin override
+                    # (e.g. the owner's away and someone needs to hand a part back).
+                    if is_on_loan:
+                        if ucol3.button(
+                            "Mark as returned", key=f"return_{part['part_id']}",
+                            icon=":material/assignment_return:",
+                        ):
+                            with safe_write("mark this part returned"):
+                                client.table("parts").update({"status": "available"}).eq(
+                                    "part_id", part["part_id"]
+                                ).execute()
+                                # The approved request that put it on loan is done now.
+                                # There's only ever one active "approved" request per
+                                # part, because a part on loan can't be requested again.
+                                client.table("requests").update({"status": "returned"}).eq(
+                                    "part_id", part["part_id"]
+                                ).eq("status", "approved").execute()
+                                invalidate_cache()
+                                st.session_state.returned_message = (
+                                    f"Marked {part['part_number']} as returned — it's available again."
+                                )
+                                st.rerun()
+
+                    # Lets you delete your own part while it's available — not
+                    # while it's on loan, so we never silently lose track of who
+                    # currently has it. Hosts get the same override, for any part.
+                    if is_available:
+                        if ucol3.button(
+                            "Delete", key=f"delete_{part['part_id']}", icon=":material/delete:"
+                        ):
+                            with safe_write("delete this part"):
+                                # A part can't be deleted while old request rows still
+                                # point at it (foreign key), so its request history goes
+                                # with it. That's fine — deleting a part means "this
+                                # isn't in our inventory anymore," so nor is its history.
+                                client.table("requests").delete().eq("part_id", part["part_id"]).execute()
+                                client.table("parts").delete().eq("part_id", part["part_id"]).execute()
+                                invalidate_cache()
+                                st.session_state.deleted_part_message = (
+                                    f"Deleted {part['part_number']} — {part['name']}."
+                                )
+                                st.rerun()
+
+                    # Host-only admin edit: rename, reassign owner, or flip
+                    # status directly, bypassing the normal request/approve/
+                    # return flow. Opens as a dialog — it used to expand
+                    # inline here, inside an expander inside a card, which
+                    # made the whole list jump every time it opened.
+                    if is_host:
+                        st.button(
+                            "Edit", key=f"edit_{part['part_id']}", icon=":material/edit:",
+                            on_click=_open_edit_part, args=(part["part_id"],),
+                        )
+                        if st.session_state.editing_part_id == part["part_id"]:
+                            render_edit_part_dialog(part)
+
+
+def _render_bulk_card(part):
+# --- Bulk / loose items ---------------------------------------------------
+# One row, one card, a count instead of serial numbers. There's no
+# per-unit lifecycle here: 12 of 50 being out is just 12 units spoken
+# for, which is why availability is derived from the loans rather than
+# from the single status field serialised parts use.
+    total_qty = part.get("quantity") or 1
+    free_qty = bulk_available(part)
+    out_qty = total_qty - free_qty
+    is_mine = part["owner_id"] == current_user_id
+
+    owner_name = user_name_by_id.get(part["owner_id"], "Unknown")
+    if is_mine:
+        owner_name += " (yours)"
+
+    with st.container(border=True, key=f"rkcard_bulk_{part['part_id']}"):
+        col1, col2, col3, col4 = st.columns([3, 2, 2, 2], vertical_alignment="center")
+        col1.markdown(f"**{part['name']}**")
+        col2.write(owner_name)
+        with col3:
+            st.badge(
+                f"{free_qty} of {total_qty} free",
+                icon=":material/check_circle:" if free_qty else ":material/block:",
+                color="green" if free_qty else "red",
+            )
+            if out_qty:
+                st.badge(f"{out_qty} on loan", icon=":material/schedule:", color="orange")
+
+        if free_qty > 0 and not is_mine and my_pending_count < MAX_PENDING_REQUESTS:
+            col4.button(
+                "Request", key=f"bulkrequest_{part['part_id']}", icon=":material/send:",
+                width="stretch", on_click=_open_request,
+                args=(("bulk", part["part_id"]),),
+            )
+            if st.session_state.requesting_key == ("bulk", part["part_id"]):
+                render_request_dialog(
+                    part["name"], part["owner_id"], owner_name,
+                    max_qty=free_qty, bulk_part=part,
+                )
+
+        st.caption(f":material/inventory_2: Loose item · {part['part_number']}")
+
+        # Who's holding what, for the owner and hosts.
+        if is_mine or is_host:
+            out_loans = [
+                r for r in approved_requests if r["part_id"] == part["part_id"]
+            ]
+            for loan in out_loans:
+                borrower = user_name_by_id.get(loan["requester_id"], "Unknown")
+                st.caption(f":material/person: {loan.get('quantity') or 1} with {borrower}")
+
+            with st.expander("Manage stock"):
+                new_total = st.number_input(
+                    "Total quantity owned", min_value=out_qty, value=total_qty,
+                    key=f"bulktotal_{part['part_id']}",
+                    help="Can't go below the number currently on loan.",
+                )
+                save_col, del_col = st.columns([1, 1])
+                if save_col.button(
+                    "Save quantity", key=f"bulksave_{part['part_id']}",
+                    icon=":material/check:", type="primary",
+                ):
+                    with safe_write("save the new quantity"):
+                        client.table("parts").update({"quantity": new_total}).eq(
+                            "part_id", part["part_id"]
+                        ).execute()
+                        invalidate_cache()
+                        st.session_state.part_edited_message = (
+                            f"{part['name']} now shows {new_total} in stock."
+                        )
+                        st.rerun()
+                # Same rule as serialised parts: nothing gets deleted while
+                # any of it is still out with someone.
+                if out_qty == 0:
+                    if del_col.button(
+                        "Delete", key=f"bulkdelete_{part['part_id']}", icon=":material/delete:"
+                    ):
+                        with safe_write("delete this item"):
+                            client.table("requests").delete().eq("part_id", part["part_id"]).execute()
+                            client.table("parts").delete().eq("part_id", part["part_id"]).execute()
+                            invalidate_cache()
+                            st.session_state.deleted_part_message = f"Deleted {part['name']}."
+                            st.rerun()
+                else:
+                    del_col.caption("Can't delete while some are on loan.")
+
+
 # --- Tab 1: every part in the inventory --------------------------------------
 
 with tab_parts:
@@ -575,234 +795,36 @@ with tab_parts:
         else:
             part_groups.setdefault((p["name"], p["owner_id"]), []).append(p)
 
+    # One ordered list, so a loose item sorts in among the serialised parts by
+    # name instead of every loose item being dumped below all of them (they
+    # used to render in two separate loops, one after the other).
+    cards = [
+        ("group", name, owner_id, units)
+        for (name, owner_id), units in part_groups.items()
+    ] + [
+        ("bulk", p["name"], p["owner_id"], p) for p in bulk_parts
+    ]
+    cards.sort(key=lambda c: (c[1].lower(), user_name_by_id.get(c[2], "").lower()))
+
     if not parts:
         st.caption("No parts yet — add one from the **Add & manage** tab.")
-    elif not visible_parts:
+    elif not cards:
         st.caption("No parts match your search or filter.")
     else:
-        # Column headers, lined up with the same widths as the cards below.
-        # The fourth column holds the Request button and is deliberately left
-        # unlabelled — "Qty"/"Days" used to live there as two inline inputs on
-        # every requestable row; those moved into the Request dialog.
+        # Headers and cards are deliberately in the same branch, keyed off the
+        # same `cards` list. They used to sit in separate blocks — the headers
+        # under this if/else, the card loops outside it — which happened to
+        # line up only because both were derived from visible_parts.
         head1, head2, head3, head4 = st.columns([3, 2, 2, 2])
         head1.markdown("**Name**")
         head2.markdown("**Owned by**")
         head3.markdown("**Availability**")
 
-    for (group_name, group_owner_id), units in part_groups.items():
-        units = sorted(units, key=lambda u: u["part_number"])
-        available_units = [u for u in units if u["status"] == "available"]
-        on_loan_units = [u for u in units if u["status"] == "on loan"]
-        is_mine = group_owner_id == current_user_id
-
-        owner_name = user_name_by_id.get(group_owner_id, "Unknown")
-        if is_mine:
-            owner_name += " (yours)"
-
-        # Stable per-group key for the hover animation in app.py. Uses the
-        # lowest part_id in the group so it doesn't change as units come and go.
-        group_key = min(u["part_id"] for u in units)
-
-        with st.container(border=True, key=f"rkcard_group_{group_key}"):
-            col1, col2, col3, col4 = st.columns([3, 2, 2, 2], vertical_alignment="center")
-            col1.markdown(f"**{group_name}**")
-            col2.write(owner_name)
-            with col3:
-                if available_units:
-                    st.badge(
-                        f"{len(available_units)} available",
-                        icon=":material/check_circle:", color="green",
-                    )
-                if on_loan_units:
-                    st.badge(
-                        f"{len(on_loan_units)} on loan",
-                        icon=":material/schedule:", color="orange",
-                    )
-
-            if available_units and not is_mine and my_pending_count < MAX_PENDING_REQUESTS:
-                # How many, and for how long, are asked in the dialog — they
-                # used to be two number inputs sitting in this row on every
-                # requestable part.
-                col4.button(
-                    "Request", key=f"request_{group_key}", icon=":material/send:",
-                    width="stretch", on_click=_open_request, args=(("group", group_key),),
-                )
-                if st.session_state.requesting_key == ("group", group_key):
-                    render_request_dialog(
-                        group_name, group_owner_id, owner_name,
-                        max_qty=len(available_units), units=available_units,
-                    )
-
-            st.caption(f":material/tag: {', '.join(u['part_number'] for u in units)}")
-
-            # Who's actually got the on-loan ones. Owners see this for their
-            # own parts, hosts see it for every part.
-            if (is_mine or is_host) and on_loan_units:
-                for u in on_loan_units:
-                    loan = active_loan_by_part_id.get(u["part_id"])
-                    if loan:
-                        borrower = user_name_by_id.get(loan["requester_id"], "Unknown")
-                        st.caption(f":material/person: {u['part_number']} lent to {borrower}")
-
-            # Per-unit actions (return, delete, host edit) live behind an
-            # expander so the card stays readable — they're per physical unit,
-            # which is the whole reason each one is still its own row.
-            if is_mine or is_host:
-                with st.expander(f"Manage units ({len(units)})"):
-                    for part in units:
-                        is_available = part["status"] == "available"
-                        is_on_loan = part["status"] == "on loan"
-
-                        ucol1, ucol2, ucol3 = st.columns([2, 2, 2], vertical_alignment="center")
-                        ucol1.write(part["part_number"])
-                        if is_available:
-                            ucol2.badge("Available", icon=":material/check_circle:", color="green")
-                        else:
-                            ucol2.badge("On loan", icon=":material/schedule:", color="orange")
-
-                        # The owner can mark their own on-loan part as returned —
-                        # finishes the lifecycle: on loan -> returned -> available.
-                        # Hosts can do this for ANY part too, as an admin override
-                        # (e.g. the owner's away and someone needs to hand a part back).
-                        if is_on_loan:
-                            if ucol3.button(
-                                "Mark as returned", key=f"return_{part['part_id']}",
-                                icon=":material/assignment_return:",
-                            ):
-                                with safe_write("mark this part returned"):
-                                    client.table("parts").update({"status": "available"}).eq(
-                                        "part_id", part["part_id"]
-                                    ).execute()
-                                    # The approved request that put it on loan is done now.
-                                    # There's only ever one active "approved" request per
-                                    # part, because a part on loan can't be requested again.
-                                    client.table("requests").update({"status": "returned"}).eq(
-                                        "part_id", part["part_id"]
-                                    ).eq("status", "approved").execute()
-                                    invalidate_cache()
-                                    st.session_state.returned_message = (
-                                        f"Marked {part['part_number']} as returned — it's available again."
-                                    )
-                                    st.rerun()
-
-                        # Lets you delete your own part while it's available — not
-                        # while it's on loan, so we never silently lose track of who
-                        # currently has it. Hosts get the same override, for any part.
-                        if is_available:
-                            if ucol3.button(
-                                "Delete", key=f"delete_{part['part_id']}", icon=":material/delete:"
-                            ):
-                                with safe_write("delete this part"):
-                                    # A part can't be deleted while old request rows still
-                                    # point at it (foreign key), so its request history goes
-                                    # with it. That's fine — deleting a part means "this
-                                    # isn't in our inventory anymore," so nor is its history.
-                                    client.table("requests").delete().eq("part_id", part["part_id"]).execute()
-                                    client.table("parts").delete().eq("part_id", part["part_id"]).execute()
-                                    invalidate_cache()
-                                    st.session_state.deleted_part_message = (
-                                        f"Deleted {part['part_number']} — {part['name']}."
-                                    )
-                                    st.rerun()
-
-                        # Host-only admin edit: rename, reassign owner, or flip
-                        # status directly, bypassing the normal request/approve/
-                        # return flow. Opens as a dialog — it used to expand
-                        # inline here, inside an expander inside a card, which
-                        # made the whole list jump every time it opened.
-                        if is_host:
-                            st.button(
-                                "Edit", key=f"edit_{part['part_id']}", icon=":material/edit:",
-                                on_click=_open_edit_part, args=(part["part_id"],),
-                            )
-                            if st.session_state.editing_part_id == part["part_id"]:
-                                render_edit_part_dialog(part)
-
-    # --- Bulk / loose items ---------------------------------------------------
-    # One row, one card, a count instead of serial numbers. There's no
-    # per-unit lifecycle here: 12 of 50 being out is just 12 units spoken
-    # for, which is why availability is derived from the loans rather than
-    # from the single status field serialised parts use.
-    for part in bulk_parts:
-        total_qty = part.get("quantity") or 1
-        free_qty = bulk_available(part)
-        out_qty = total_qty - free_qty
-        is_mine = part["owner_id"] == current_user_id
-
-        owner_name = user_name_by_id.get(part["owner_id"], "Unknown")
-        if is_mine:
-            owner_name += " (yours)"
-
-        with st.container(border=True, key=f"rkcard_bulk_{part['part_id']}"):
-            col1, col2, col3, col4 = st.columns([3, 2, 2, 2], vertical_alignment="center")
-            col1.markdown(f"**{part['name']}**")
-            col2.write(owner_name)
-            with col3:
-                st.badge(
-                    f"{free_qty} of {total_qty} free",
-                    icon=":material/check_circle:" if free_qty else ":material/block:",
-                    color="green" if free_qty else "red",
-                )
-                if out_qty:
-                    st.badge(f"{out_qty} on loan", icon=":material/schedule:", color="orange")
-
-            if free_qty > 0 and not is_mine and my_pending_count < MAX_PENDING_REQUESTS:
-                col4.button(
-                    "Request", key=f"bulkrequest_{part['part_id']}", icon=":material/send:",
-                    width="stretch", on_click=_open_request,
-                    args=(("bulk", part["part_id"]),),
-                )
-                if st.session_state.requesting_key == ("bulk", part["part_id"]):
-                    render_request_dialog(
-                        part["name"], part["owner_id"], owner_name,
-                        max_qty=free_qty, bulk_part=part,
-                    )
-
-            st.caption(f":material/inventory_2: Loose item · {part['part_number']}")
-
-            # Who's holding what, for the owner and hosts.
-            if is_mine or is_host:
-                out_loans = [
-                    r for r in approved_requests if r["part_id"] == part["part_id"]
-                ]
-                for loan in out_loans:
-                    borrower = user_name_by_id.get(loan["requester_id"], "Unknown")
-                    st.caption(f":material/person: {loan.get('quantity') or 1} with {borrower}")
-
-                with st.expander("Manage stock"):
-                    new_total = st.number_input(
-                        "Total quantity owned", min_value=out_qty, value=total_qty,
-                        key=f"bulktotal_{part['part_id']}",
-                        help="Can't go below the number currently on loan.",
-                    )
-                    save_col, del_col = st.columns([1, 1])
-                    if save_col.button(
-                        "Save quantity", key=f"bulksave_{part['part_id']}",
-                        icon=":material/check:", type="primary",
-                    ):
-                        with safe_write("save the new quantity"):
-                            client.table("parts").update({"quantity": new_total}).eq(
-                                "part_id", part["part_id"]
-                            ).execute()
-                            invalidate_cache()
-                            st.session_state.part_edited_message = (
-                                f"{part['name']} now shows {new_total} in stock."
-                            )
-                            st.rerun()
-                    # Same rule as serialised parts: nothing gets deleted while
-                    # any of it is still out with someone.
-                    if out_qty == 0:
-                        if del_col.button(
-                            "Delete", key=f"bulkdelete_{part['part_id']}", icon=":material/delete:"
-                        ):
-                            with safe_write("delete this item"):
-                                client.table("requests").delete().eq("part_id", part["part_id"]).execute()
-                                client.table("parts").delete().eq("part_id", part["part_id"]).execute()
-                                invalidate_cache()
-                                st.session_state.deleted_part_message = f"Deleted {part['name']}."
-                                st.rerun()
-                    else:
-                        del_col.caption("Can't delete while some are on loan.")
+        for kind, _name, _owner_id, payload in cards:
+            if kind == "group":
+                _render_serialised_card(_name, _owner_id, payload)
+            else:
+                _render_bulk_card(payload)
 
 
 # --- Tab 2: everything about loans involving me -------------------------------
@@ -850,149 +872,166 @@ def due_badge(target, req):
 
 
 with tab_loans:
-    st.subheader(":material/inbox: Requests for my parts")
-
-    # Show the Approve/Reject outcome once, as a toast.
-    if st.session_state.decision_message:
-        st.toast(st.session_state.decision_message, icon=":material/check_circle:")
-        st.session_state.decision_message = None
-
-    # my_requests was already fetched up top (the metric row needed the count).
-    if not my_requests:
-        st.caption("No pending requests.")
-
-    # Several units asked for in one go share a request_group_id, so they're
-    # shown as a single card and approved or rejected together — one decision,
-    # one email. Requests made before grouping existed have no group id; each
-    # of those is simply a group of one.
-    request_groups = {}
-    for req in my_requests:
-        gid = req.get("request_group_id") or f"single-{req['request_id']}"
-        request_groups.setdefault(gid, []).append(req)
-
-    for gid, group_reqs in request_groups.items():
-        first = group_reqs[0]
-        group_parts = [part_by_id[r["part_id"]] for r in group_reqs if r["part_id"] in part_by_id]
-        if not group_parts:
-            continue  # the part was deleted out from under the request
-        part_name = group_parts[0]["name"]
-        serial_list = ", ".join(p["part_number"] for p in group_parts)
-        requester_name = user_name_by_id.get(first["requester_id"], "Unknown")
-        # Older requests made before loan durations existed won't have this set.
-        requested_days = first.get("requested_days") or 7
-        # Units asked for. A serialised batch is N rows of 1; a bulk request is
-        # one row carrying N — summing the quantities covers both.
-        unit_count = sum(r.get("quantity") or 1 for r in group_reqs)
-
-        with st.container(border=True, key=f"rkcard_req_{gid}"):
-            col1, col2, col3, col4 = st.columns([2, 2, 1, 1], vertical_alignment="center")
-            col1.markdown(f"**{unit_count} × {part_name}**")
-            col2.write(f"Requested by {requester_name} for {requested_days} day(s)")
-
-            # Approving is two steps: click Approve, then confirm (optionally
-            # changing) how many days it's actually approved for — that second
-            # step is a dialog now, so the card stops growing under your cursor
-            # and shoving the rest of the list down.
-            col3.button(
-                "Approve", key=f"approve_{gid}", icon=":material/check:",
-                width="stretch", on_click=_open_approve, args=(gid,),
-            )
-            if st.session_state.approving_request_id == gid:
-                render_approve_dialog(
-                    gid, group_reqs, part_name, serial_list, unit_count,
-                    requested_days, first["requester_id"],
-                )
-
-            if col4.button(
-                "Reject", key=f"reject_{gid}", icon=":material/close:", width="stretch",
-            ):
-                with safe_write("reject this request"):
-                    for r in group_reqs:
-                        client.table("requests").update({"status": "rejected"}).eq(
-                            "request_id", r["request_id"]
-                        ).execute()
-                    invalidate_cache()
-                    send_email(
-                        user_email_by_id.get(first["requester_id"]),
-                        f"Request rejected: {unit_count} × {part_name}",
-                        f"{current_user_name} rejected your request for {unit_count} × {part_name} "
-                        f"({serial_list}).",
-                    )
-                    st.session_state.decision_message = (
-                        f"Rejected the request for {unit_count} × {part_name}."
-                    )
-                    st.rerun()
-
-            st.caption(f":material/tag: {serial_list}")
-
-    st.subheader(":material/logout: Parts I've lent out")
-
+    # Three stacked sections (incoming requests, lent out, borrowed) used to
+    # run one after another down a single long scroll. One filter row now picks
+    # which to show, with the counts on the labels — same segmented_control
+    # idiom the All parts tab uses for its status filter.
     lent_out = sorted(
         (r for r in approved_requests if r["owner_id"] == current_user_id),
         key=lambda r: (r.get("due_date") or "9999-99-99", r["request_id"]),
     )
-
-    if not lent_out:
-        st.caption("You haven't lent out any parts.")
-    else:
-        for gid, group_reqs in group_by_request(lent_out).items():
-            first = group_reqs[0]
-            group_parts = [part_by_id[r["part_id"]] for r in group_reqs if r["part_id"] in part_by_id]
-            if not group_parts:
-                continue
-            borrower_name = user_name_by_id.get(first["requester_id"], "Unknown")
-            unit_count = sum(r.get("quantity") or 1 for r in group_reqs)
-            is_bulk_loan = group_parts[0].get("is_bulk")
-            with st.container(border=True, key=f"rkcard_lent_{gid}"):
-                col1, col2, col3, col4 = st.columns([2, 2, 2, 2], vertical_alignment="center")
-                col1.markdown(f"**{unit_count} × {group_parts[0]['name']}**")
-                col2.write(f"Lent to {borrower_name}")
-                due_badge(col3, first)
-                col3.caption(f"Due {format_due(first)}")
-                # Serialised units are returned one at a time from "Manage units"
-                # on the part card. A bulk loan has no per-unit rows to go to, so
-                # it's closed out from here instead.
-                if is_bulk_loan:
-                    if col4.button(
-                        "Mark returned", key=f"bulkreturn_{gid}",
-                        icon=":material/assignment_return:",
-                    ):
-                        with safe_write("mark this loan returned"):
-                            for r in group_reqs:
-                                client.table("requests").update({"status": "returned"}).eq(
-                                    "request_id", r["request_id"]
-                                ).execute()
-                            invalidate_cache()
-                            st.session_state.returned_message = (
-                                f"{unit_count} × {group_parts[0]['name']} returned — back in stock."
-                            )
-                            st.rerun()
-                st.caption(f":material/tag: {', '.join(p['part_number'] for p in group_parts)}")
-
-    st.subheader(":material/login: What I've borrowed")
-
     borrowed = sorted(
         (r for r in approved_requests if r["requester_id"] == current_user_id),
         key=lambda r: (r.get("due_date") or "9999-99-99", r["request_id"]),
     )
 
-    if not borrowed:
-        st.caption("You haven't borrowed any parts.")
-    else:
-        for gid, group_reqs in group_by_request(borrowed).items():
+    VIEW_REQUESTS = f"Requests for me ({len(my_requests)})"
+    VIEW_LENT = f"Lent out ({len(group_by_request(lent_out))})"
+    VIEW_BORROWED = f"Borrowed ({len(group_by_request(borrowed))})"
+    loans_view = st.segmented_control(
+        "Which loans to show",
+        [VIEW_REQUESTS, VIEW_LENT, VIEW_BORROWED],
+        default=VIEW_REQUESTS,
+        key="loans_view",
+        label_visibility="collapsed",
+    ) or VIEW_REQUESTS  # deselecting returns None — fall back to the first view
+
+    if loans_view == VIEW_REQUESTS:
+        st.subheader(":material/inbox: Requests for my parts")
+
+        # Show the Approve/Reject outcome once, as a toast.
+        if st.session_state.decision_message:
+            st.toast(st.session_state.decision_message, icon=":material/check_circle:")
+            st.session_state.decision_message = None
+
+        # my_requests was already fetched up top (the metric row needed the count).
+        if not my_requests:
+            st.caption("No pending requests.")
+
+        # Several units asked for in one go share a request_group_id, so they're
+        # shown as a single card and approved or rejected together — one decision,
+        # one email. Requests made before grouping existed have no group id; each
+        # of those is simply a group of one.
+        request_groups = {}
+        for req in my_requests:
+            gid = req.get("request_group_id") or f"single-{req['request_id']}"
+            request_groups.setdefault(gid, []).append(req)
+
+        for gid, group_reqs in request_groups.items():
             first = group_reqs[0]
             group_parts = [part_by_id[r["part_id"]] for r in group_reqs if r["part_id"] in part_by_id]
             if not group_parts:
-                continue
-            owner_name = user_name_by_id.get(first["owner_id"], "Unknown")
+                continue  # the part was deleted out from under the request
+            part_name = group_parts[0]["name"]
+            serial_list = ", ".join(p["part_number"] for p in group_parts)
+            requester_name = user_name_by_id.get(first["requester_id"], "Unknown")
+            # Older requests made before loan durations existed won't have this set.
+            requested_days = first.get("requested_days") or 7
+            # Units asked for. A serialised batch is N rows of 1; a bulk request is
+            # one row carrying N — summing the quantities covers both.
             unit_count = sum(r.get("quantity") or 1 for r in group_reqs)
-            with st.container(border=True, key=f"rkcard_borrowed_{gid}"):
-                col1, col2, col3 = st.columns([2, 2, 2], vertical_alignment="center")
-                col1.markdown(f"**{unit_count} × {group_parts[0]['name']}**")
-                col2.write(f"Borrowed from {owner_name}")
-                due_badge(col3, first)
-                col3.caption(f"Due {format_due(first)}")
-                st.caption(f":material/tag: {', '.join(p['part_number'] for p in group_parts)}")
+
+            with st.container(border=True, key=f"rkcard_req_{gid}"):
+                col1, col2, col3, col4 = st.columns([2, 2, 1, 1], vertical_alignment="center")
+                col1.markdown(f"**{unit_count} × {part_name}**")
+                col2.write(f"Requested by {requester_name} for {requested_days} day(s)")
+
+                # Approving is two steps: click Approve, then confirm (optionally
+                # changing) how many days it's actually approved for — that second
+                # step is a dialog now, so the card stops growing under your cursor
+                # and shoving the rest of the list down.
+                col3.button(
+                    "Approve", key=f"approve_{gid}", icon=":material/check:",
+                    width="stretch", on_click=_open_approve, args=(gid,),
+                )
+                if st.session_state.approving_request_id == gid:
+                    render_approve_dialog(
+                        gid, group_reqs, part_name, serial_list, unit_count,
+                        requested_days, first["requester_id"],
+                    )
+
+                if col4.button(
+                    "Reject", key=f"reject_{gid}", icon=":material/close:", width="stretch",
+                ):
+                    with safe_write("reject this request"):
+                        for r in group_reqs:
+                            client.table("requests").update({"status": "rejected"}).eq(
+                                "request_id", r["request_id"]
+                            ).execute()
+                        invalidate_cache()
+                        send_email(
+                            user_email_by_id.get(first["requester_id"]),
+                            f"Request rejected: {unit_count} × {part_name}",
+                            f"{current_user_name} rejected your request for {unit_count} × {part_name} "
+                            f"({serial_list}).",
+                        )
+                        st.session_state.decision_message = (
+                            f"Rejected the request for {unit_count} × {part_name}."
+                        )
+                        st.rerun()
+
+                st.caption(f":material/tag: {serial_list}")
+
+    elif loans_view == VIEW_LENT:
+        st.subheader(":material/logout: Parts I've lent out")
+
+        if not lent_out:
+            st.caption("You haven't lent out any parts.")
+        else:
+            for gid, group_reqs in group_by_request(lent_out).items():
+                first = group_reqs[0]
+                group_parts = [part_by_id[r["part_id"]] for r in group_reqs if r["part_id"] in part_by_id]
+                if not group_parts:
+                    continue
+                borrower_name = user_name_by_id.get(first["requester_id"], "Unknown")
+                unit_count = sum(r.get("quantity") or 1 for r in group_reqs)
+                is_bulk_loan = group_parts[0].get("is_bulk")
+                with st.container(border=True, key=f"rkcard_lent_{gid}"):
+                    col1, col2, col3, col4 = st.columns([2, 2, 2, 2], vertical_alignment="center")
+                    col1.markdown(f"**{unit_count} × {group_parts[0]['name']}**")
+                    col2.write(f"Lent to {borrower_name}")
+                    due_badge(col3, first)
+                    col3.caption(f"Due {format_due(first)}")
+                    # Serialised units are returned one at a time from "Manage units"
+                    # on the part card. A bulk loan has no per-unit rows to go to, so
+                    # it's closed out from here instead.
+                    if is_bulk_loan:
+                        if col4.button(
+                            "Mark returned", key=f"bulkreturn_{gid}",
+                            icon=":material/assignment_return:",
+                        ):
+                            with safe_write("mark this loan returned"):
+                                for r in group_reqs:
+                                    client.table("requests").update({"status": "returned"}).eq(
+                                        "request_id", r["request_id"]
+                                    ).execute()
+                                invalidate_cache()
+                                st.session_state.returned_message = (
+                                    f"{unit_count} × {group_parts[0]['name']} returned — back in stock."
+                                )
+                                st.rerun()
+                    st.caption(f":material/tag: {', '.join(p['part_number'] for p in group_parts)}")
+
+    else:
+        st.subheader(":material/login: What I've borrowed")
+
+        if not borrowed:
+            st.caption("You haven't borrowed any parts.")
+        else:
+            for gid, group_reqs in group_by_request(borrowed).items():
+                first = group_reqs[0]
+                group_parts = [part_by_id[r["part_id"]] for r in group_reqs if r["part_id"] in part_by_id]
+                if not group_parts:
+                    continue
+                owner_name = user_name_by_id.get(first["owner_id"], "Unknown")
+                unit_count = sum(r.get("quantity") or 1 for r in group_reqs)
+                with st.container(border=True, key=f"rkcard_borrowed_{gid}"):
+                    col1, col2, col3 = st.columns([2, 2, 2], vertical_alignment="center")
+                    col1.markdown(f"**{unit_count} × {group_parts[0]['name']}**")
+                    col2.write(f"Borrowed from {owner_name}")
+                    due_badge(col3, first)
+                    col3.caption(f"Due {format_due(first)}")
+                    st.caption(f":material/tag: {', '.join(p['part_number'] for p in group_parts)}")
 
 
 # --- Tab 3: add a part, plus notes about the admin tools ----------------------
