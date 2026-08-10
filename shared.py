@@ -332,27 +332,23 @@ def discord_role_tags():
 
 
 # Appended to the end of EVERY message this app sends to Discord, whichever
-# channel — a bold-italic marker saying it wasn't typed by a person.
+# channel — a bold-italic marker saying it wasn't typed by a person. Same
+# wording on every channel now (an earlier version had the dashboard channel
+# say "an automated channel" instead — reverted, student wanted it consistent
+# with the other two).
 #
-# Two things vary by channel:
-#  - The app link is competitions-only. Those messages are all "go do
-#    something in the app" (volunteer, check a new event), where a link back
-#    genuinely helps; the other channels' aren't (e.g. "team names finalized"
-#    and the dashboard changelog are both just FYI).
-#  - The dashboard channel says "an automated channel" rather than "automated
-#    message", since literally everything in it is posted by this app.
+# The app link is still competitions-only: those messages are all "go do
+# something in the app" (volunteer, check a new event), where a link back
+# genuinely helps; the other channels' posts are FYI-only.
 #
 # Added centrally here (not at each call site) so the footer can't be
 # forgotten by a future call site.
 DISCORD_AUTOMATED_MARKER = "\n\n***This is automated message***"
-DISCORD_AUTOMATED_CHANNEL_MARKER = "\n\n***This is an automated channel***"
 
 
 def discord_message_suffix(channel):
     if channel == "competitions":
         return f"\n\n:link: {APP_URL}{DISCORD_AUTOMATED_MARKER}"
-    if channel == "dashboard":
-        return DISCORD_AUTOMATED_CHANNEL_MARKER
     return DISCORD_AUTOMATED_MARKER
 
 

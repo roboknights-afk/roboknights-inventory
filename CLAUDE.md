@@ -786,9 +786,9 @@ The 3-line summary comes from Groq (the same free model the AI Assistant
 uses) fed the push's commit messages, with a hard fallback to raw commit
 subject lines if the key is missing or the call fails — a summary failure
 must never block the notification. A push of nothing but merge commits
-posts nothing. Student asked for this channel's footer to read "it's an
-automated channel" rather than the usual "this is automated message",
-hence `DISCORD_AUTOMATED_CHANNEL_MARKER` in shared.py.
+posts nothing. (This channel briefly had its own footer wording — "an
+automated channel" instead of "automated message" — reverted same-day at
+the student's request, so all three channels now say the same thing.)
 
 Deferred, explicitly next per the student ("also things related to
 competitions"): more competition-lifecycle notifications beyond "new

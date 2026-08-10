@@ -26,9 +26,9 @@ load_dotenv()
 
 WEBHOOK_URL = os.environ.get("DISCORD_DASHBOARD_WEBHOOK_URL")
 
-# Same wording shared.py's discord_message_suffix() uses for this channel —
-# kept in sync by hand, since this script can't import that module.
-FOOTER = "\n\n***This is an automated channel***"
+# Same wording shared.py's DISCORD_AUTOMATED_MARKER uses for every other
+# channel — kept in sync by hand, since this script can't import that module.
+FOOTER = "\n\n***This is automated message***"
 
 # Commits that say nothing useful to a member reading the changelog. Merge
 # commits in particular would otherwise dominate the summary on a busy push.
