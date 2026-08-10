@@ -49,6 +49,15 @@ if "deleted_part_message" not in st.session_state:
     st.session_state.deleted_part_message = None
 if "confirming_bulk_delete" not in st.session_state:
     st.session_state.confirming_bulk_delete = False
+# Which dialog (if any) is open. Same reasoning as the Competitions page: a
+# dialog only stays on screen while something re-calls its function each run,
+# and every st.rerun() in these forms is a full-app rerun — so the dialogs are
+# driven by a flag rather than being called straight from their button, and
+# closing one is just clearing its flag.
+if "requesting_key" not in st.session_state:
+    st.session_state.requesting_key = None
+if "show_add_part" not in st.session_state:
+    st.session_state.show_add_part = False
 
 st.title("RoboKnights Parts Inventory")
 
@@ -117,6 +126,339 @@ my_requests = sorted(
     (r for r in all_requests if r["owner_id"] == current_user_id and r["status"] == "pending"),
     key=lambda r: r["request_id"],
 )
+
+# --- Dialogs -----------------------------------------------------------------
+# Every "do something" form on this page is a modal now. They used to render
+# inline: the Qty/Days inputs sat in every single requestable row (two extra
+# widgets per part), and the Approve and host-Edit forms opened in place,
+# which made the card you clicked visibly grow and shove the rest of the list
+# down the page.
+#
+# Opening one happens in an on_click callback rather than in the button's `if`
+# body, so the flag is set before the tabs render — all three tabs draw in one
+# pass, and Streamlit refuses to open two dialogs in the same run.
+
+
+def _close_request():
+    st.session_state.requesting_key = None
+
+
+def _open_request(key):
+    st.session_state.requesting_key = key
+    st.session_state.show_add_part = False
+    st.session_state.editing_part_id = None
+    st.session_state.approving_request_id = None
+    # Reset the two inputs, so opening this for a different part doesn't
+    # inherit the last one's numbers (and can't carry a quantity that's above
+    # the new part's maximum, which Streamlit would reject).
+    st.session_state.pop("request_qty", None)
+    st.session_state.pop("request_days", None)
+
+
+def _close_add_part():
+    st.session_state.show_add_part = False
+
+
+def _open_add_part():
+    st.session_state.show_add_part = True
+    st.session_state.requesting_key = None
+    st.session_state.editing_part_id = None
+    st.session_state.approving_request_id = None
+
+
+def _close_edit_part():
+    st.session_state.editing_part_id = None
+
+
+def _open_edit_part(part_id):
+    st.session_state.editing_part_id = part_id
+    st.session_state.requesting_key = None
+    st.session_state.show_add_part = False
+    st.session_state.approving_request_id = None
+
+
+def _close_approve():
+    st.session_state.approving_request_id = None
+
+
+def _open_approve(gid):
+    st.session_state.approving_request_id = gid
+    st.session_state.requesting_key = None
+    st.session_state.show_add_part = False
+    st.session_state.editing_part_id = None
+
+
+@st.dialog("Request a part", on_dismiss=_close_request)
+def render_request_dialog(name, owner_id, owner_name, max_qty, units=None, bulk_part=None):
+    # Handles both kinds of part. `units` is the list of individually
+    # serialised units to pick from; `bulk_part` is the single loose-item row.
+    # Exactly one of the two is passed in — the widgets are identical, only
+    # the rows that get written differ.
+    st.markdown(f"**{name}** — owned by {owner_name}")
+    qty_wanted = st.number_input(
+        "How many?", min_value=1, max_value=max_qty, value=1, key="request_qty"
+    )
+    days_wanted = st.number_input(
+        "For how many days?", min_value=1, value=7, key="request_days",
+        help="The owner can still change this when they approve.",
+    )
+
+    send_col, cancel_col = st.columns([1, 1])
+    if send_col.button(
+        "Send request", icon=":material/send:", type="primary", key="confirm_request",
+    ):
+        with safe_write("send this request"):
+            if bulk_part is not None:
+                # A single request row carrying the quantity — unlike
+                # serialised parts there are no individual units to point at.
+                client.table("requests").insert({
+                    "part_id": bulk_part["part_id"],
+                    "requester_id": current_user_id,
+                    "owner_id": owner_id,
+                    "status": "pending",
+                    "requested_days": days_wanted,
+                    "quantity": qty_wanted,
+                }).execute()
+                serial_list = bulk_part["part_number"]
+            else:
+                # One request row per physical unit (each is lent and returned
+                # separately), all sharing a group id so the owner sees a
+                # single card and decides once for the whole batch.
+                chosen = units[:qty_wanted]
+                group_id = str(uuid.uuid4())
+                client.table("requests").insert([
+                    {
+                        "part_id": u["part_id"],
+                        "requester_id": current_user_id,
+                        "owner_id": owner_id,
+                        "status": "pending",
+                        "requested_days": days_wanted,
+                        "request_group_id": group_id,
+                    }
+                    for u in chosen
+                ]).execute()
+                serial_list = ", ".join(u["part_number"] for u in chosen)
+
+            invalidate_cache()
+            send_email(
+                user_email_by_id.get(owner_id),
+                f"New request for {qty_wanted} × {name}",
+                f"{current_user_name} wants to borrow {qty_wanted} × {name} "
+                f"({serial_list}) for {days_wanted} day(s).\n\n"
+                f"Approve or reject it here: {APP_URL}/?tab=requests",
+            )
+            st.session_state.request_message = (
+                f"Requested {qty_wanted} × {name} — waiting for {owner_name} to approve."
+            )
+            _close_request()  # clearing the flag is what closes the dialog
+            # Reload with fresh data so the lists elsewhere don't show stale
+            # info (e.g. these units still listed as available).
+            st.rerun()
+    if cancel_col.button("Cancel", icon=":material/close:", key="cancel_request"):
+        _close_request()
+        st.rerun()
+
+
+@st.dialog("Add a part I own", on_dismiss=_close_add_part)
+def render_add_part_dialog():
+    new_part_name = st.text_input("Part name (e.g. N20 gear motor)", key="new_part_name")
+    new_part_qty = st.number_input("Quantity", min_value=1, value=1, key="new_part_qty")
+    new_part_is_bulk = st.checkbox(
+        "Loose item — count them, don't number them individually",
+        key="new_part_is_bulk",
+        help="For things like XT60 connectors, screws or wire, where nobody "
+             "tracks an individual one. Leave unticked for motors, batteries "
+             "and anything else you'd label with a serial.",
+    )
+    if new_part_is_bulk:
+        st.caption(
+            "Kept as one entry with a running count — people ask for however "
+            "many they need."
+        )
+    else:
+        st.caption(
+            "Each unit gets its own serial (RK-0001, RK-0002, …) so they're "
+            "lent and returned separately. Nothing to type in by hand."
+        )
+
+    if st.button("Add part", icon=":material/add:", type="primary", key="confirm_add_part"):
+        if not new_part_name.strip():
+            # Inline, not stashed for the page behind the dialog — closing it
+            # to report this would throw away what was typed.
+            st.error("Part name is required.")
+        else:
+            with safe_write("add this part"):
+                # For serialised parts, quantity 3 means three separate rows,
+                # each with its own serial — so every physical unit can be
+                # requested, lent, and returned independently. A loose item is
+                # the opposite: ONE row carrying the count, because nobody
+                # tracks an individual XT60.
+                #
+                # Either way no typing part numbers by hand — that's how we once
+                # got two different parts both called "2". Serials are the LOWEST
+                # RK-#### numbers not currently in use, so numbers freed up by
+                # deleted parts get recycled. Existing parts never get renumbered
+                # (their serial may be written on the physical part, or quoted in
+                # old emails — it has to stay stable).
+                #
+                # Deliberately NOT cached_table here, unlike everywhere else on
+                # this page: two people adding parts within the same cache
+                # window could otherwise both read the same "next free number"
+                # and collide on one serial. A fresh, uncached read every time
+                # is worth the one extra query for something used to generate
+                # a supposedly-unique id.
+                used_numbers = {
+                    int(p["part_number"][3:])
+                    for p in client.table("parts").select("part_number").execute().data
+                    if p["part_number"].startswith("RK-") and p["part_number"][3:].isdigit()
+                }
+                rows_needed = 1 if new_part_is_bulk else new_part_qty
+                serials = []
+                candidate = 1
+                while len(serials) < rows_needed:
+                    if candidate not in used_numbers:
+                        serials.append(f"RK-{candidate:04d}")
+                    candidate += 1
+
+                client.table("parts").insert([
+                    {
+                        "part_number": serial,
+                        "name": new_part_name.strip(),
+                        "owner_id": current_user_id,
+                        "status": "available",
+                        "is_bulk": new_part_is_bulk,
+                        "quantity": new_part_qty if new_part_is_bulk else 1,
+                    }
+                    for serial in serials
+                ]).execute()
+                invalidate_cache()
+
+                if new_part_is_bulk:
+                    st.session_state.part_added_message = (
+                        "success",
+                        f"Added {new_part_qty} × {new_part_name.strip()} as a loose item ({serials[0]}).",
+                    )
+                elif len(serials) == 1:
+                    st.session_state.part_added_message = (
+                        "success", f"Added {serials[0]} — {new_part_name.strip()}."
+                    )
+                else:
+                    st.session_state.part_added_message = (
+                        "success",
+                        f"Added {len(serials)} units of {new_part_name.strip()}: {', '.join(serials)}.",
+                    )
+                # Clear the form's own widget values, so reopening the dialog
+                # doesn't hand back the part just added.
+                for k in ("new_part_name", "new_part_qty", "new_part_is_bulk"):
+                    st.session_state.pop(k, None)
+                _close_add_part()
+                # Inside the safe_write block on purpose: if the insert
+                # failed, we want its inline error to stay on screen, not
+                # get wiped by a rerun that fires regardless.
+                st.rerun()
+
+
+@st.dialog("Edit part", on_dismiss=_close_edit_part)
+def render_edit_part_dialog(part):
+    # Host-only admin edit: rename, reassign owner, or flip status directly,
+    # bypassing the normal request/approve/return flow.
+    st.markdown(f"**{part['part_number']}**")
+    edit_name = st.text_input("Name", value=part["name"], key=f"edit_name_{part['part_id']}")
+    owner_ids = list(user_name_by_id.keys())
+    edit_owner_id = st.selectbox(
+        "Owner",
+        owner_ids,
+        index=owner_ids.index(part["owner_id"]) if part["owner_id"] in owner_ids else 0,
+        format_func=lambda uid: user_name_by_id.get(uid, "Unknown"),
+        key=f"edit_owner_{part['part_id']}",
+    )
+    statuses = ["available", "on loan"]
+    edit_status = st.selectbox(
+        "Status", statuses, index=statuses.index(part["status"]),
+        key=f"edit_status_{part['part_id']}",
+    )
+    save_col, cancel_col = st.columns([1, 1])
+    if save_col.button(
+        "Save", key=f"save_edit_{part['part_id']}", icon=":material/check:", type="primary",
+    ):
+        with safe_write("save these part edits"):
+            client.table("parts").update({
+                "name": edit_name.strip(),
+                "owner_id": edit_owner_id,
+                "status": edit_status,
+            }).eq("part_id", part["part_id"]).execute()
+            # Manually flipping an on-loan part back to available closes out
+            # its active loan too, so it doesn't linger in lent-out/borrowed.
+            if part["status"] == "on loan" and edit_status == "available":
+                client.table("requests").update({"status": "returned"}).eq(
+                    "part_id", part["part_id"]
+                ).eq("status", "approved").execute()
+            invalidate_cache()
+            st.session_state.part_edited_message = f"Updated {part['part_number']}."
+            _close_edit_part()
+            st.rerun()
+    if cancel_col.button(
+        "Cancel", key=f"cancel_edit_{part['part_id']}", icon=":material/close:"
+    ):
+        _close_edit_part()
+        st.rerun()
+
+
+@st.dialog("Approve request", on_dismiss=_close_approve)
+def render_approve_dialog(gid, group_reqs, part_name, serial_list, unit_count, requested_days, requester_id):
+    # Approving is two steps: click Approve, then confirm (optionally
+    # changing) how many days it's actually approved for. We only know the
+    # final due date once that second click happens.
+    requester_name = user_name_by_id.get(requester_id, "Unknown")
+    st.markdown(f"**{unit_count} × {part_name}** — requested by {requester_name}")
+    st.caption(f":material/tag: {serial_list}")
+    approve_days = st.number_input(
+        "Approve for how many days?", min_value=1, value=requested_days, key=f"approve_days_{gid}",
+    )
+    due_preview = today_ist() + timedelta(days=approve_days)
+    st.caption(f":material/event: Due back {due_preview.strftime('%d %b %Y')}")
+
+    confirm_col, cancel_col = st.columns([1, 1])
+    if confirm_col.button(
+        "Confirm approval", key=f"confirm_{gid}", icon=":material/check:", type="primary",
+    ):
+        with safe_write("approve this request"):
+            # today_ist(), not date.today(): approving in the early IST
+            # morning (before 5:30 AM) would otherwise store a due date one
+            # day EARLIER than the approver intended, since the UTC server's
+            # date is still "yesterday".
+            due_date = today_ist() + timedelta(days=approve_days)
+            for r in group_reqs:
+                client.table("requests").update({
+                    "status": "approved",
+                    "due_date": due_date.isoformat(),
+                }).eq("request_id", r["request_id"]).execute()
+                # A serialised unit is wholly lent out, so its status flips. A
+                # bulk row isn't — only part of the stack goes out — so its
+                # availability stays derived from the loans.
+                if not part_by_id[r["part_id"]].get("is_bulk"):
+                    client.table("parts").update({"status": "on loan"}).eq(
+                        "part_id", r["part_id"]
+                    ).execute()
+            invalidate_cache()
+            send_email(
+                user_email_by_id.get(requester_id),
+                f"Request approved: {unit_count} × {part_name}",
+                f"{current_user_name} approved your request for {unit_count} × {part_name} "
+                f"({serial_list}) for {approve_days} day(s) "
+                f"(until {due_date.strftime('%d %b %Y')}).\n\n"
+                f"Get in touch with them to arrange collection.",
+            )
+            st.session_state.decision_message = (
+                f"Approved. {unit_count} × {part_name} on loan until "
+                f"{due_date.strftime('%d %b %Y')}."
+            )
+            _close_approve()
+            st.rerun()
+    if cancel_col.button("Cancel", key=f"cancel_{gid}", icon=":material/close:"):
+        _close_approve()
+        st.rerun()
+
 
 # --- At-a-glance numbers -----------------------------------------------------
 
@@ -239,22 +581,13 @@ with tab_parts:
         st.caption("No parts match your search or filter.")
     else:
         # Column headers, lined up with the same widths as the cards below.
-        # Qty/Days only appear when something in view is actually requestable —
-        # both inputs are hidden on your own parts and on anything already on
-        # loan, so otherwise the headers sit above permanently empty columns
-        # and read like a bug.
-        any_requestable = my_pending_count < MAX_PENDING_REQUESTS and any(
-            p["owner_id"] != current_user_id
-            and (bulk_available(p) > 0 if p.get("is_bulk") else p["status"] == "available")
-            for p in visible_parts
-        )
-        head1, head2, head3, head4, head5, head6 = st.columns([2, 2, 2, 1, 1, 2])
+        # The fourth column holds the Request button and is deliberately left
+        # unlabelled — "Qty"/"Days" used to live there as two inline inputs on
+        # every requestable row; those moved into the Request dialog.
+        head1, head2, head3, head4 = st.columns([3, 2, 2, 2])
         head1.markdown("**Name**")
         head2.markdown("**Owned by**")
         head3.markdown("**Availability**")
-        if any_requestable:
-            head4.markdown("**Qty**")
-            head5.markdown("**Days**")
 
     for (group_name, group_owner_id), units in part_groups.items():
         units = sorted(units, key=lambda u: u["part_number"])
@@ -271,7 +604,7 @@ with tab_parts:
         group_key = min(u["part_id"] for u in units)
 
         with st.container(border=True, key=f"rkcard_group_{group_key}"):
-            col1, col2, col3, col4, col5, col6 = st.columns([2, 2, 2, 1, 1, 2], vertical_alignment="center")
+            col1, col2, col3, col4 = st.columns([3, 2, 2, 2], vertical_alignment="center")
             col1.markdown(f"**{group_name}**")
             col2.write(owner_name)
             with col3:
@@ -287,49 +620,18 @@ with tab_parts:
                     )
 
             if available_units and not is_mine and my_pending_count < MAX_PENDING_REQUESTS:
-                # How many units, and for how long. The owner can still change
-                # the number of days when they approve.
-                qty_wanted = col4.number_input(
-                    "Qty", min_value=1, max_value=len(available_units), value=1,
-                    key=f"qty_{group_key}", label_visibility="collapsed",
+                # How many, and for how long, are asked in the dialog — they
+                # used to be two number inputs sitting in this row on every
+                # requestable part.
+                col4.button(
+                    "Request", key=f"request_{group_key}", icon=":material/send:",
+                    width="stretch", on_click=_open_request, args=(("group", group_key),),
                 )
-                days_wanted = col5.number_input(
-                    "Days", min_value=1, value=7,
-                    key=f"days_{group_key}", label_visibility="collapsed",
-                )
-                if col6.button("Request", key=f"request_{group_key}", icon=":material/send:"):
-                    with safe_write("send this request"):
-                        # One request row per physical unit (each is lent and
-                        # returned separately), all sharing a group id so the owner
-                        # sees a single card and decides once for the whole batch.
-                        chosen = available_units[:qty_wanted]
-                        group_id = str(uuid.uuid4())
-                        client.table("requests").insert([
-                            {
-                                "part_id": u["part_id"],
-                                "requester_id": current_user_id,
-                                "owner_id": group_owner_id,
-                                "status": "pending",
-                                "requested_days": days_wanted,
-                                "request_group_id": group_id,
-                            }
-                            for u in chosen
-                        ]).execute()
-                        invalidate_cache()
-                        serial_list = ", ".join(u["part_number"] for u in chosen)
-                        send_email(
-                            user_email_by_id.get(group_owner_id),
-                            f"New request for {len(chosen)} × {group_name}",
-                            f"{current_user_name} wants to borrow {len(chosen)} × {group_name} "
-                            f"({serial_list}) for {days_wanted} day(s).\n\n"
-                            f"Approve or reject it here: {APP_URL}/?tab=requests",
-                        )
-                        st.session_state.request_message = (
-                            f"Requested {len(chosen)} × {group_name} — waiting for {owner_name} to approve."
-                        )
-                        # Reload with fresh data so the lists elsewhere don't show
-                        # stale info (e.g. these units still listed as available).
-                        st.rerun()
+                if st.session_state.requesting_key == ("group", group_key):
+                    render_request_dialog(
+                        group_name, group_owner_id, owner_name,
+                        max_qty=len(available_units), units=available_units,
+                    )
 
             st.caption(f":material/tag: {', '.join(u['part_number'] for u in units)}")
 
@@ -405,62 +707,16 @@ with tab_parts:
 
                         # Host-only admin edit: rename, reassign owner, or flip
                         # status directly, bypassing the normal request/approve/
-                        # return flow. Same click-to-open-inline-form pattern as
-                        # the Approve flow.
+                        # return flow. Opens as a dialog — it used to expand
+                        # inline here, inside an expander inside a card, which
+                        # made the whole list jump every time it opened.
                         if is_host:
+                            st.button(
+                                "Edit", key=f"edit_{part['part_id']}", icon=":material/edit:",
+                                on_click=_open_edit_part, args=(part["part_id"],),
+                            )
                             if st.session_state.editing_part_id == part["part_id"]:
-                                st.markdown(f"**Edit {part['part_number']}**")
-                                edit_name = st.text_input(
-                                    "Name", value=part["name"], key=f"edit_name_{part['part_id']}"
-                                )
-                                owner_ids = list(user_name_by_id.keys())
-                                edit_owner_id = st.selectbox(
-                                    "Owner",
-                                    owner_ids,
-                                    index=owner_ids.index(part["owner_id"]) if part["owner_id"] in owner_ids else 0,
-                                    format_func=lambda uid: user_name_by_id.get(uid, "Unknown"),
-                                    key=f"edit_owner_{part['part_id']}",
-                                )
-                                statuses = ["available", "on loan"]
-                                edit_status = st.selectbox(
-                                    "Status",
-                                    statuses,
-                                    index=statuses.index(part["status"]),
-                                    key=f"edit_status_{part['part_id']}",
-                                )
-                                save_col, cancel_col = st.columns([1, 1])
-                                if save_col.button(
-                                    "Save", key=f"save_edit_{part['part_id']}",
-                                    icon=":material/check:", type="primary",
-                                ):
-                                    with safe_write("save these part edits"):
-                                        client.table("parts").update({
-                                            "name": edit_name.strip(),
-                                            "owner_id": edit_owner_id,
-                                            "status": edit_status,
-                                        }).eq("part_id", part["part_id"]).execute()
-                                        # Manually flipping an on-loan part back to
-                                        # available closes out its active loan too, so it
-                                        # doesn't linger in lent-out/borrowed.
-                                        if part["status"] == "on loan" and edit_status == "available":
-                                            client.table("requests").update({"status": "returned"}).eq(
-                                                "part_id", part["part_id"]
-                                            ).eq("status", "approved").execute()
-                                        invalidate_cache()
-                                        st.session_state.part_edited_message = f"Updated {part['part_number']}."
-                                        st.session_state.editing_part_id = None
-                                        st.rerun()
-                                if cancel_col.button(
-                                    "Cancel", key=f"cancel_edit_{part['part_id']}", icon=":material/close:"
-                                ):
-                                    st.session_state.editing_part_id = None
-                                    st.rerun()
-                            else:
-                                if st.button(
-                                    "Edit", key=f"edit_{part['part_id']}", icon=":material/edit:"
-                                ):
-                                    st.session_state.editing_part_id = part["part_id"]
-                                    st.rerun()
+                                render_edit_part_dialog(part)
 
     # --- Bulk / loose items ---------------------------------------------------
     # One row, one card, a count instead of serial numbers. There's no
@@ -478,7 +734,7 @@ with tab_parts:
             owner_name += " (yours)"
 
         with st.container(border=True, key=f"rkcard_bulk_{part['part_id']}"):
-            col1, col2, col3, col4, col5, col6 = st.columns([2, 2, 2, 1, 1, 2], vertical_alignment="center")
+            col1, col2, col3, col4 = st.columns([3, 2, 2, 2], vertical_alignment="center")
             col1.markdown(f"**{part['name']}**")
             col2.write(owner_name)
             with col3:
@@ -491,38 +747,16 @@ with tab_parts:
                     st.badge(f"{out_qty} on loan", icon=":material/schedule:", color="orange")
 
             if free_qty > 0 and not is_mine and my_pending_count < MAX_PENDING_REQUESTS:
-                qty_wanted = col4.number_input(
-                    "Qty", min_value=1, max_value=free_qty, value=1,
-                    key=f"bulkqty_{part['part_id']}", label_visibility="collapsed",
+                col4.button(
+                    "Request", key=f"bulkrequest_{part['part_id']}", icon=":material/send:",
+                    width="stretch", on_click=_open_request,
+                    args=(("bulk", part["part_id"]),),
                 )
-                days_wanted = col5.number_input(
-                    "Days", min_value=1, value=7,
-                    key=f"bulkdays_{part['part_id']}", label_visibility="collapsed",
-                )
-                if col6.button("Request", key=f"bulkrequest_{part['part_id']}", icon=":material/send:"):
-                    with safe_write("send this request"):
-                        # A single request row carrying the quantity — unlike
-                        # serialised parts there are no individual units to point at.
-                        client.table("requests").insert({
-                            "part_id": part["part_id"],
-                            "requester_id": current_user_id,
-                            "owner_id": part["owner_id"],
-                            "status": "pending",
-                            "requested_days": days_wanted,
-                            "quantity": qty_wanted,
-                        }).execute()
-                        invalidate_cache()
-                        send_email(
-                            user_email_by_id.get(part["owner_id"]),
-                            f"New request for {qty_wanted} × {part['name']}",
-                            f"{current_user_name} wants to borrow {qty_wanted} × {part['name']} "
-                            f"({part['part_number']}) for {days_wanted} day(s).\n\n"
-                            f"Approve or reject it here: {APP_URL}/?tab=requests",
-                        )
-                        st.session_state.request_message = (
-                            f"Requested {qty_wanted} × {part['name']} — waiting for {owner_name} to approve."
-                        )
-                        st.rerun()
+                if st.session_state.requesting_key == ("bulk", part["part_id"]):
+                    render_request_dialog(
+                        part["name"], part["owner_id"], owner_name,
+                        max_qty=free_qty, bulk_part=part,
+                    )
 
             st.caption(f":material/inventory_2: Loose item · {part['part_number']}")
 
@@ -656,75 +890,38 @@ with tab_loans:
             col2.write(f"Requested by {requester_name} for {requested_days} day(s)")
 
             # Approving is two steps: click Approve, then confirm (optionally
-            # changing) how many days it's actually approved for. We only know
-            # the final due date once that second click happens.
+            # changing) how many days it's actually approved for — that second
+            # step is a dialog now, so the card stops growing under your cursor
+            # and shoving the rest of the list down.
+            col3.button(
+                "Approve", key=f"approve_{gid}", icon=":material/check:",
+                width="stretch", on_click=_open_approve, args=(gid,),
+            )
             if st.session_state.approving_request_id == gid:
-                approve_days = st.number_input(
-                    "Approve for how many days?",
-                    min_value=1,
-                    value=requested_days,
-                    key=f"approve_days_{gid}",
+                render_approve_dialog(
+                    gid, group_reqs, part_name, serial_list, unit_count,
+                    requested_days, first["requester_id"],
                 )
-                confirm_col, cancel_col = st.columns([1, 1])
-                if confirm_col.button("Confirm approval", key=f"confirm_{gid}", icon=":material/check:"):
-                    with safe_write("approve this request"):
-                        # today_ist(), not date.today(): approving in the early
-                        # IST morning (before 5:30 AM) would otherwise store a
-                        # due date one day EARLIER than the approver intended,
-                        # since the UTC server's date is still "yesterday".
-                        due_date = today_ist() + timedelta(days=approve_days)
-                        for r in group_reqs:
-                            client.table("requests").update({
-                                "status": "approved",
-                                "due_date": due_date.isoformat(),
-                            }).eq("request_id", r["request_id"]).execute()
-                            # A serialised unit is wholly lent out, so its status
-                            # flips. A bulk row isn't — only part of the stack goes
-                            # out — so its availability stays derived from the loans.
-                            if not part_by_id[r["part_id"]].get("is_bulk"):
-                                client.table("parts").update({"status": "on loan"}).eq(
-                                    "part_id", r["part_id"]
-                                ).execute()
-                        invalidate_cache()
-                        send_email(
-                            user_email_by_id.get(first["requester_id"]),
-                            f"Request approved: {unit_count} × {part_name}",
-                            f"{current_user_name} approved your request for {unit_count} × {part_name} "
-                            f"({serial_list}) for {approve_days} day(s) "
-                            f"(until {due_date.strftime('%d %b %Y')}).\n\n"
-                            f"Get in touch with them to arrange collection.",
-                        )
-                        st.session_state.decision_message = (
-                            f"Approved. {unit_count} × {part_name} on loan until "
-                            f"{due_date.strftime('%d %b %Y')}."
-                        )
-                        st.session_state.approving_request_id = None
-                        st.rerun()
-                if cancel_col.button("Cancel", key=f"cancel_{gid}", icon=":material/close:"):
-                    st.session_state.approving_request_id = None
-                    st.rerun()
-            else:
-                if col3.button("Approve", key=f"approve_{gid}", icon=":material/check:"):
-                    st.session_state.approving_request_id = gid
-                    st.rerun()
 
-                if col4.button("Reject", key=f"reject_{gid}", icon=":material/close:"):
-                    with safe_write("reject this request"):
-                        for r in group_reqs:
-                            client.table("requests").update({"status": "rejected"}).eq(
-                                "request_id", r["request_id"]
-                            ).execute()
-                        invalidate_cache()
-                        send_email(
-                            user_email_by_id.get(first["requester_id"]),
-                            f"Request rejected: {unit_count} × {part_name}",
-                            f"{current_user_name} rejected your request for {unit_count} × {part_name} "
-                            f"({serial_list}).",
-                        )
-                        st.session_state.decision_message = (
-                            f"Rejected the request for {unit_count} × {part_name}."
-                        )
-                        st.rerun()
+            if col4.button(
+                "Reject", key=f"reject_{gid}", icon=":material/close:", width="stretch",
+            ):
+                with safe_write("reject this request"):
+                    for r in group_reqs:
+                        client.table("requests").update({"status": "rejected"}).eq(
+                            "request_id", r["request_id"]
+                        ).execute()
+                    invalidate_cache()
+                    send_email(
+                        user_email_by_id.get(first["requester_id"]),
+                        f"Request rejected: {unit_count} × {part_name}",
+                        f"{current_user_name} rejected your request for {unit_count} × {part_name} "
+                        f"({serial_list}).",
+                    )
+                    st.session_state.decision_message = (
+                        f"Rejected the request for {unit_count} × {part_name}."
+                    )
+                    st.rerun()
 
             st.caption(f":material/tag: {serial_list}")
 
@@ -802,105 +999,24 @@ with tab_loans:
 
 with tab_manage:
     st.subheader(":material/add_box: Add a part I own")
+    st.caption("Everything you own goes in here so other members can borrow it.")
+    st.button(
+        "Add a part", icon=":material/add:", type="primary", key="open_add_part",
+        on_click=_open_add_part,
+    )
+    if st.session_state.show_add_part:
+        render_add_part_dialog()
 
-    with st.container(border=True):
-        new_part_name = st.text_input("Part name (e.g. N20 gear motor)", key="new_part_name")
-        new_part_qty = st.number_input("Quantity", min_value=1, value=1, key="new_part_qty")
-        new_part_is_bulk = st.checkbox(
-            "Loose item — count them, don't number them individually",
-            key="new_part_is_bulk",
-            help="For things like XT60 connectors, screws or wire, where nobody "
-                 "tracks an individual one. Leave unticked for motors, batteries "
-                 "and anything else you'd label with a serial.",
-        )
-        if new_part_is_bulk:
-            st.caption(
-                "Kept as one entry with a running count — people ask for however "
-                "many they need."
-            )
+    # Success pops up as a toast (an animated notification, bottom-right).
+    # Validation errors are shown inside the dialog itself instead, so they
+    # can't close the form and throw away what was typed.
+    if st.session_state.part_added_message:
+        kind, text = st.session_state.part_added_message
+        if kind == "success":
+            st.toast(text, icon=":material/check_circle:")
         else:
-            st.caption(
-                "Each unit gets its own serial (RK-0001, RK-0002, …) so they're "
-                "lent and returned separately. Nothing to type in by hand."
-            )
-        if st.button("Add part", icon=":material/add:", type="primary"):
-            if not new_part_name.strip():
-                st.session_state.part_added_message = ("error", "Part name is required.")
-                st.rerun()
-            else:
-                with safe_write("add this part"):
-                    # For serialised parts, quantity 3 means three separate rows,
-                    # each with its own serial — so every physical unit can be
-                    # requested, lent, and returned independently. A loose item is
-                    # the opposite: ONE row carrying the count, because nobody
-                    # tracks an individual XT60.
-                    #
-                    # Either way no typing part numbers by hand — that's how we once
-                    # got two different parts both called "2". Serials are the LOWEST
-                    # RK-#### numbers not currently in use, so numbers freed up by
-                    # deleted parts get recycled. Existing parts never get renumbered
-                    # (their serial may be written on the physical part, or quoted in
-                    # old emails — it has to stay stable).
-                    #
-                    # Deliberately NOT cached_table here, unlike everywhere else on
-                    # this page: two people adding parts within the same cache
-                    # window could otherwise both read the same "next free number"
-                    # and collide on one serial. A fresh, uncached read every time
-                    # is worth the one extra query for something used to generate
-                    # a supposedly-unique id.
-                    used_numbers = {
-                        int(p["part_number"][3:])
-                        for p in client.table("parts").select("part_number").execute().data
-                        if p["part_number"].startswith("RK-") and p["part_number"][3:].isdigit()
-                    }
-                    rows_needed = 1 if new_part_is_bulk else new_part_qty
-                    serials = []
-                    candidate = 1
-                    while len(serials) < rows_needed:
-                        if candidate not in used_numbers:
-                            serials.append(f"RK-{candidate:04d}")
-                        candidate += 1
-
-                    client.table("parts").insert([
-                        {
-                            "part_number": serial,
-                            "name": new_part_name.strip(),
-                            "owner_id": current_user_id,
-                            "status": "available",
-                            "is_bulk": new_part_is_bulk,
-                            "quantity": new_part_qty if new_part_is_bulk else 1,
-                        }
-                        for serial in serials
-                    ]).execute()
-                    invalidate_cache()
-
-                    if new_part_is_bulk:
-                        st.session_state.part_added_message = (
-                            "success",
-                            f"Added {new_part_qty} × {new_part_name.strip()} as a loose item ({serials[0]}).",
-                        )
-                    elif len(serials) == 1:
-                        st.session_state.part_added_message = ("success", f"Added {serials[0]} — {new_part_name.strip()}.")
-                    else:
-                        st.session_state.part_added_message = (
-                            "success",
-                            f"Added {len(serials)} units of {new_part_name.strip()}: {', '.join(serials)}.",
-                        )
-                    # Inside the safe_write block on purpose: if the insert
-                    # failed, we want its inline error to stay on screen, not
-                    # get wiped by a rerun that fires regardless.
-                    st.rerun()
-
-        # Success pops up as a toast (an animated notification, bottom-right);
-        # errors stay put under the form so they can't be missed. Stashed in
-        # session_state so it survives the rerun the click causes, same as ever.
-        if st.session_state.part_added_message:
-            kind, text = st.session_state.part_added_message
-            if kind == "success":
-                st.toast(text, icon=":material/check_circle:")
-            else:
-                st.error(text)
-            st.session_state.part_added_message = None
+            st.error(text)
+        st.session_state.part_added_message = None
 
     if is_host:
         st.subheader(":material/shield_person: Host tools")
