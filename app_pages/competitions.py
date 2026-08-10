@@ -54,6 +54,26 @@ def _validate_competition_form(name, comp_date, events):
     return errors
 
 
+# Every widget key the "Add a competition" dialog creates. Streamlit keeps a
+# widget's last value in session_state under its key, so without clearing
+# these the next time the dialog opens it would still be showing the details
+# of the competition just created.
+_ADD_FORM_KEY_PREFIXES = (
+    "new_comp_",  # name / venue / date / reg_deadline / incharge
+    "link_label_", "link_url_",  # one pair per link row
+    "event_name_", "event_details_", "event_team_size_",
+    "event_max_teams_", "event_min_grade_", "event_max_grade_",  # one set per event row
+)
+
+
+def _clear_add_form_widget_state():
+    for key in [
+        k for k in st.session_state
+        if isinstance(k, str) and k.startswith(_ADD_FORM_KEY_PREFIXES)
+    ]:
+        del st.session_state[key]
+
+
 st.title("Competitions")
 
 # --- Host-only: add a competition ------------------------------------------
@@ -84,6 +104,16 @@ if "confirming_e2c_bulk_sync" not in st.session_state:
     st.session_state.confirming_e2c_bulk_sync = False
 if "pending_e2c_bulk_sync" not in st.session_state:
     st.session_state.pending_e2c_bulk_sync = None
+# Which host dialog (if any) is currently open. These are plain flags rather
+# than "just call the dialog function from the button", because a dialog only
+# stays on screen while something re-calls its function each run — and every
+# st.rerun() inside these forms (adding a link row, confirming a date change)
+# is a full-app rerun. Driving them from a flag means those reruns redraw the
+# dialog instead of dismissing it, and closing one is just clearing its flag.
+if "show_add_competition" not in st.session_state:
+    st.session_state.show_add_competition = False
+if "show_e2c_import" not in st.session_state:
+    st.session_state.show_e2c_import = False
 
 
 def _notify_date_change(name, old_date, new_date):
@@ -140,116 +170,146 @@ def _notify_new_event(comp_name, event_name, min_grade, max_grade):
     send_discord_message(message)
 
 
+def _close_add_competition():
+    st.session_state.show_add_competition = False
+
+
+# Opening a dialog has to happen in an on_click callback, not in the button's
+# `if` body. Callbacks run before the script body, whereas the tabs all render
+# in one pass with Upcoming first — so a flag set inside the button body lands
+# after the competition cards have already had their chance to open the edit
+# dialog, and Streamlit refuses a second open dialog in the same run.
+def _open_add_competition():
+    st.session_state.show_add_competition = True
+    st.session_state.show_e2c_import = False
+    st.session_state.editing_competition_id = None
+
+
+@st.dialog("Add a competition", width="large", on_dismiss=_close_add_competition)
 def render_add_competition():
-    with st.container(border=True):
-        st.subheader(":material/add_box: Add a competition")
-        name = st.text_input("Competition name", key="new_comp_name")
-        venue = st.text_input("Venue", key="new_comp_venue")
-        comp_date = st.date_input("Competition date", key="new_comp_date", value=None)
-        reg_deadline = st.date_input("Registration deadline", key="new_comp_reg_deadline", value=None)
-        student_incharge = st.text_input("Student in-charge", key="new_comp_incharge")
+    # A dialog rather than a permanently-open form: this is ~15 widgets
+    # minimum (more with every extra link/event row), which used to sit
+    # open on the Add & import tab whether or not anyone was adding
+    # anything. Now it's behind one button.
+    #
+    # It's held open by st.session_state.show_add_competition (see the flag
+    # comment further up), so the st.rerun() calls below — adding/removing a
+    # link or event row — redraw the dialog instead of dismissing it. Only
+    # the final Create button clears the flag, which is what closes it.
+    name = st.text_input("Competition name", key="new_comp_name")
+    venue = st.text_input("Venue", key="new_comp_venue")
+    comp_date = st.date_input("Competition date", key="new_comp_date", value=None)
+    reg_deadline = st.date_input("Registration deadline", key="new_comp_reg_deadline", value=None)
+    student_incharge = st.text_input("Student in-charge", key="new_comp_incharge")
 
-        st.markdown("**Links** (brochure, registration form, etc.)")
-        for i, link in enumerate(st.session_state.new_links):
-            lcol1, lcol2, lcol3 = st.columns([2, 4, 1], vertical_alignment="bottom")
-            link["label"] = lcol1.text_input(
-                "Label", value=link["label"], key=f"link_label_{i}",
-                label_visibility="collapsed", placeholder="Label (e.g. Brochure)",
-            )
-            link["url"] = lcol2.text_input(
-                "URL", value=link["url"], key=f"link_url_{i}",
-                label_visibility="collapsed", placeholder="https://...",
-            )
-            if len(st.session_state.new_links) > 1:
-                if lcol3.button("Remove", key=f"remove_link_{i}", icon=":material/close:"):
-                    st.session_state.new_links.pop(i)
-                    st.rerun()
-        if st.button("Add another link", key="add_link", icon=":material/add:"):
-            st.session_state.new_links.append(dict(BLANK_LINK))
-            st.rerun()
-
-        st.markdown("**Events** (e.g. Robosoccer, Roborace)")
-        for i, event in enumerate(st.session_state.new_events):
-            with st.container(border=True):
-                event["name"] = st.text_input("Event name", value=event["name"], key=f"event_name_{i}")
-                event["details"] = st.text_area(
-                    "Details / rules", value=event["details"], key=f"event_details_{i}"
-                )
-                ecol1, ecol2, ecol3, ecol4 = st.columns(4)
-                event["team_size"] = ecol1.number_input(
-                    "Team size", min_value=1, value=event["team_size"], key=f"event_team_size_{i}"
-                )
-                event["max_teams"] = ecol2.number_input(
-                    "Max teams", min_value=1, value=event["max_teams"], key=f"event_max_teams_{i}"
-                )
-                event["min_grade"] = ecol3.selectbox(
-                    "Min grade", GRADES, index=GRADES.index(event["min_grade"]), key=f"event_min_grade_{i}"
-                )
-                event["max_grade"] = ecol4.selectbox(
-                    "Max grade", GRADES, index=GRADES.index(event["max_grade"]), key=f"event_max_grade_{i}"
-                )
-                if len(st.session_state.new_events) > 1:
-                    if st.button("Remove event", key=f"remove_event_{i}", icon=":material/close:"):
-                        st.session_state.new_events.pop(i)
-                        st.rerun()
-        if st.button("Add another event", key="add_event", icon=":material/add:"):
-            st.session_state.new_events.append(dict(BLANK_EVENT))
-            st.rerun()
-
-        if st.button("Create competition", type="primary", icon=":material/check:"):
-            valid_events = [e for e in st.session_state.new_events if e["name"].strip()]
-            errors = _validate_competition_form(name, comp_date, valid_events)
-
-            if errors:
-                st.session_state.competition_message = ("error", " ".join(errors))
+    st.markdown("**Links** (brochure, registration form, etc.)")
+    for i, link in enumerate(st.session_state.new_links):
+        lcol1, lcol2, lcol3 = st.columns([2, 4, 1], vertical_alignment="bottom")
+        link["label"] = lcol1.text_input(
+            "Label", value=link["label"], key=f"link_label_{i}",
+            label_visibility="collapsed", placeholder="Label (e.g. Brochure)",
+        )
+        link["url"] = lcol2.text_input(
+            "URL", value=link["url"], key=f"link_url_{i}",
+            label_visibility="collapsed", placeholder="https://...",
+        )
+        if len(st.session_state.new_links) > 1:
+            if lcol3.button("Remove", key=f"remove_link_{i}", icon=":material/close:"):
+                st.session_state.new_links.pop(i)
                 st.rerun()
-            else:
-                with _safe_write("create the competition"):
-                    comp_result = client.table("competitions").insert({
-                        "name": name.strip(),
-                        "venue": venue.strip(),
-                        "competition_date": comp_date.isoformat(),
-                        "registration_deadline": reg_deadline.isoformat() if reg_deadline else None,
-                        "student_incharge": student_incharge.strip(),
-                    }).execute()
-                    competition_id = comp_result.data[0]["competition_id"]
+    if st.button("Add another link", key="add_link", icon=":material/add:"):
+        st.session_state.new_links.append(dict(BLANK_LINK))
+        st.rerun()
 
-                    valid_links = [l for l in st.session_state.new_links if l["url"].strip()]
-                    if valid_links:
-                        client.table("competition_links").insert([
-                            {
-                                "competition_id": competition_id,
-                                "label": l["label"].strip() or "Link",
-                                # Add https:// if they typed a bare domain, so the
-                                # stored URL is always clickable as-is.
-                                "url": l["url"].strip() if l["url"].strip().startswith(("http://", "https://"))
-                                else "https://" + l["url"].strip(),
-                            }
-                            for l in valid_links
-                        ]).execute()
+    st.markdown("**Events** (e.g. Robosoccer, Roborace)")
+    for i, event in enumerate(st.session_state.new_events):
+        with st.container(border=True):
+            event["name"] = st.text_input("Event name", value=event["name"], key=f"event_name_{i}")
+            event["details"] = st.text_area(
+                "Details / rules", value=event["details"], key=f"event_details_{i}"
+            )
+            ecol1, ecol2, ecol3, ecol4 = st.columns(4)
+            event["team_size"] = ecol1.number_input(
+                "Team size", min_value=1, value=event["team_size"], key=f"event_team_size_{i}"
+            )
+            event["max_teams"] = ecol2.number_input(
+                "Max teams", min_value=1, value=event["max_teams"], key=f"event_max_teams_{i}"
+            )
+            event["min_grade"] = ecol3.selectbox(
+                "Min grade", GRADES, index=GRADES.index(event["min_grade"]), key=f"event_min_grade_{i}"
+            )
+            event["max_grade"] = ecol4.selectbox(
+                "Max grade", GRADES, index=GRADES.index(event["max_grade"]), key=f"event_max_grade_{i}"
+            )
+            if len(st.session_state.new_events) > 1:
+                if st.button("Remove event", key=f"remove_event_{i}", icon=":material/close:"):
+                    st.session_state.new_events.pop(i)
+                    st.rerun()
+    if st.button("Add another event", key="add_event", icon=":material/add:"):
+        st.session_state.new_events.append(dict(BLANK_EVENT))
+        st.rerun()
 
-                    client.table("competition_events").insert([
+    if st.button("Create competition", type="primary", icon=":material/check:"):
+        valid_events = [e for e in st.session_state.new_events if e["name"].strip()]
+        errors = _validate_competition_form(name, comp_date, valid_events)
+
+        if errors:
+            # Shown right here inside the dialog instead of being stashed
+            # for the page behind it — closing the dialog to report a
+            # validation error would throw away everything just typed.
+            st.error(" ".join(errors))
+        else:
+            with _safe_write("create the competition"):
+                comp_result = client.table("competitions").insert({
+                    "name": name.strip(),
+                    "venue": venue.strip(),
+                    "competition_date": comp_date.isoformat(),
+                    "registration_deadline": reg_deadline.isoformat() if reg_deadline else None,
+                    "student_incharge": student_incharge.strip(),
+                }).execute()
+                competition_id = comp_result.data[0]["competition_id"]
+
+                valid_links = [l for l in st.session_state.new_links if l["url"].strip()]
+                if valid_links:
+                    client.table("competition_links").insert([
                         {
                             "competition_id": competition_id,
-                            "name": e["name"].strip(),
-                            "details": e["details"].strip(),
-                            "team_size": e["team_size"],
-                            "max_teams": e["max_teams"],
-                            "min_grade": e["min_grade"],
-                            "max_grade": e["max_grade"],
+                            "label": l["label"].strip() or "Link",
+                            # Add https:// if they typed a bare domain, so the
+                            # stored URL is always clickable as-is.
+                            "url": l["url"].strip() if l["url"].strip().startswith(("http://", "https://"))
+                            else "https://" + l["url"].strip(),
                         }
-                        for e in valid_events
+                        for l in valid_links
                     ]).execute()
-                    invalidate_cache()
 
-                    for e in valid_events:
-                        _notify_new_event(name.strip(), e["name"].strip(), e["min_grade"], e["max_grade"])
+                client.table("competition_events").insert([
+                    {
+                        "competition_id": competition_id,
+                        "name": e["name"].strip(),
+                        "details": e["details"].strip(),
+                        "team_size": e["team_size"],
+                        "max_teams": e["max_teams"],
+                        "min_grade": e["min_grade"],
+                        "max_grade": e["max_grade"],
+                    }
+                    for e in valid_events
+                ]).execute()
+                invalidate_cache()
 
-                    st.session_state.competition_message = ("success", f"Added {name.strip()}.")
-                    # Reset the form's lists back to one blank row each.
-                    st.session_state.new_links = [dict(BLANK_LINK)]
-                    st.session_state.new_events = [dict(BLANK_EVENT)]
-                    st.rerun()
+                for e in valid_events:
+                    _notify_new_event(name.strip(), e["name"].strip(), e["min_grade"], e["max_grade"])
+
+                st.session_state.competition_message = ("success", f"Added {name.strip()}.")
+                # Reset the form's lists back to one blank row each. The
+                # per-row widget keys (link_label_0, event_name_0, …) are
+                # cleared too — otherwise Streamlit would helpfully hand
+                # the next Add dialog back whatever was typed last time.
+                st.session_state.new_links = [dict(BLANK_LINK)]
+                st.session_state.new_events = [dict(BLANK_EVENT)]
+                _clear_add_form_widget_state()
+                _close_add_competition()  # clearing the flag is what closes the dialog
+                st.rerun()
 
 # --- Host-only: scan the E2C sheet for robotics competitions ---------------
 # Re-scanning always re-reads the live sheet fresh, so a new/unimported
@@ -506,9 +566,29 @@ def _render_e2c_scan_skeleton():
             )
 
 
+def _close_e2c_import():
+    st.session_state.show_e2c_import = False
+
+
+def _open_e2c_import():  # see _open_add_competition for why this is a callback
+    st.session_state.show_e2c_import = True
+    st.session_state.show_add_competition = False
+    st.session_state.editing_competition_id = None
+
+
+@st.dialog("Import from E2C sheet", width="large", on_dismiss=_close_e2c_import)
 def render_e2c_import():
-    with st.container(border=True):
-        st.subheader(":material/travel_explore: Import from E2C sheet")
+    # Same reasoning as the Add dialog above: this renders an unbounded
+    # number of widgets (it grows with the sheet), and it used to sit open
+    # on the Add & import tab permanently. The dialog now supplies the
+    # frame and the title, so the plain st.container below is only here to
+    # keep this long body at its original indentation.
+    #
+    # Held open by st.session_state.show_e2c_import, so every st.rerun()
+    # in here (rejecting an event, confirming a date sync, adding an event
+    # by name) redraws the dialog. The two "finished importing" buttons
+    # clear the flag first, so those close it.
+    with st.container():
         st.caption("Reads the club's E2C sheet directly — no link to paste.")
         if st.button("Scan for robotics competitions", icon=":material/search:"):
             skeleton = st.empty()
@@ -814,6 +894,7 @@ def render_e2c_import():
                             st.session_state.competition_message = (
                                 "success", f"Imported {imported} competition(s) from E2C."
                             )
+                        _close_e2c_import()  # importing is finished — let the dialog close
                         st.rerun()
 
             if already_imported:
@@ -1004,6 +1085,7 @@ def render_e2c_import():
                                                 f"Added {len(to_add)} event(s) to {comp['name']}.",
                                                 icon=":material/check_circle:",
                                             )
+                                            _close_e2c_import()  # done adding — close the dialog
                                             st.rerun()
 
 
@@ -1173,6 +1255,183 @@ def _apply_competition_save(
         st.rerun()
 
 
+def _close_competition_edit():
+    # Dismissing the edit dialog (clicking outside it, the X, or ESC) has to
+    # abandon the edit exactly like Cancel does. Without this, the card
+    # behind the dialog would stay flagged as "being edited" and render
+    # blank until something else reran the app.
+    st.session_state.editing_competition_id = None
+    st.session_state.confirming_date_change_id = None
+    st.session_state.pending_date_change = None
+
+
+@st.dialog("Edit competition", width="large", on_dismiss=_close_competition_edit)
+def render_edit_competition(comp, events):
+    # Used to replace the whole competition card in place, which meant the
+    # card you were editing vanished and everything below it jumped up the
+    # page. It's a modal now. Same two steps as before: the form, and the
+    # Accept/Reject prompt if the date changed — the prompt just swaps in
+    # inside the dialog rather than inside the card.
+    #
+    # As in the Add dialog, it's held open by a session flag — here the
+    # existing editing_competition_id — so the st.rerun() calls in here
+    # redraw it. Cancel (and dismissing it) clear that flag, which is what
+    # actually closes it.
+    cid = comp["competition_id"]
+
+    if st.session_state.confirming_date_change_id == cid:
+        # --- Host: confirm a date change before it's applied ------------
+        # The date is the one field this app won't silently change on a
+        # plain Save — a wrong/accidental date is disruptive enough (it
+        # goes out to every member) that it gets its own explicit
+        # Accept/Reject step, same two-step-confirm shape as deleting a
+        # competition or withdrawing from an event elsewhere on this page.
+        pending = st.session_state.pending_date_change
+        old_str = pending["old_date"].strftime("%d %b %Y") if pending["old_date"] else "no date set"
+        new_str = pending["new_date"].strftime("%d %b %Y")
+        st.warning(
+            f"**{pending['name'].strip()}**'s date is changing from **{old_str}** to "
+            f"**{new_str}**. Accepting saves your changes and emails every member about "
+            f"the new date. Rejecting saves your other changes but keeps the original date."
+        )
+        accept_col, reject_col = st.columns([1, 1])
+        if accept_col.button(
+            "Accept date change", key=f"accept_date_{cid}", icon=":material/check:", type="primary"
+        ):
+            _apply_competition_save(
+                pending["cid"], pending["name"], pending["venue"], pending["new_date"],
+                pending["reg_deadline"], pending["incharge"], pending["valid_events"],
+                pending["valid_links"], pending["original_events"],
+                date_changed=True, old_date=pending["old_date"],
+            )
+        if reject_col.button("Reject date change", key=f"reject_date_{cid}", icon=":material/close:"):
+            _apply_competition_save(
+                pending["cid"], pending["name"], pending["venue"], pending["old_date"],
+                pending["reg_deadline"], pending["incharge"], pending["valid_events"],
+                pending["valid_links"], pending["original_events"],
+                date_changed=False, old_date=pending["old_date"],
+            )
+        return
+
+    # --- Host: edit this competition ------------------------------------
+    # Same list-in-session-state + Add/Remove pattern as the Create dialog
+    # above, just pre-filled with the existing data.
+    edit_name = st.text_input("Competition name", value=comp["name"], key=f"edit_name_{cid}")
+    edit_venue = st.text_input("Venue", value=comp.get("venue") or "", key=f"edit_venue_{cid}")
+    edit_date = st.date_input(
+        "Competition date",
+        value=date.fromisoformat(comp["competition_date"]) if comp.get("competition_date") else None,
+        key=f"edit_date_{cid}",
+    )
+    edit_reg_deadline = st.date_input(
+        "Registration deadline",
+        value=date.fromisoformat(comp["registration_deadline"])
+        if comp.get("registration_deadline") else None,
+        key=f"edit_reg_deadline_{cid}",
+    )
+    edit_incharge = st.text_input(
+        "Student in-charge", value=comp.get("student_incharge") or "", key=f"edit_incharge_{cid}"
+    )
+
+    st.markdown("**Links**")
+    for i, link in enumerate(st.session_state.edit_comp_links):
+        lcol1, lcol2, lcol3 = st.columns([2, 4, 1], vertical_alignment="bottom")
+        link["label"] = lcol1.text_input(
+            "Label", value=link["label"], key=f"edit_link_label_{cid}_{i}",
+            label_visibility="collapsed", placeholder="Label (e.g. Brochure)",
+        )
+        link["url"] = lcol2.text_input(
+            "URL", value=link["url"], key=f"edit_link_url_{cid}_{i}",
+            label_visibility="collapsed", placeholder="https://...",
+        )
+        if len(st.session_state.edit_comp_links) > 1:
+            if lcol3.button("Remove", key=f"edit_remove_link_{cid}_{i}", icon=":material/close:"):
+                st.session_state.edit_comp_links.pop(i)
+                st.rerun()
+    if st.button("Add another link", key=f"edit_add_link_{cid}", icon=":material/add:"):
+        st.session_state.edit_comp_links.append(dict(BLANK_LINK))
+        st.rerun()
+
+    st.markdown("**Events**")
+    for i, event in enumerate(st.session_state.edit_comp_events):
+        with st.container(border=True):
+            event["name"] = st.text_input(
+                "Event name", value=event["name"], key=f"edit_event_name_{cid}_{i}"
+            )
+            event["details"] = st.text_area(
+                "Details / rules", value=event["details"], key=f"edit_event_details_{cid}_{i}"
+            )
+            ecol1, ecol2, ecol3, ecol4 = st.columns(4)
+            event["team_size"] = ecol1.number_input(
+                "Team size", min_value=1, value=event["team_size"],
+                key=f"edit_event_team_size_{cid}_{i}",
+            )
+            event["max_teams"] = ecol2.number_input(
+                "Max teams", min_value=1, value=event["max_teams"],
+                key=f"edit_event_max_teams_{cid}_{i}",
+            )
+            event["min_grade"] = ecol3.selectbox(
+                "Min grade", GRADES, index=GRADES.index(event["min_grade"]),
+                key=f"edit_event_min_grade_{cid}_{i}",
+            )
+            event["max_grade"] = ecol4.selectbox(
+                "Max grade", GRADES, index=GRADES.index(event["max_grade"]),
+                key=f"edit_event_max_grade_{cid}_{i}",
+            )
+            if len(st.session_state.edit_comp_events) > 1:
+                if st.button(
+                    "Remove event", key=f"edit_remove_event_{cid}_{i}", icon=":material/close:"
+                ):
+                    # Removing an existing event here deletes it (and
+                    # anyone's volunteer signups for it) on Save — same as
+                    # deleting a part deletes its request history.
+                    # Untouched events keep their signups (updated, not
+                    # recreated).
+                    st.session_state.edit_comp_events.pop(i)
+                    st.rerun()
+    if st.button("Add another event", key=f"edit_add_event_{cid}", icon=":material/add:"):
+        st.session_state.edit_comp_events.append(dict(BLANK_EVENT))
+        st.rerun()
+
+    save_col, cancel_col = st.columns([1, 1])
+    if save_col.button(
+        "Save changes", key=f"save_comp_{cid}", icon=":material/check:", type="primary"
+    ):
+        valid_events = [e for e in st.session_state.edit_comp_events if e["name"].strip()]
+        errors = _validate_competition_form(edit_name, edit_date, valid_events)
+
+        if errors:
+            # Inline, not stashed for the page behind — closing the dialog
+            # to report a validation error would throw away the edits.
+            st.error(" ".join(errors))
+        else:
+            valid_links = [l for l in st.session_state.edit_comp_links if l["url"].strip()]
+            old_date = (
+                date.fromisoformat(comp["competition_date"]) if comp.get("competition_date") else None
+            )
+            if edit_date != old_date:
+                # Don't save yet — hold everything in session_state and
+                # redraw this dialog as the Accept/Reject prompt instead.
+                # Other field edits ride along with whichever choice the
+                # host makes.
+                st.session_state.pending_date_change = {
+                    "cid": cid, "name": edit_name, "venue": edit_venue, "new_date": edit_date,
+                    "reg_deadline": edit_reg_deadline, "incharge": edit_incharge,
+                    "valid_events": valid_events, "valid_links": valid_links,
+                    "original_events": events, "old_date": old_date,
+                }
+                st.session_state.confirming_date_change_id = cid
+                st.rerun()
+            else:
+                _apply_competition_save(
+                    cid, edit_name, edit_venue, edit_date, edit_reg_deadline, edit_incharge,
+                    valid_events, valid_links, events, date_changed=False, old_date=old_date,
+                )
+    if cancel_col.button("Cancel", key=f"cancel_comp_{cid}", icon=":material/close:"):
+        _close_competition_edit()
+        st.rerun()
+
+
 def render_competition_card(comp):
     cid = comp["competition_id"]
     links = [l for l in all_links if l["competition_id"] == cid]
@@ -1182,157 +1441,11 @@ def render_competition_card(comp):
     # key= gives the card a stable "st-key-rkcard_..." CSS class, which
     # the hover animation in app.py targets.
     with st.container(border=True, key=f"rkcard_comp_{cid}"):
-        if editing_this and st.session_state.confirming_date_change_id == cid:
-            # --- Host: confirm a date change before it's applied --------
-            # The date is the one field this app won't silently change on
-            # a plain Save — a wrong/accidental date is disruptive enough
-            # (it goes out to every member) that it gets its own explicit
-            # Accept/Reject step, same two-step-confirm shape as deleting a
-            # competition or withdrawing from an event elsewhere on this page.
-            pending = st.session_state.pending_date_change
-            old_str = pending["old_date"].strftime("%d %b %Y") if pending["old_date"] else "no date set"
-            new_str = pending["new_date"].strftime("%d %b %Y")
-            st.warning(
-                f"**{pending['name'].strip()}**'s date is changing from **{old_str}** to "
-                f"**{new_str}**. Accepting saves your changes and emails every member about "
-                f"the new date. Rejecting saves your other changes but keeps the original date."
-            )
-            accept_col, reject_col = st.columns([1, 1])
-            if accept_col.button(
-                "Accept date change", key=f"accept_date_{cid}", icon=":material/check:", type="primary"
-            ):
-                _apply_competition_save(
-                    pending["cid"], pending["name"], pending["venue"], pending["new_date"],
-                    pending["reg_deadline"], pending["incharge"], pending["valid_events"],
-                    pending["valid_links"], pending["original_events"],
-                    date_changed=True, old_date=pending["old_date"],
-                )
-            if reject_col.button("Reject date change", key=f"reject_date_{cid}", icon=":material/close:"):
-                _apply_competition_save(
-                    pending["cid"], pending["name"], pending["venue"], pending["old_date"],
-                    pending["reg_deadline"], pending["incharge"], pending["valid_events"],
-                    pending["valid_links"], pending["original_events"],
-                    date_changed=False, old_date=pending["old_date"],
-                )
-
-        elif editing_this:
-            # --- Host: edit this competition ---------------------------
-            # Same list-in-session-state + Add/Remove pattern as the
-            # Create form above, just pre-filled with the existing data.
-            st.markdown(f"**Editing: {comp['name']}**")
-            edit_name = st.text_input("Competition name", value=comp["name"], key=f"edit_name_{cid}")
-            edit_venue = st.text_input("Venue", value=comp.get("venue") or "", key=f"edit_venue_{cid}")
-            edit_date = st.date_input(
-                "Competition date",
-                value=date.fromisoformat(comp["competition_date"]) if comp.get("competition_date") else None,
-                key=f"edit_date_{cid}",
-            )
-            edit_reg_deadline = st.date_input(
-                "Registration deadline",
-                value=date.fromisoformat(comp["registration_deadline"])
-                if comp.get("registration_deadline") else None,
-                key=f"edit_reg_deadline_{cid}",
-            )
-            edit_incharge = st.text_input(
-                "Student in-charge", value=comp.get("student_incharge") or "", key=f"edit_incharge_{cid}"
-            )
-
-            st.markdown("**Links**")
-            for i, link in enumerate(st.session_state.edit_comp_links):
-                lcol1, lcol2, lcol3 = st.columns([2, 4, 1], vertical_alignment="bottom")
-                link["label"] = lcol1.text_input(
-                    "Label", value=link["label"], key=f"edit_link_label_{cid}_{i}",
-                    label_visibility="collapsed", placeholder="Label (e.g. Brochure)",
-                )
-                link["url"] = lcol2.text_input(
-                    "URL", value=link["url"], key=f"edit_link_url_{cid}_{i}",
-                    label_visibility="collapsed", placeholder="https://...",
-                )
-                if len(st.session_state.edit_comp_links) > 1:
-                    if lcol3.button("Remove", key=f"edit_remove_link_{cid}_{i}", icon=":material/close:"):
-                        st.session_state.edit_comp_links.pop(i)
-                        st.rerun()
-            if st.button("Add another link", key=f"edit_add_link_{cid}", icon=":material/add:"):
-                st.session_state.edit_comp_links.append(dict(BLANK_LINK))
-                st.rerun()
-
-            st.markdown("**Events**")
-            for i, event in enumerate(st.session_state.edit_comp_events):
-                with st.container(border=True):
-                    event["name"] = st.text_input(
-                        "Event name", value=event["name"], key=f"edit_event_name_{cid}_{i}"
-                    )
-                    event["details"] = st.text_area(
-                        "Details / rules", value=event["details"], key=f"edit_event_details_{cid}_{i}"
-                    )
-                    ecol1, ecol2, ecol3, ecol4 = st.columns(4)
-                    event["team_size"] = ecol1.number_input(
-                        "Team size", min_value=1, value=event["team_size"],
-                        key=f"edit_event_team_size_{cid}_{i}",
-                    )
-                    event["max_teams"] = ecol2.number_input(
-                        "Max teams", min_value=1, value=event["max_teams"],
-                        key=f"edit_event_max_teams_{cid}_{i}",
-                    )
-                    event["min_grade"] = ecol3.selectbox(
-                        "Min grade", GRADES, index=GRADES.index(event["min_grade"]),
-                        key=f"edit_event_min_grade_{cid}_{i}",
-                    )
-                    event["max_grade"] = ecol4.selectbox(
-                        "Max grade", GRADES, index=GRADES.index(event["max_grade"]),
-                        key=f"edit_event_max_grade_{cid}_{i}",
-                    )
-                    if len(st.session_state.edit_comp_events) > 1:
-                        if st.button(
-                            "Remove event", key=f"edit_remove_event_{cid}_{i}", icon=":material/close:"
-                        ):
-                            # Removing an existing event here deletes it
-                            # (and anyone's volunteer signups for it) on
-                            # Save — same as deleting a part deletes its
-                            # request history. Untouched events keep
-                            # their signups (updated, not recreated).
-                            st.session_state.edit_comp_events.pop(i)
-                            st.rerun()
-            if st.button("Add another event", key=f"edit_add_event_{cid}", icon=":material/add:"):
-                st.session_state.edit_comp_events.append(dict(BLANK_EVENT))
-                st.rerun()
-
-            save_col, cancel_col = st.columns([1, 1])
-            if save_col.button(
-                "Save changes", key=f"save_comp_{cid}", icon=":material/check:", type="primary"
-            ):
-                valid_events = [e for e in st.session_state.edit_comp_events if e["name"].strip()]
-                errors = _validate_competition_form(edit_name, edit_date, valid_events)
-
-                if errors:
-                    st.session_state.competition_message = ("error", " ".join(errors))
-                    st.rerun()
-                else:
-                    valid_links = [l for l in st.session_state.edit_comp_links if l["url"].strip()]
-                    old_date = (
-                        date.fromisoformat(comp["competition_date"]) if comp.get("competition_date") else None
-                    )
-                    if edit_date != old_date:
-                        # Don't save yet — hold everything in session_state
-                        # and show the Accept/Reject prompt on the next
-                        # rerun instead. Other field edits ride along with
-                        # whichever choice the host makes.
-                        st.session_state.pending_date_change = {
-                            "cid": cid, "name": edit_name, "venue": edit_venue, "new_date": edit_date,
-                            "reg_deadline": edit_reg_deadline, "incharge": edit_incharge,
-                            "valid_events": valid_events, "valid_links": valid_links,
-                            "original_events": events, "old_date": old_date,
-                        }
-                        st.session_state.confirming_date_change_id = cid
-                        st.rerun()
-                    else:
-                        _apply_competition_save(
-                            cid, edit_name, edit_venue, edit_date, edit_reg_deadline, edit_incharge,
-                            valid_events, valid_links, events, date_changed=False, old_date=old_date,
-                        )
-            if cancel_col.button("Cancel", key=f"cancel_comp_{cid}", icon=":material/close:"):
-                st.session_state.editing_competition_id = None
-                st.rerun()
+        if editing_this:
+            # Opens the modal above the page. The card itself stays quiet
+            # while it's up — the dialog covers it anyway, and it goes back
+            # to the normal read-only view as soon as the dialog closes.
+            render_edit_competition(comp, events)
 
         else:
             # --- Read-only view (everyone) ------------------------------
@@ -1361,12 +1474,24 @@ def render_competition_card(comp):
                     st.rerun()
                 return  # skip the rest of this card while confirming
 
-            title_col, going_col, past_col, edit_col, delete_col = st.columns([3, 1, 1, 1, 1])
+            # The four host actions used to sit in the card header as four
+            # separate 1-unit columns ([3,1,1,1,1]), which squeezed both the
+            # title and the buttons. They're behind one "Manage" popover now
+            # — the header reads as a title again, and the actions are still
+            # one click away. Members (non-hosts) just see the title.
+            title_col, manage_col = st.columns([5, 1], vertical_alignment="center")
             title_col.markdown(f"### {comp['name']}")
             if is_host:
+                # One popover, four buttons stacked inside it. The old column
+                # names all point at it, so the button code below is unchanged
+                # apart from now stretching to the popover's width.
+                going_col = past_col = edit_col = delete_col = manage_col.popover(
+                    "Manage", icon=":material/settings:", width="stretch"
+                )
                 if comp.get("not_attending"):
                     if going_col.button(
                         "Going after all", key=f"going_comp_{cid}", icon=":material/undo:",
+                        width="stretch",
                         help="Un-mark \"not attending\" for this competition",
                     ):
                         with _safe_write("update this competition"):
@@ -1378,6 +1503,7 @@ def render_competition_card(comp):
                 else:
                     if going_col.button(
                         "Not going", key=f"notgoing_comp_{cid}", icon=":material/event_busy:",
+                        width="stretch",
                         help="Mark that RoboKnights isn't attending this competition",
                     ):
                         with _safe_write("update this competition"):
@@ -1407,6 +1533,7 @@ def render_competition_card(comp):
                 if comp.get("is_past"):
                     if past_col.button(
                         "Restore", key=f"unpast_comp_{cid}", icon=":material/undo:",
+                        width="stretch",
                         help="Move this competition back to the upcoming list",
                     ):
                         with _safe_write("update this competition"):
@@ -1418,6 +1545,7 @@ def render_competition_card(comp):
                 else:
                     if past_col.button(
                         "Mark past", key=f"mark_past_comp_{cid}", icon=":material/history:",
+                        width="stretch",
                         help="Move this competition to the Past section",
                     ):
                         with _safe_write("update this competition"):
@@ -1426,14 +1554,14 @@ def render_competition_card(comp):
                             ).execute()
                             invalidate_cache()
                             st.rerun()
-                if delete_col.button(
-                    "Delete", key=f"delete_comp_{cid}", icon=":material/delete:",
-                    help="Delete this competition (with confirmation)",
+                if edit_col.button(
+                    "Edit", key=f"edit_comp_{cid}", icon=":material/edit:", width="stretch",
                 ):
-                    st.session_state.deleting_competition_id = cid
-                    st.rerun()
-                if edit_col.button("Edit", key=f"edit_comp_{cid}", icon=":material/edit:"):
                     st.session_state.editing_competition_id = cid
+                    # Only one dialog can be open per script run, and the
+                    # Add & import tab renders in the same run as this card.
+                    st.session_state.show_add_competition = False
+                    st.session_state.show_e2c_import = False
                     st.session_state.edit_comp_links = (
                         [{"label": l["label"], "url": l["url"]} for l in links] or [dict(BLANK_LINK)]
                     )
@@ -1452,6 +1580,15 @@ def render_competition_card(comp):
                         ]
                         or [dict(BLANK_EVENT)]
                     )
+                    st.rerun()
+                # Destructive action last in the popover, so it's not the
+                # thing your cursor lands on by accident.
+                if delete_col.button(
+                    "Delete", key=f"delete_comp_{cid}", icon=":material/delete:",
+                    width="stretch",
+                    help="Delete this competition (with confirmation)",
+                ):
+                    st.session_state.deleting_competition_id = cid
                     st.rerun()
 
             if comp.get("not_attending"):
@@ -1824,8 +1961,31 @@ with tab_past:
 
 if is_host:
     with open_tabs[2]:
-        render_add_competition()
-        render_e2c_import()
+        # Both of these used to render their whole (very long) form straight
+        # onto this tab, open at all times. They're dialogs now, so the tab
+        # is just the two buttons that open them.
+        st.caption("Add a competition by hand, or pull one in from the club's E2C sheet.")
+        add_col, import_col = st.columns([1, 1], vertical_alignment="center")
+        add_col.button(
+            "Add a competition", icon=":material/add_box:", type="primary",
+            width="stretch", key="open_add_competition", on_click=_open_add_competition,
+        )
+        import_col.button(
+            "Import from E2C sheet", icon=":material/travel_explore:",
+            width="stretch", key="open_e2c_import", on_click=_open_e2c_import,
+        )
+
+        # Opened from the flags rather than straight from the button, so the
+        # reruns inside each form keep the dialog on screen (see the flag
+        # comment near the top of this file). Streamlit allows only one open
+        # dialog per script run, hence elif — the buttons above already clear
+        # each other, so this is just a belt-and-braces guard.
+        if st.session_state.show_add_competition:
+            render_add_competition()
+        elif st.session_state.show_e2c_import:
+            render_e2c_import()
+
+        st.divider()
         st.caption(
             ":material/forum: Discord messaging tools (custom messages, the "
             "vacant-events reminder, editing/deleting sent messages) moved to "
