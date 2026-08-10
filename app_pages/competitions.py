@@ -114,6 +114,8 @@ if "show_add_competition" not in st.session_state:
     st.session_state.show_add_competition = False
 if "show_e2c_import" not in st.session_state:
     st.session_state.show_e2c_import = False
+if "finalizing_event_id" not in st.session_state:
+    st.session_state.finalizing_event_id = None
 
 
 def _notify_date_change(name, old_date, new_date):
@@ -183,6 +185,7 @@ def _open_add_competition():
     st.session_state.show_add_competition = True
     st.session_state.show_e2c_import = False
     st.session_state.editing_competition_id = None
+    st.session_state.finalizing_event_id = None
 
 
 @st.dialog("Add a competition", width="large", on_dismiss=_close_add_competition)
@@ -574,6 +577,7 @@ def _open_e2c_import():  # see _open_add_competition for why this is a callback
     st.session_state.show_e2c_import = True
     st.session_state.show_add_competition = False
     st.session_state.editing_competition_id = None
+    st.session_state.finalizing_event_id = None
 
 
 @st.dialog("Import from E2C sheet", width="large", on_dismiss=_close_e2c_import)
@@ -1171,13 +1175,26 @@ m2.metric("Events I'm in", len(my_event_ids), border=True, help="Events you've v
 m3.metric("Selected for", my_selected_count, border=True, help="Events you've actually been picked for")
 m4.metric("Past", sum(1 for c in competitions if c.get("is_past")), border=True)
 
-comp_search = st.text_input(
+# Search + "does this involve me?" filter, in one row — same shape the
+# Inventory and Members pages already use for their search/filter pair.
+search_col, filter_col = st.columns([2, 2], vertical_alignment="center")
+comp_search = search_col.text_input(
     "Search competitions",
     key="comp_search",
     placeholder="Search by name, venue, or event",
     icon=":material/search:",
     label_visibility="collapsed",
 )
+# Deselecting every option returns None, which should mean "no filter" —
+# same `or "All"` guard the Inventory page's status filter uses.
+comp_filter = filter_col.segmented_control(
+    "Filter competitions",
+    ["All", "I can join", "I'm in", "Selected"],
+    default="All",
+    key="comp_filter",
+    label_visibility="collapsed",
+) or "All"
+
 if comp_search:
     q = comp_search.lower()
     # Also matches on an event's own name (e.g. "RoboRace"), not just the
@@ -1189,6 +1206,44 @@ if comp_search:
         if q in (c["name"] + " " + (c.get("venue") or "")).lower()
         or c["competition_id"] in matching_comp_ids
     ]
+
+if comp_filter != "All":
+    # All three of these are "which competitions have at least one event
+    # that matches", so they're built as a set of competition_ids first.
+    # "I can join" deliberately reuses the same eligibility rules as the
+    # Volunteer button itself (grade in range, not Exun, club is attending,
+    # and you haven't already signed up) so the filter can't disagree with
+    # what the page actually offers you.
+    my_event_ids_here = {v["event_id"] for v in all_volunteers if v["user_id"] == current_user_id}
+    my_selected_event_ids = {
+        v["event_id"] for v in all_volunteers
+        if v["user_id"] == current_user_id and v.get("selected")
+    }
+    comp_by_id = {c["competition_id"]: c for c in competitions}
+
+    def _matches_filter(event):
+        comp = comp_by_id.get(event["competition_id"])
+        if comp is None:
+            return False
+        if comp_filter == "I'm in":
+            return event["event_id"] in my_event_ids_here
+        if comp_filter == "Selected":
+            return event["event_id"] in my_selected_event_ids
+        # "I can join"
+        return (
+            not is_exun
+            and not comp.get("not_attending")
+            and current_user_grade is not None
+            and event["min_grade"] <= current_user_grade <= event["max_grade"]
+            and event["event_id"] not in my_event_ids_here
+        )
+
+    keep_ids = {e["competition_id"] for e in all_events if _matches_filter(e)}
+    competitions = [c for c in competitions if c["competition_id"] in keep_ids]
+
+# Drives the empty-state wording below: "nothing here yet" vs "nothing
+# matched what you asked for" are different messages.
+filtering_now = bool(comp_search) or comp_filter != "All"
 
 def _apply_competition_save(
     cid, name, venue, final_date, reg_deadline, incharge,
@@ -1432,6 +1487,82 @@ def render_edit_competition(comp, events):
         st.rerun()
 
 
+def _close_finalize():
+    st.session_state.finalizing_event_id = None
+
+
+def _open_finalize(event_id):  # see _open_add_competition for why this is a callback
+    st.session_state.finalizing_event_id = event_id
+    st.session_state.show_add_competition = False
+    st.session_state.show_e2c_import = False
+    st.session_state.editing_competition_id = None
+
+
+@st.dialog("Finalize team", width="large", on_dismiss=_close_finalize)
+def render_finalize_dialog(comp, e, event_volunteers, cap, label_by_uid):
+    # Picking who actually represents the club. Same widget and same
+    # save/diff logic as before — it just isn't sitting open on every event
+    # card any more.
+    st.markdown(f"**{e['name']}** — {comp['name']}")
+    already_selected_ids = [v["user_id"] for v in event_volunteers if v.get("selected")]
+
+    if len(already_selected_ids) > cap:
+        st.warning(
+            f"{len(already_selected_ids)} people are marked selected, over the "
+            f"{cap}-person cap for this event (likely from the E2C sheet sync, which "
+            f"doesn't check the cap) — remove some below and save to fix it."
+        )
+    else:
+        st.caption(f":material/group: {len(already_selected_ids)} of {cap} places filled.")
+
+    finalize_ids = st.multiselect(
+        "Finalize volunteers",
+        options=[v["user_id"] for v in event_volunteers],
+        default=already_selected_ids,
+        # Shows which sheet-team someone's on (e.g. "Naitik Jindal (Team 1)")
+        # — a flat name list made it hard to tell teammates apart while
+        # picking who's finalized.
+        format_func=lambda uid: label_by_uid.get(uid, "Unknown"),
+        # Never below however many are ALREADY selected — Streamlit refuses to
+        # render a multiselect whose own default exceeds max_selections, which
+        # is exactly what crashed this page (E2C sync can push someone selected
+        # past the cap with no check, since that path doesn't go through this
+        # widget at all).
+        max_selections=max(cap, len(already_selected_ids)),
+        key=f"finalize_{e['event_id']}",
+    )
+
+    save_col, cancel_col = st.columns([1, 1])
+    if save_col.button(
+        "Save selection", key=f"save_finalize_{e['event_id']}",
+        icon=":material/check:", type="primary",
+    ):
+        with _safe_write("save this selection"):
+            previously_selected = {v["user_id"] for v in event_volunteers if v.get("selected")}
+            newly_selected = set(finalize_ids) - previously_selected
+            newly_deselected = previously_selected - set(finalize_ids)
+
+            for uid in newly_selected:
+                client.table("event_volunteers").update({"selected": True}).eq(
+                    "event_id", e["event_id"]
+                ).eq("user_id", uid).execute()
+                _send_selected_email(uid, e["name"], comp["name"])
+            for uid in newly_deselected:
+                client.table("event_volunteers").update({"selected": False}).eq(
+                    "event_id", e["event_id"]
+                ).eq("user_id", uid).execute()
+
+            if newly_selected or newly_deselected:
+                invalidate_cache()
+                notify_if_roster_complete(comp["competition_id"])
+            st.session_state.volunteer_message = f"Saved selection for {e['name']}."
+            _close_finalize()  # clearing the flag is what closes the dialog
+            st.rerun()
+    if cancel_col.button("Cancel", key=f"cancel_finalize_{e['event_id']}", icon=":material/close:"):
+        _close_finalize()
+        st.rerun()
+
+
 def render_competition_card(comp):
     cid = comp["competition_id"]
     links = [l for l in all_links if l["competition_id"] == cid]
@@ -1562,6 +1693,7 @@ def render_competition_card(comp):
                     # Add & import tab renders in the same run as this card.
                     st.session_state.show_add_competition = False
                     st.session_state.show_e2c_import = False
+                    st.session_state.finalizing_event_id = None
                     st.session_state.edit_comp_links = (
                         [{"label": l["label"], "url": l["url"]} for l in links] or [dict(BLANK_LINK)]
                     )
@@ -1809,66 +1941,40 @@ def render_competition_card(comp):
                         # selected people (not already-selected ones
                         # re-saved unchanged) get an email.
                         if is_host and event_volunteers:
-                            already_selected_ids = [
-                                v["user_id"] for v in event_volunteers if v.get("selected")
-                            ]
-                            if len(already_selected_ids) > cap:
-                                st.caption(
-                                    f":material/warning: {len(already_selected_ids)} people are "
-                                    f"marked selected, over the {cap}-person cap for this event "
-                                    f"(likely from the E2C sheet sync, which doesn't check the cap) "
-                                    f"— remove some below and save to fix it."
-                                )
-                            volunteer_team_no_by_uid = {
-                                v["user_id"]: _effective_team_no(v) for v in event_volunteers
-                            }
-                            finalize_ids = st.multiselect(
-                                "Finalize volunteers",
-                                options=[v["user_id"] for v in event_volunteers],
-                                default=already_selected_ids,
-                                # Shows which sheet-team someone's on (e.g. "Naitik
-                                # Jindal (Team 1)") — a flat name list made it hard to
-                                # tell teammates apart while picking who's finalized.
-                                format_func=lambda uid: (
-                                    f"{user_name_by_id.get(uid, 'Unknown')} "
-                                    f"(Team {team_no_display[volunteer_team_no_by_uid[uid]]})"
-                                    if volunteer_team_no_by_uid.get(uid)
-                                    else user_name_by_id.get(uid, "Unknown")
-                                ),
-                                # Never below however many are ALREADY selected — Streamlit
-                                # refuses to render a multiselect whose own default exceeds
-                                # max_selections, which is exactly what crashed this page
-                                # (E2C sync can push someone selected past the cap with no
-                                # check, since that path doesn't go through this widget at all).
-                                max_selections=max(cap, len(already_selected_ids)),
-                                key=f"finalize_{e['event_id']}",
+                            # The multiselect + Save pair used to sit open on
+                            # every single event card, for every competition —
+                            # two extra widgets per event, on a page that
+                            # already renders one card per event. It's behind
+                            # this one button now; the picking happens in a
+                            # dialog with room to show who's double-booked.
+                            over_cap = len(
+                                [v for v in event_volunteers if v.get("selected")]
+                            ) > cap
+                            st.button(
+                                "Finalize team",
+                                key=f"open_finalize_{e['event_id']}",
+                                icon=":material/warning:" if over_cap else ":material/how_to_reg:",
+                                help="Over the cap — open to fix" if over_cap
+                                else "Pick who's actually representing the club",
+                                on_click=_open_finalize,
+                                args=(e["event_id"],),
                             )
-                            if st.button(
-                                "Save selection", key=f"save_finalize_{e['event_id']}",
-                                icon=":material/check:",
-                            ):
-                                with _safe_write("save this selection"):
-                                    previously_selected = {
-                                        v["user_id"] for v in event_volunteers if v.get("selected")
-                                    }
-                                    newly_selected = set(finalize_ids) - previously_selected
-                                    newly_deselected = previously_selected - set(finalize_ids)
-
-                                    for uid in newly_selected:
-                                        client.table("event_volunteers").update({"selected": True}).eq(
-                                            "event_id", e["event_id"]
-                                        ).eq("user_id", uid).execute()
-                                        _send_selected_email(uid, e["name"], comp["name"])
-                                    for uid in newly_deselected:
-                                        client.table("event_volunteers").update({"selected": False}).eq(
-                                            "event_id", e["event_id"]
-                                        ).eq("user_id", uid).execute()
-
-                                    if newly_selected or newly_deselected:
-                                        invalidate_cache()
-                                        notify_if_roster_complete(cid)
-                                    st.session_state.volunteer_message = f"Saved selection for {e['name']}."
-                                    st.rerun()
+                            if st.session_state.finalizing_event_id == e["event_id"]:
+                                # Team labels are worked out here, where the
+                                # per-event team_no remapping already exists,
+                                # rather than recomputing it in the dialog.
+                                label_by_uid = {
+                                    v["user_id"]: (
+                                        f"{user_name_by_id.get(v['user_id'], 'Unknown')} "
+                                        f"(Team {team_no_display[_effective_team_no(v)]})"
+                                        if _effective_team_no(v)
+                                        else user_name_by_id.get(v["user_id"], "Unknown")
+                                    )
+                                    for v in event_volunteers
+                                }
+                                render_finalize_dialog(
+                                    comp, e, event_volunteers, cap, label_by_uid
+                                )
 
                         # Bot status: unlocked starting the day before
                         # the competition (matches when the day-before
@@ -1943,7 +2049,7 @@ with tab_upcoming:
     elif not upcoming:
         st.caption(
             "Nothing coming up."
-            if not comp_search else "No upcoming competitions match your search."
+            if not filtering_now else "No upcoming competitions match your search or filter."
         )
     else:
         for comp in upcoming:
@@ -1953,7 +2059,7 @@ with tab_past:
     if not past:
         st.caption(
             "Nothing here yet — competitions move across once their date passes."
-            if not comp_search else "No past competitions match your search."
+            if not filtering_now else "No past competitions match your search or filter."
         )
     else:
         for comp in reversed(past):  # most recently past first
