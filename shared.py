@@ -369,6 +369,17 @@ DISCORD_CHANNELS = {
     "dashboard": "DISCORD_DASHBOARD_WEBHOOK_URL",
 }
 
+# A webhook lets Discord's `username`/`avatar_url` fields on the POST body
+# override how the message displays — used so these notifications show up
+# looking like they came from the bot (discord_bot/bot.py, name
+# "roboknightsbot") instead of a generic incoming-webhook poster, without
+# actually routing the send through that separate always-on process. It
+# won't carry Discord's blue "APP" badge (only a message the bot account
+# itself sends gets that) — purely a display-identity match, not a real
+# bot-authored message.
+DISCORD_BOT_USERNAME = "roboknightsbot"
+DISCORD_BOT_AVATAR_URL = "https://cdn.discordapp.com/avatars/1536836032329416724/5ebc6d79217e395322b1faf5107e095f.png"
+
 
 def send_discord_message(content, channel="competitions"):
     # A Discord Incoming Webhook is a plain HTTP POST — unlike a real bot,
@@ -393,7 +404,14 @@ def send_discord_message(content, channel="competitions"):
     full_content = f"{content}{discord_message_suffix(channel)}"
     try:
         response = requests.post(
-            webhook_url, json={"content": full_content}, params={"wait": "true"}, timeout=10
+            webhook_url,
+            json={
+                "content": full_content,
+                "username": DISCORD_BOT_USERNAME,
+                "avatar_url": DISCORD_BOT_AVATAR_URL,
+            },
+            params={"wait": "true"},
+            timeout=10,
         )
         message_id = response.json().get("id")
         if message_id:

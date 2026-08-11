@@ -124,8 +124,22 @@ def post_to_discord(content):
     # ?wait=true makes Discord return the created message so we get its id,
     # which is what lets a host delete or edit it later from the app's
     # Discord Messages page.
+    #
+    # username/avatar_url make this display as discord_bot/bot.py's
+    # "roboknightsbot" instead of a generic webhook poster (shared.py does
+    # the same thing for the app's own notifications) - same idea repeated
+    # here since this script deliberately doesn't import shared.py.
     response = requests.post(
-        WEBHOOK_URL, json={"content": content}, params={"wait": "true"}, timeout=10
+        WEBHOOK_URL,
+        json={
+            "content": content,
+            "username": "roboknightsbot",
+            "avatar_url": (
+                "https://cdn.discordapp.com/avatars/"
+                "1536836032329416724/5ebc6d79217e395322b1faf5107e095f.png"
+            ),
+        },
+        params={"wait": "true"}, timeout=10,
     )
     response.raise_for_status()
     return response.json().get("id")
