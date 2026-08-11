@@ -1819,48 +1819,40 @@ def render_competition_card(comp):
                         if e.get("details"):
                             st.caption(e["details"])
 
-                        # Teams (e.g. from the E2C import, where the sheet gave us
-                        # real team rows) get shown grouped by team_no instead of one
-                        # flat name list — makes it obvious who's actually on the
-                        # same team together. Anyone without a team_no yet (regular
-                        # in-app volunteering) falls back to the old flat display.
+                        # Every event gets exactly two sections regardless of
+                        # where its volunteers came from: who's actually
+                        # finalized to represent the club, and who's
+                        # volunteered but not (yet) picked. Team labels (from
+                        # the E2C sheet) are appended per name so it's still
+                        # clear who's grouped together within either section.
                         teamed = [v for v in event_volunteers if _effective_team_no(v)]
-                        unteamed = [v for v in event_volunteers if not _effective_team_no(v)]
+
+                        def _label(v):
+                            name = user_name_by_id.get(v["user_id"], "Unknown")
+                            team_no = _effective_team_no(v)
+                            return f"{name} (Team {team_no_display[team_no]})" if team_no else name
+
+                        finalized = [v for v in event_volunteers if v.get("selected")]
+                        still_pending = [v for v in event_volunteers if not v.get("selected")]
 
                         if teamed:
-                            st.markdown("**Teams:**")
                             st.caption(
-                                ":material/travel_explore: From the E2C sheet — kept in sync "
-                                "automatically, so this can change if the sheet does."
+                                ":material/travel_explore: Team assignments are from the E2C "
+                                "sheet — kept in sync automatically, so this can change if the "
+                                "sheet does."
                             )
-                            teams_by_no = {}
-                            for v in teamed:
-                                teams_by_no.setdefault(_effective_team_no(v), []).append(v)
-                            for team_no in sorted(teams_by_no):
-                                members = ", ".join(
-                                    user_name_by_id.get(v["user_id"], "Unknown")
-                                    + ("" if v.get("selected") else " (pending)")
-                                    for v in teams_by_no[team_no]
-                                )
-                                st.caption(f":material/group: Team {team_no_display[team_no]}: {members}")
 
-                        if unteamed:
-                            unteamed_selected = [
-                                user_name_by_id.get(v["user_id"], "Unknown") for v in unteamed if v.get("selected")
-                            ]
-                            unteamed_volunteers = [
-                                user_name_by_id.get(v["user_id"], "Unknown") for v in unteamed
-                            ]
-                            if unteamed_selected:
-                                st.caption(
-                                    f":material/verified: Selected ({len(unteamed_selected)}/{cap}): "
-                                    + ", ".join(unteamed_selected)
-                                )
+                        if finalized:
                             st.caption(
-                                f":material/group: Volunteers ({len(unteamed_volunteers)}): "
-                                + ", ".join(unteamed_volunteers)
+                                f":material/verified: Finalized team ({len(finalized)}/{cap}): "
+                                + ", ".join(_label(v) for v in finalized)
                             )
-                        elif not teamed:
+                        if still_pending:
+                            st.caption(
+                                f":material/group: Volunteers ({len(still_pending)}): "
+                                + ", ".join(_label(v) for v in still_pending)
+                            )
+                        if not finalized and not still_pending:
                             st.caption(":material/group: No volunteers yet")
 
                         # Only shown when eligible — same pattern as the
