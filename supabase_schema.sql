@@ -361,3 +361,12 @@ create table if not exists feedback (
     created_at  timestamptz not null default now(),
     resolved_at timestamptz
 );
+
+-- Member role (2026-08-12): host-set classification, separate from grade/
+-- section and from HOST_EMAILS/EXUN_EMAILS (which are about access, not
+-- standing). Nullable — most members haven't been classified yet, and an
+-- unset role isn't the same as 'member'.
+alter table users add column if not exists role text;
+alter table users drop constraint if exists users_role_check;
+alter table users add constraint users_role_check
+    check (role is null or role in ('core_member', 'member', 'adhoc'));
