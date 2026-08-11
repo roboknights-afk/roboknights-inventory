@@ -66,10 +66,18 @@ supabase = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
 # whatever gets thrown at it in Discord).
 GROQ_MODEL = "llama-3.3-70b-versatile"
 
-# Keeps the last few exchanges per channel/DM so a reply can follow up on
-# what was just said. Lives only in this process's memory - no database -
-# so it resets whenever the bot restarts, which is fine for a chat history.
-MAX_HISTORY_MESSAGES = 12
+# Keeps recent exchanges per channel/DM so a reply can follow up on what
+# was just said. Lives only in this process's memory - no database - so it
+# resets whenever the bot restarts, which is fine for a chat history.
+# Raised from 12 - the student asked for it to "see all previous chats."
+# True unlimited history isn't realistic though: this project's actual
+# Groq key is capped at 12,000 tokens/minute PER REQUEST (checked directly
+# against the API's own rate-limit headers, not a guess) - not the
+# model's 128K context window, which is much larger but irrelevant here
+# since the free/low tier's per-minute budget is the real ceiling. This
+# stays well under that with room for the club-data context and the
+# response itself, alongside CHANNEL_LOG_SIZE below.
+MAX_HISTORY_MESSAGES = 60
 history = defaultdict(lambda: deque(maxlen=MAX_HISTORY_MESSAGES))
 
 SYSTEM_PROMPT_TEMPLATE = (
@@ -77,7 +85,11 @@ SYSTEM_PROMPT_TEMPLATE = (
     "directly in Discord. Members are students aged 11-18. Keep answers "
     "short and clear - this is Discord, not an essay. No markdown "
     "headers. Use plain paragraphs, or a short bullet list only when it "
-    "genuinely helps. Stay in character as the club's own assistant - "
+    "genuinely helps. You are a general-purpose assistant, not narrowly "
+    "scoped to robotics or the club - answer any normal question a member "
+    "asks, on any topic, the same way you'd answer a club/robotics one. "
+    "Don't decline or redirect just because something isn't about "
+    "RoboKnights. Stay in character as the club's own assistant - "
     "don't add generic AI disclaimers like 'I'm just a language model' or "
     "'I don't have personal relationships/feelings'. If a message is a "
     "joke, banter, or not a real question, respond briefly and naturally "
@@ -303,10 +315,18 @@ def _log_channel_message(message, linked_user_id, is_edit=False):
 # when it IS asked something, the same way a person reading the channel
 # would. In-memory only; persistence for review purposes is the
 # discord_channel_log table above, a separate concern from "what does the
-# bot keep in its own working memory."
-CHANNEL_LOG_SIZE = 40
+# bot keep in its own working memory." Raised from 40 for the same "see
+# all previous chats" ask as MAX_HISTORY_MESSAGES above, same real ceiling
+# too: this project's Groq key allows 12,000 tokens/minute PER REQUEST
+# (confirmed against the API's actual rate-limit headers). This, the
+# conversation history, and the club-data context all share that one
+# budget on every single reply, so this is sized to leave real headroom
+# rather than maximize "how much history" in isolation - some channels
+# here go back years, and neither backfilling nor resending literally all
+# of that on every reply is realistic regardless of context-window size.
+CHANNEL_LOG_SIZE = 150
 channel_log = defaultdict(lambda: deque(maxlen=CHANNEL_LOG_SIZE))
-BACKFILL_LIMIT = 40
+BACKFILL_LIMIT = 150
 
 
 def _format_channel_activity(channel_id):
