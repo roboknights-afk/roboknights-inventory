@@ -332,15 +332,26 @@ if prompt:
                 reply = response.choices[0].message.content or "I didn't get a response — try asking again."
             except Exception as e:
                 if web_search_enabled:
-                    # Web search folds page content into Groq's own working
-                    # context on top of what we send, which can trip a
-                    # request-size or rate limit that a plain chat call
-                    # wouldn't. Retry once without search rather than losing
-                    # the reply entirely over a search-specific hiccup.
+                    # Confirmed directly against Groq's API (outside this
+                    # app entirely) that this is a real, current limitation
+                    # on THEIR compound/web-search pipeline, not a bug here:
+                    # some searches pull in enough page content that Groq's
+                    # own request hits a size limit (413) server-side,
+                    # regardless of how little we send or which of
+                    # web_search/visit_website is enabled — a short factual
+                    # search succeeds every time, one needing more page
+                    # content (a specific product page, "what's today's
+                    # date") reliably doesn't. groq/compound-mini hits the
+                    # identical failure on the identical query, so it isn't
+                    # a matter of picking a lighter model either. No
+                    # documented parameter exists to cap how much a search
+                    # result pulls in. Retry once without search so the
+                    # question still gets a real answer either way.
                     try:
                         response = groq_client.chat.completions.create(model=GROQ_MODEL, messages=messages)
                         reply = (
-                            "*(Web search hit a snag, so this answer didn't use it.)*\n\n"
+                            "*(Couldn't search the web for this one — Groq's search hit its own "
+                            "size limit on this question. Answered from what I already know instead.)*\n\n"
                             + (response.choices[0].message.content or "I didn't get a response — try asking again.")
                         )
                     except Exception as e2:
