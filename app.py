@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 
 from shared import (
     APP_URL, EXUN_CHANNEL_MEMBERS, EXUN_EMAILS, HOST_EMAILS, HOST_ROLES, cached_table,
-    get_client, has_unread_exun_channel, has_unread_queries, invalidate_cache, send_email,
+    get_client, has_unread_exun_channel, has_unread_queries, invalidate_cache, safe_write, send_email,
 )
 
 # Secrets (the Supabase URL and key) live in a local .env file, not in this
@@ -794,6 +794,80 @@ st.session_state.is_host = st.session_state.auth_user["email"] in HOST_EMAILS
 # from is_host — the two are mutually exclusive in practice.
 st.session_state.is_exun = st.session_state.auth_user["email"] in EXUN_EMAILS
 
+# --- Report an issue (floating, global) --------------------------------------
+# A single low-friction way to flag anything that feels off, available on
+# every page (not a dedicated page of its own) since something worth
+# reporting can happen anywhere and the details are freshest the moment
+# it's noticed. Deliberately NOT categorized (bug vs. suggestion vs...) —
+# someone hitting something odd often can't tell which bucket it belongs
+# in, and asking them to guess is exactly the kind of friction that stops
+# a report from ever being sent.
+#
+# First cut of this lived in the sidebar to dodge a suspected CSS issue
+# (stMainBlockContainer's fade-up animation briefly gives it a transform,
+# which can make it the containing block for `position: fixed`
+# descendants instead of the viewport) — but the WhatsApp bubble on the
+# Queries page already proves a plain fixed-position element nested in the
+# main content works fine here, so that wasn't actually it. The real
+# culprit was almost certainly the CSS selector: `.st-key-rk_feedback_fab`
+# is an exact class match, but Streamlit doesn't always put that class on
+# the element you'd expect — which is exactly why the card hover/pulse
+# effects further up this file target `div[class*="st-key-rkcard_"]`
+# (a substring match) instead of an exact one. Using that same pattern here.
+if "show_report_feedback" not in st.session_state:
+    st.session_state.show_report_feedback = False
+if "feedback_message" not in st.session_state:
+    st.session_state.feedback_message = None
+
+
+def _close_report_feedback():
+    st.session_state.show_report_feedback = False
+
+
+def _open_report_feedback():
+    st.session_state.show_report_feedback = True
+
+
+@st.dialog("Report something", on_dismiss=_close_report_feedback)
+def render_report_feedback():
+    st.caption(
+        "Anything that felt broken, confusing, or just worth improving — no "
+        "need to know if it's a real bug, just describe what happened. "
+        "Every report lands on the Feedback page for a host to follow up."
+    )
+    body = st.text_area(
+        "What happened?", key="feedback_body",
+        placeholder="What were you doing, what happened, and what did you expect instead?",
+    )
+    if st.button("Submit", icon=":material/send:", type="primary", key="confirm_report_feedback"):
+        if not body.strip():
+            st.error("Description can't be empty.")
+        else:
+            with safe_write("submit this report"):
+                client.table("feedback").insert({
+                    "user_id": st.session_state.current_user_id,
+                    "body": body.strip(),
+                }).execute()
+                invalidate_cache()
+
+                host_emails = [
+                    email for uid, email in st.session_state.user_email_by_id.items()
+                    if email in HOST_EMAILS
+                ]
+                for email in host_emails:
+                    send_email(
+                        email,
+                        f"New report from {st.session_state.current_user_name}",
+                        f"{st.session_state.current_user_name} reported:\n\n{body.strip()}\n\n"
+                        f"See it here: {APP_URL}",
+                    )
+
+            st.session_state.feedback_message = "Thanks — your report is in."
+            st.session_state.pop("feedback_body", None)
+            _close_report_feedback()
+            st.rerun()
+
+
 # --- Sidebar: account card -------------------------------------------------
 # Lives here (not in a page file) so it shows up no matter which page is
 # open — a page-specific sidebar section only renders while that page is
@@ -835,6 +909,68 @@ with st.sidebar:
             st.session_state.splash_out = True
             st.rerun()
 
+# The container-key + CSS-selector approach (two earlier attempts) never
+# actually showed up live, for reasons that were never pinned down even
+# after verifying the CSS itself renders correctly in isolation — so this
+# sidesteps Streamlit's container tree entirely instead of fighting it
+# further. The real, functional button below is rendered normally (kept
+# working, just made invisible via CSS) and a hand-styled pill is appended
+# straight onto the actual page's <body> — a real DOM node, sibling to
+# Streamlit's own root, not nested inside anything Streamlit re-renders —
+# via the same window.parent.document technique _set_remember_cookie
+# above already uses to write a cookie. Clicking the pill finds the real
+# button and calls .click() on it, which fires Streamlit's own listener
+# exactly as if a person had clicked it, so the dialog opens for real.
+with st.container(key="rk_feedback_fab"):
+    st.button(
+        "Report an issue", icon=":material/bug_report:",
+        key="open_report_feedback_fab", on_click=_open_report_feedback,
+    )
+components.html("""
+    <script>
+    (function() {
+        const doc = window.parent.document;
+        if (doc.getElementById('rk-feedback-fab')) return;  // already injected this session
+
+        const hide = doc.createElement('style');
+        hide.textContent = '.st-key-rk_feedback_fab { display: none !important; }';
+        doc.head.appendChild(hide);
+
+        const pill = doc.createElement('button');
+        pill.id = 'rk-feedback-fab';
+        pill.textContent = '🐞 Report an issue';
+        pill.style.cssText = `
+            position: fixed; right: 24px; bottom: 96px; z-index: 9998;
+            border: none; border-radius: 999px; cursor: pointer;
+            padding: 12px 22px; font-weight: 700; font-size: 0.92rem;
+            font-family: inherit;
+            background: linear-gradient(135deg, #F0C55B, #C9932A);
+            color: #1E1E1E;
+            box-shadow: 0 6px 18px rgba(232, 179, 61, 0.45), 0 2px 8px rgba(0, 0, 0, 0.35);
+            transition: transform 0.15s ease, box-shadow 0.15s ease;
+        `;
+        pill.onmouseenter = function() {
+            pill.style.transform = 'translateY(-3px) scale(1.03)';
+            pill.style.boxShadow = '0 10px 26px rgba(232, 179, 61, 0.6), 0 4px 12px rgba(0, 0, 0, 0.4)';
+        };
+        pill.onmouseleave = function() {
+            pill.style.transform = 'none';
+            pill.style.boxShadow = '0 6px 18px rgba(232, 179, 61, 0.45), 0 2px 8px rgba(0, 0, 0, 0.35)';
+        };
+        pill.onclick = function() {
+            const real = doc.querySelector('.st-key-rk_feedback_fab button');
+            if (real) real.click();
+        };
+        doc.body.appendChild(pill);
+    })();
+    </script>
+""", height=0)
+if st.session_state.show_report_feedback:
+    render_report_feedback()
+if st.session_state.feedback_message:
+    st.toast(st.session_state.feedback_message, icon=":material/check_circle:")
+    st.session_state.feedback_message = None
+
 # --- Navigation ------------------------------------------------------------
 
 pages = [st.Page("app_pages/home.py", title="Home", icon=":material/home:")]
@@ -865,6 +1001,7 @@ if not st.session_state.is_exun:
 pages.append(st.Page("app_pages/meetings.py", title="Meetings", icon=":material/groups:"))
 pages.append(st.Page("app_pages/achievements.py", title="Achievements", icon=":material/military_tech:"))
 pages.append(st.Page("app_pages/assistant.py", title="AI Assistant", icon=":material/smart_toy:"))
+pages.append(st.Page("app_pages/feedback.py", title="Feedback", icon=":material/feedback:"))
 
 # Host-only elsewhere, but Members is also opened up to Exun (full
 # details, per an explicit call — Exun just can't edit it, unlike a host).

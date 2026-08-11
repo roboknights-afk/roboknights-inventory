@@ -796,6 +796,52 @@ event added" — e.g. someone selected for an event, a registration
 deadline approaching. Same webhooks, same role-tagging mechanism, just
 more call sites once asked for.
 
+## Feedback / "report an issue" (2026-08-11)
+
+Student's reasoning: the most useful bug reports come from everyday use,
+right when something looks or feels off — not whenever someone next
+remembers to mention it to a host in person. A steady trickle of small
+fixes over a long period, not a one-time QA pass, is what actually makes
+the dashboard reliable.
+
+First design was a dedicated "Feedback" page with a category dropdown
+(Bug / Suggestion / Something else). Student pushed back on both parts:
+a page you have to navigate to adds friction right when the point is to
+lower it, and asking someone to categorize what they just hit doesn't
+work — "we can't judge if a particular problem is an error or not, as we
+don't know what we don't know." Rebuilt as:
+
+- A floating "Report an issue" pill, bottom-right, on EVERY page (added
+  in app.py, not page-specific). Opens a dialog with a single free-text
+  box, no category field.
+- Getting the pill to actually render live took three tries.
+  `st.container(key=...)` + CSS targeting that key's class (first an
+  exact `.st-key-...` selector, then the `div[class*="st-key-..."]`
+  substring form the card hover effects already use) both looked correct
+  under automated DOM inspection but never showed up for the student in
+  a real logged-in session, for a reason never pinned down. Final version
+  sidesteps Streamlit's container tree entirely: the real `st.button`
+  still renders (for real interactivity) but is hidden via CSS, and
+  `components.html` runs a script that reaches into
+  `window.parent.document` — the same technique `_set_remember_cookie`
+  above already uses for the "remember me" cookie — to append a
+  hand-styled pill directly onto the actual page's `<body>`, sibling to
+  Streamlit's own root rather than nested inside anything it re-renders.
+  Clicking the pill finds the real (hidden) button and calls `.click()`
+  on it, so Streamlit's own listener fires exactly as if a person had
+  clicked it.
+- `app_pages/feedback.py` — the other half: everyone can see the list
+  (not private like Queries, so nobody re-reports something already in),
+  filterable by status (segmented_control, defaults to "Open"). Only a
+  host can change status, leave a note, or delete a report.
+- New `feedback` table: feedback_id, user_id, body, status (open /
+  in_progress / fixed / wont_fix), host_notes, created_at, resolved_at.
+- New reports email every HOST_EMAILS address, same pattern as Queries.
+  Marking a report "fixed" (specifically the open/in_progress → fixed
+  transition, not every save) emails the original reporter back — closes
+  the loop so people keep reporting instead of assuming nothing happens
+  to what they send in.
+
 ## Explicitly NOT in v1
 
 No PDF-to-spreadsheet feature. (WhatsApp notifications used to be listed
