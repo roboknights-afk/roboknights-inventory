@@ -930,43 +930,60 @@ components.html("""
     <script>
     (function() {
         const doc = window.parent.document;
-        if (doc.getElementById('rk-feedback-fab')) return;  // already injected this session
 
-        const hide = doc.createElement('style');
-        hide.textContent = '.st-key-rk_feedback_fab { display: none !important; }';
-        doc.head.appendChild(hide);
+        if (!doc.getElementById('rk-feedback-hide-style')) {
+            const hide = doc.createElement('style');
+            hide.id = 'rk-feedback-hide-style';
+            hide.textContent = '.st-key-rk_feedback_fab { display: none !important; }';
+            doc.head.appendChild(hide);
+        }
 
-        const pill = doc.createElement('button');
-        pill.id = 'rk-feedback-fab';
-        pill.textContent = '🐞 Report an issue';
-        pill.style.cssText = `
-            position: fixed; right: 24px; bottom: 96px; z-index: 9998;
-            border: none; border-radius: 999px; cursor: pointer;
-            padding: 12px 22px; font-weight: 700; font-size: 0.92rem;
-            font-family: inherit;
-            background: linear-gradient(135deg, #F0C55B, #C9932A);
-            color: #1E1E1E;
-            box-shadow: 0 6px 18px rgba(232, 179, 61, 0.45), 0 2px 8px rgba(0, 0, 0, 0.35);
-            transition: transform 0.15s ease, box-shadow 0.15s ease;
-        `;
-        pill.onmouseenter = function() {
-            pill.style.transform = 'translateY(-3px) scale(1.03)';
-            pill.style.boxShadow = '0 10px 26px rgba(232, 179, 61, 0.6), 0 4px 12px rgba(0, 0, 0, 0.4)';
-        };
-        pill.onmouseleave = function() {
-            pill.style.transform = 'none';
-            pill.style.boxShadow = '0 6px 18px rgba(232, 179, 61, 0.45), 0 2px 8px rgba(0, 0, 0, 0.35)';
-        };
+        // The pill is appended straight to <body>, outside anything
+        // Streamlit itself re-renders, so it persists across every later
+        // rerun on its own — this block only builds it ONCE.
+        let pill = doc.getElementById('rk-feedback-fab');
+        if (!pill) {
+            pill = doc.createElement('button');
+            pill.id = 'rk-feedback-fab';
+            pill.textContent = '🐞 Report an issue';
+            pill.style.cssText = `
+                position: fixed; right: 24px; bottom: 96px; z-index: 9998;
+                border: none; border-radius: 999px; cursor: pointer;
+                padding: 12px 22px; font-weight: 700; font-size: 0.92rem;
+                font-family: inherit;
+                background: linear-gradient(135deg, #F0C55B, #C9932A);
+                color: #1E1E1E;
+                box-shadow: 0 6px 18px rgba(232, 179, 61, 0.45), 0 2px 8px rgba(0, 0, 0, 0.35);
+                transition: transform 0.15s ease, box-shadow 0.15s ease;
+            `;
+            pill.onmouseenter = function() {
+                pill.style.transform = 'translateY(-3px) scale(1.03)';
+                pill.style.boxShadow = '0 10px 26px rgba(232, 179, 61, 0.6), 0 4px 12px rgba(0, 0, 0, 0.4)';
+            };
+            pill.onmouseleave = function() {
+                pill.style.transform = 'none';
+                pill.style.boxShadow = '0 6px 18px rgba(232, 179, 61, 0.45), 0 2px 8px rgba(0, 0, 0, 0.35)';
+            };
+            doc.body.appendChild(pill);
+        }
+
+        // Re-attached on EVERY script run, unlike the block above — a
+        // previous version of this file left the click handler set only
+        // once at creation time, which meant a server-side fix to this
+        // exact handler never actually took effect in an already-open
+        // tab: the pill persisted (per the guard above), so it kept
+        // running whatever onclick closure was captured the first time
+        // this script ever ran in that tab, silently, with no way to
+        // tell short of a hard page reload. Reassigning it fresh every
+        // time means the very next Streamlit rerun always picks up
+        // whatever this code currently says.
         pill.onclick = function() {
-            // Matched by its visible text, NOT the st-key-* class the hide
-            // rule above uses — that class targeting was the whole reason
-            // the two earlier CSS-only attempts silently failed to even
-            // show up, and this click handler failing silently the same
-            // way (an "if (real)" guard around a selector that quietly
-            // doesn't match anything) is exactly what "clicking does
-            // nothing, no error" looks like. A material icon's name leaks
-            // into textContent as a font ligature string (verified live:
-            // the real Log in button's textContent is "loginLog in", not
+            // Matched by visible text, NOT the st-key-* class the hide
+            // rule above uses — that class targeting is the same
+            // approach that silently failed to even show the pill in two
+            // earlier attempts. A material icon's name leaks into
+            // textContent as a font ligature string (verified live: the
+            // real Log in button's textContent is "loginLog in", not
             // "Log in") — so this is a substring match, not exact, and
             // explicitly excludes the pill itself by id, since the pill's
             // own label also contains this same text.
@@ -980,7 +997,6 @@ components.html("""
                 alert('Something went wrong opening the report form — please refresh the page and try again.');
             }
         };
-        doc.body.appendChild(pill);
     })();
     </script>
 """, height=0)
