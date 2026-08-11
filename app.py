@@ -958,8 +958,27 @@ components.html("""
             pill.style.boxShadow = '0 6px 18px rgba(232, 179, 61, 0.45), 0 2px 8px rgba(0, 0, 0, 0.35)';
         };
         pill.onclick = function() {
-            const real = doc.querySelector('.st-key-rk_feedback_fab button');
-            if (real) real.click();
+            // Matched by its visible text, NOT the st-key-* class the hide
+            // rule above uses — that class targeting was the whole reason
+            // the two earlier CSS-only attempts silently failed to even
+            // show up, and this click handler failing silently the same
+            // way (an "if (real)" guard around a selector that quietly
+            // doesn't match anything) is exactly what "clicking does
+            // nothing, no error" looks like. A material icon's name leaks
+            // into textContent as a font ligature string (verified live:
+            // the real Log in button's textContent is "loginLog in", not
+            // "Log in") — so this is a substring match, not exact, and
+            // explicitly excludes the pill itself by id, since the pill's
+            // own label also contains this same text.
+            const real = Array.from(doc.querySelectorAll('button')).find(
+                b => b.id !== 'rk-feedback-fab' && b.textContent.includes('Report an issue')
+            );
+            if (real) {
+                real.click();
+            } else {
+                console.error('RoboKnights: could not find the real "Report an issue" button to click.');
+                alert('Something went wrong opening the report form — please refresh the page and try again.');
+            }
         };
         doc.body.appendChild(pill);
     })();

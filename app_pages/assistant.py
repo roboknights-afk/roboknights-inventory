@@ -27,6 +27,14 @@ from groq import Groq
 from shared import IST, cached_table, send_email, today_ist
 
 GROQ_MODEL = "llama-3.3-70b-versatile"
+# Resending the ENTIRE conversation on every turn (the standard chat
+# pattern) grows without bound in a long session — fine normally, but a
+# web-search reply can be long, and Groq's compound models fold web page
+# content into their own working context on top of whatever we send. Long
+# enough and either side can trip Groq's request-size limit (413 Request
+# Entity Too Large). Capping how much history we resend keeps our half of
+# that bounded regardless of how long the chat gets.
+MAX_HISTORY_MESSAGES = 16
 # Groq's "compound" system is the same models above, PLUS Groq automatically
 # lets it call built-in tools (web search, page visits) server-side when it
 # decides a question needs current/outside info — no separate search API or
@@ -301,37 +309,47 @@ if prompt:
     with st.chat_message("assistant"):
         sources = []
         with st.spinner("Searching and thinking…" if web_search_enabled else "Thinking…"):
+            recent_messages = st.session_state.assistant_messages[-MAX_HISTORY_MESSAGES:]
+            messages = [
+                {
+                    "role": "system",
+                    "content": SYSTEM_INSTRUCTION_TEMPLATE.format(context=_build_context_text()),
+                },
+                *({"role": m["role"], "content": m["content"]} for m in recent_messages),
+            ]
             try:
-                messages = [
-                    {
-                        "role": "system",
-                        "content": SYSTEM_INSTRUCTION_TEMPLATE.format(context=_build_context_text()),
-                    },
-                    *(
-                        {"role": m["role"], "content": m["content"]}
-                        for m in st.session_state.assistant_messages
-                    ),
-                ]
-                create_kwargs = {
-                    "model": COMPOUND_MODEL if web_search_enabled else GROQ_MODEL,
-                    "messages": messages,
-                }
                 if web_search_enabled:
-                    # Scoped to search/browsing only — code_interpreter and
-                    # wolfram_alpha aren't relevant here and would just be
-                    # more that could go wrong for no benefit to this app.
-                    create_kwargs["compound_custom"] = {
-                        "tools": {"enabled_tools": ["web_search", "visit_website"]}
-                    }
-                response = groq_client.chat.completions.create(**create_kwargs)
-                reply = response.choices[0].message.content or "I didn't get a response — try asking again."
-                if web_search_enabled:
+                    response = groq_client.chat.completions.create(
+                        model=COMPOUND_MODEL, messages=messages,
+                        # Scoped to search/browsing only — code_interpreter and
+                        # wolfram_alpha aren't relevant here and would just be
+                        # more that could go wrong for no benefit to this app.
+                        compound_custom={"tools": {"enabled_tools": ["web_search", "visit_website"]}},
+                    )
                     sources = _extract_sources(response)
+                else:
+                    response = groq_client.chat.completions.create(model=GROQ_MODEL, messages=messages)
+                reply = response.choices[0].message.content or "I didn't get a response — try asking again."
             except Exception as e:
-                # Same best-effort spirit as the rest of this app: a free-tier
-                # rate limit or network hiccup shouldn't crash the page, just
-                # show up as a plain inline message.
-                reply = f"Sorry, I couldn't get a response right now ({e})."
+                if web_search_enabled:
+                    # Web search folds page content into Groq's own working
+                    # context on top of what we send, which can trip a
+                    # request-size or rate limit that a plain chat call
+                    # wouldn't. Retry once without search rather than losing
+                    # the reply entirely over a search-specific hiccup.
+                    try:
+                        response = groq_client.chat.completions.create(model=GROQ_MODEL, messages=messages)
+                        reply = (
+                            "*(Web search hit a snag, so this answer didn't use it.)*\n\n"
+                            + (response.choices[0].message.content or "I didn't get a response — try asking again.")
+                        )
+                    except Exception as e2:
+                        reply = f"Sorry, I couldn't get a response right now ({e2})."
+                else:
+                    # Same best-effort spirit as the rest of this app: a
+                    # free-tier rate limit or network hiccup shouldn't crash
+                    # the page, just show up as a plain inline message.
+                    reply = f"Sorry, I couldn't get a response right now ({e})."
             st.markdown(reply)
             _render_sources(sources)
     st.session_state.assistant_messages.append({"role": "assistant", "content": reply, "sources": sources})
