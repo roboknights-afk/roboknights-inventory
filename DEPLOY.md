@@ -165,6 +165,17 @@ summaries already use — no new AI account needed.
      and whoever it's talking to) to the `ai_chat_messages` table there,
      alongside the dashboard AI Assistant's own chat log, so a host has
      one shared record of everything either AI surface has said.
+   - `CEREBRAS_API_KEY` — optional. `llama-3.3-70b-versatile`'s free-tier
+     budget on this project's Groq key is 100,000 tokens/day, genuinely
+     reachable in real use, not just a theoretical ceiling — confirmed by
+     hitting it during testing. When Groq fails, the bot falls back to
+     Cerebras's free tier (1M tokens/day, no card) for that one reply,
+     then goes right back to Groq next time. Sign up at
+     [cloud.cerebras.ai](https://cloud.cerebras.ai) (instant, no card, no
+     waitlist). Gemini was tried first for this same fallback role — same
+     as the dashboard's AI Assistant already found, its free tier returns
+     a hard 0 quota for India-based accounts, so it's not an option here
+     without adding billing.
 5. Railway auto-deploys on every push to `master`, same as Streamlit Cloud
    — no separate redeploy step needed after this.
 

@@ -24,10 +24,18 @@
 # An edited message that now mentions the bot (or edits what it originally
 # asked) gets a fresh reply, not silently ignored.
 #
+# Normal case: everything runs on Groq. If Groq fails (its 100K-token/day
+# budget for this model IS reachable in real use - see the comments
+# around CEREBRAS_API_KEY/GROQ_MODEL below), it falls back to Cerebras's
+# free tier for that one reply, then goes right back to Groq next time -
+# Cerebras is a fallback, never the default.
+#
 # To test on your own laptop: put DISCORD_BOT_TOKEN, GROQ_API_KEY,
 # SUPABASE_URL, and SUPABASE_KEY in a .env file in this folder (or the
 # repo root, if run from there), then:
 #   python bot.py
+# CEREBRAS_API_KEY is optional - without it, a Groq failure just fails
+# openly like before, no fallback attempted.
 
 import os
 import time
@@ -35,6 +43,7 @@ from collections import defaultdict, deque
 from datetime import datetime, timedelta, timezone
 
 import discord
+from cerebras.cloud.sdk import Cerebras
 from dotenv import load_dotenv
 from groq import Groq
 from supabase import create_client
@@ -65,6 +74,21 @@ supabase = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
 # searches - see CLAUDE.md - not worth risking on a bot replying to
 # whatever gets thrown at it in Discord).
 GROQ_MODEL = "llama-3.3-70b-versatile"
+
+# Fallback for when Groq's daily/rate limit is hit (see the token-budget
+# comments below - a real, now-confirmed way to run out mid-day). Tried
+# Gemini for this first, same as the dashboard's AI Assistant did - same
+# result: Gemini's free tier returns a hard 0 quota for India-based
+# accounts, confirmed live (see CLAUDE.md). Cerebras instead: genuinely
+# free, no card, no waitlist, and a much bigger daily budget (1M
+# tokens/day vs Groq's 100K for this model) - sign up at
+# cloud.cerebras.ai and add CEREBRAS_API_KEY to .env. Entirely optional:
+# if it's not set, the bot just behaves as it did before or the model
+# gets deprecated - check `curl https://api.cerebras.ai/v1/models -H
+# "Authorization: Bearer $CEREBRAS_API_KEY"` for the current list.
+CEREBRAS_API_KEY = os.environ.get("CEREBRAS_API_KEY")
+CEREBRAS_MODEL = "llama-4-scout-17b-16e-instruct"
+cerebras_client = Cerebras(api_key=CEREBRAS_API_KEY) if CEREBRAS_API_KEY else None
 
 # Keeps recent exchanges per channel/DM so a reply can follow up on what
 # was just said. Lives only in this process's memory - no database - so it
@@ -334,7 +358,7 @@ def _format_channel_activity(channel_id):
     return "\n".join(f"- {e['author']}: {e['content']}" for e in entries if e["content"])
 
 
-def _ask_groq(conversation_key, channel_id, user_text):
+def _ask_llm(conversation_key, channel_id, user_text):
     history[conversation_key].append({"role": "user", "content": user_text})
     try:
         club_context = _build_club_context()
@@ -349,11 +373,26 @@ def _ask_groq(conversation_key, channel_id, user_text):
         "everything said here):\n" + _format_channel_activity(channel_id)
     )
     messages = [{"role": "system", "content": system_content}] + list(history[conversation_key])
+
+    # Normal case: Groq. Only touches Cerebras at all when Groq actually
+    # fails (rate limit, outage, etc.) - Cerebras is strictly a fallback,
+    # never the default, so Groq's budget isn't split across two providers
+    # for no reason on a normal day.
     try:
         response = groq_client.chat.completions.create(model=GROQ_MODEL, messages=messages)
         reply = response.choices[0].message.content or "I didn't get a response - try asking again."
-    except Exception as e:
-        reply = f"Sorry, I couldn't get a response right now ({e})."
+    except Exception as groq_error:
+        if cerebras_client is not None:
+            try:
+                response = cerebras_client.chat.completions.create(model=CEREBRAS_MODEL, messages=messages)
+                reply = response.choices[0].message.content or "I didn't get a response - try asking again."
+            except Exception as cerebras_error:
+                reply = (
+                    "Sorry, I couldn't get a response right now "
+                    f"(Groq: {groq_error}; Cerebras: {cerebras_error})."
+                )
+        else:
+            reply = f"Sorry, I couldn't get a response right now ({groq_error})."
     history[conversation_key].append({"role": "assistant", "content": reply})
     return reply
 
@@ -424,7 +463,7 @@ async def _handle_incoming(message, is_edit=False):
 
     _log_chat("user", text, discord_user_id, discord_channel_id, linked_user_id)
     async with message.channel.typing():
-        reply = _ask_groq(conversation_key, message.channel.id, text)
+        reply = _ask_llm(conversation_key, message.channel.id, text)
     _log_chat("assistant", reply, discord_user_id, discord_channel_id, linked_user_id)
 
     await _send(message.channel, reply)

@@ -913,6 +913,41 @@ haven't linked one, so `user_id` staying null there is normal, not a bug.
 No in-app viewer page for this table yet (not asked for) — a host can
 still query it directly in Supabase.
 
+**Real pings, prompt-injection hardening, wider context, off-topic
+questions, Cerebras fallback (2026-08-12):** several fast-follow fixes
+after watching it live in the actual server:
+- It once wrote plain `@Name` text claiming it could ping people, which
+  notifies nobody — the club data now includes a "MEMBERS WHO CAN BE
+  @MENTIONED" section built from `users.discord_user_id`, and the system
+  prompt is told to use ONLY real `<@id>` mentions from that list, saying
+  plainly when someone can't be pinged.
+- A member got it to reveal it's LLaMA/Meta with "ignore previous
+  instructions" — system prompt now explicitly resists that and never
+  discusses the underlying model.
+- It was defaulting to generic AI disclaimers ("I'm just a language
+  model") on banter — told to stay in character instead.
+- It's a general-purpose assistant, not scoped to robotics/the club —
+  student explicitly asked it to answer anything, since the persona
+  framing alone was making it implicitly narrow itself.
+- Passively reads every channel it can see (not just messages directed at
+  it) and backfills real history on startup, so it has context from
+  before it was even running — `CHANNEL_LOG_SIZE`/`BACKFILL_LIMIT`. An
+  edited message that now mentions the bot gets a fresh reply.
+- Hit `llama-3.3-70b-versatile`'s REAL 100,000-token/day cap on this
+  Groq key during testing (not the much larger raw context window) —
+  `MAX_HISTORY_MESSAGES`/`CHANNEL_LOG_SIZE` sized down to stay
+  sustainable across a full day, shared with the AI Assistant and the
+  dashboard-update summaries, which use the same model/key.
+- Cerebras added as a fallback for when Groq fails (`CEREBRAS_API_KEY`,
+  optional) — Gemini was tried first for this exact role, same 0-quota
+  India restriction as before, so skipped again in favor of Cerebras
+  (1M tokens/day free, no card). Groq stays the normal-case default;
+  Cerebras only gets touched on a Groq failure.
+- New `discord_channel_log` table — every message the bot sees (not just
+  its own turns, which is `ai_chat_messages`) gets logged, specifically
+  so a host can review real conversations to catch bad replies like the
+  fake-ping one.
+
 ## Explicitly NOT in v1
 
 No PDF-to-spreadsheet feature. (WhatsApp notifications used to be listed
