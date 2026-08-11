@@ -49,6 +49,7 @@ HOST_ROLES = {
 # shape as HOST_EMAILS.
 EXUN_EMAILS = {
     "exun@dpsrkp.net",
+    "official.kavyadayal@gmail.com",  # Kavya Dayal, Exun core member
 }
 
 # The private RoboKnights <> Exun channel is scoped to this specific,
