@@ -12,11 +12,13 @@
 # Privacy: only ever built from the CURRENT user's own rows — matches the
 # app's existing rule (CLAUDE.md) that no member sees another member's
 # private info. Nobody else's name, parts, or requests ever go into the
-# prompt. Conversation history is session-only in the app (not saved to
-# Supabase) — refreshing the page clears it. "Save chat" is the deliberate
-# escape hatch: emails the member a Groq-generated resume summary plus the
-# full transcript, rather than adding a whole chat-history table/UI for
-# something used occasionally.
+# prompt.
+#
+# Every user/assistant turn is also logged to ai_chat_messages (2026-08-12)
+# — the same table the Discord bot logs to — so a host has one shared
+# record of everything either AI surface said. Best-effort: a logging
+# failure never blocks the chat itself, same spirit as email sends
+# elsewhere in this app.
 
 import os
 from datetime import datetime
@@ -24,7 +26,7 @@ from datetime import datetime
 import streamlit as st
 from groq import Groq
 
-from shared import IST, cached_table, send_email, today_ist
+from shared import IST, cached_table, get_client, send_email, today_ist
 
 GROQ_MODEL = "llama-3.3-70b-versatile"
 # Resending the ENTIRE conversation on every turn (the standard chat
@@ -263,6 +265,18 @@ def _render_sources(sources):
                 st.markdown(f"- [{title}]({url})")
 
 
+def _log_chat(role, content):
+    try:
+        get_client().table("ai_chat_messages").insert({
+            "source": "dashboard",
+            "user_id": current_user_id,
+            "role": role,
+            "content": content,
+        }).execute()
+    except Exception:
+        pass
+
+
 if "assistant_messages" not in st.session_state:
     st.session_state.assistant_messages = []
 
@@ -302,6 +316,7 @@ for msg in st.session_state.assistant_messages:
 prompt = st.chat_input("Ask something…")
 if prompt:
     st.session_state.assistant_messages.append({"role": "user", "content": prompt})
+    _log_chat("user", prompt)
     with st.chat_message("user"):
         st.markdown(prompt)
 
@@ -364,3 +379,4 @@ if prompt:
             st.markdown(reply)
             _render_sources(sources)
     st.session_state.assistant_messages.append({"role": "assistant", "content": reply, "sources": sources})
+    _log_chat("assistant", reply)

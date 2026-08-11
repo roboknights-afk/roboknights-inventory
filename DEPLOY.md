@@ -128,6 +128,51 @@ variables → Actions), since this runs on GitHub's servers, not in the app:
 A push containing nothing but merge commits posts nothing at all — a
 "we updated!" notice with no content is worse than staying quiet.
 
+## Discord AI bot (auto-replies to @mentions and DMs)
+
+`discord_bot/bot.py` is a separate, always-on Discord bot — not part of the
+Streamlit app, and not something GitHub Actions can run (a bot needs a
+persistent gateway connection held open 24/7; Actions jobs time out and
+Streamlit Cloud only runs while serving the app). It's a real Discord Bot
+application, added to the server with its own token and its own identity
+(currently `roboknightsbot`) — deliberately not the club's actual Discord
+account automated to send/receive messages, since Discord's Terms of
+Service ban that ("self-bots") regardless of whose account it is.
+
+It replies whenever @mentioned in a server channel or DMed directly, using
+the same free Groq model (`llama-3.3-70b-versatile`) the dashboard-update
+summaries already use — no new AI account needed.
+
+### Deploying it (Railway, free tier)
+
+1. Go to [railway.app](https://railway.app) and sign in with GitHub.
+2. **New Project** → **Deploy from GitHub repo** → pick
+   `roboknights-afk/roboknights-inventory`.
+3. Once the service is created, open its **Settings** tab and set
+   **Root Directory** to `discord_bot` — this is what tells Railway to use
+   `discord_bot/requirements.txt` and `discord_bot/Procfile` instead of the
+   main app's.
+4. Open the **Variables** tab and add:
+   - `DISCORD_BOT_TOKEN` — from the bot's page at
+     [discord.com/developers/applications](https://discord.com/developers/applications)
+     → your application → **Bot** → Reset Token.
+   - `GROQ_API_KEY` — same key already used by the Streamlit app and the
+     dashboard-update workflow; get a free one (no card needed) at
+     [console.groq.com/keys](https://console.groq.com/keys) if you don't
+     already have it handy.
+   - `SUPABASE_URL` / `SUPABASE_KEY` — same project the Streamlit app
+     uses. Required, not optional: the bot logs every message (its own
+     and whoever it's talking to) to the `ai_chat_messages` table there,
+     alongside the dashboard AI Assistant's own chat log, so a host has
+     one shared record of everything either AI surface has said.
+5. Railway auto-deploys on every push to `master`, same as Streamlit Cloud
+   — no separate redeploy step needed after this.
+
+To test on your own laptop first: put both variables in a `.env` file
+inside `discord_bot/` (or run from the repo root, which already has one),
+then `pip install -r discord_bot/requirements.txt` and
+`python discord_bot/bot.py`.
+
 ## What doesn't change
 
 - Your local `.env` file keeps working for testing on your own laptop —

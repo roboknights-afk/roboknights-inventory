@@ -681,8 +681,9 @@ their borrow requests, competition volunteering, achievements, upcoming
 meeting RSVPs) — never another member's, matching the existing privacy
 rule elsewhere in this file. Also answers general robotics/build
 questions on the model's own knowledge. Context is rebuilt fresh from
-`cached_table` on every message; conversation history is session-only
-(not saved to Supabase).
+`cached_table` on every message; conversation history is per-browser-session
+in `st.session_state` (refreshing clears the visible chat), but every turn
+is ALSO logged to Supabase now — see "Discord AI bot" below.
 
 Provider: Groq's free tier (`llama-3.3-70b-versatile`), not Gemini or
 OpenAI. Gemini was tried first (fits the zero-cost rule on paper) but a
@@ -856,6 +857,61 @@ don't know what we don't know." Rebuilt as:
   transition, not every save) emails the original reporter back — closes
   the loop so people keep reporting instead of assuming nothing happens
   to what they send in.
+
+## Discord AI bot (2026-08-12)
+
+`discord_bot/bot.py` — a separate, always-on process, NOT part of the
+Streamlit app and NOT something GitHub Actions can run. A bot needs a
+persistent gateway connection held open 24/7; Streamlit Cloud only runs
+while serving the app and Actions jobs time out, so this deploys
+separately (Railway — see DEPLOY.md), with its own `requirements.txt` and
+`Procfile` in that subfolder.
+
+Origin: the club wanted "an AI agent on our official Discord account —
+tag it or DM it, it replies." First ask was literally to automate the
+club's existing Discord account (its real login). Declined that outright —
+automating a normal account's send/receive behavior is a "self-bot" under
+Discord's Terms of Service regardless of whose account it is, and Discord
+bans accounts caught doing it. Built instead as a real Discord Bot
+application (own token, own identity in the server — currently
+`roboknightsbot`), which gets the same practical result (tag it, DM it, it
+replies) without that risk. Also declined, separately, a request to make
+an outreach message to two members "as rude as possible" with fabricated
+threats (a fake "AI auto-removes your access" claim, invented "token
+waste" reasoning) — wrote a firm, honest version instead; a dashboard/AI
+feature shouldn't be used to manufacture false threats against real
+students.
+
+Uses Groq (`llama-3.3-70b-versatile`, same free tier as the dashboard's
+other Groq calls) — student first said "Grok" (xAI), but that has no
+lasting free tier (one-time $25 credit, then paid), while this project
+already had a working `GROQ_API_KEY` and free-tier headroom. Deliberately
+NOT `groq/compound` (the AI Assistant's web-search model) — its known,
+query-dependent 413 "request too large" failure (see AI Assistant section
+above) isn't worth risking on a bot replying to whatever gets thrown at it
+in Discord with no supervision.
+
+Conversation history is per-channel/DM, in-memory only (a `deque`, capped
+at `MAX_HISTORY_MESSAGES`), reset on process restart — no separate
+database needed for that part. Every turn (both the asker's message and
+the bot's reply) is logged to Supabase's `ai_chat_messages` table though —
+see below.
+
+**Shared chat logging (2026-08-12):** student wanted one place a host can
+see everything either AI surface — the dashboard's AI Assistant page AND
+this Discord bot — has ever said, not two disconnected logs. New
+`ai_chat_messages` table (source: 'dashboard'/'discord', role:
+'user'/'assistant', content, timestamps). This reverses the AI Assistant's
+original "session-only, never saved" design (see AI Assistant section
+above) — a deliberate change, not an oversight. Both writers are
+best-effort (wrapped in a bare try/except) — a logging failure never blocks
+a reply, same spirit as email sends elsewhere in this app. The Discord
+bot additionally tries to match the sender's numeric Discord ID against
+`users.discord_user_id` (the same self-reported field from the Home page)
+to link a Discord turn back to a real app account — most Discord members
+haven't linked one, so `user_id` staying null there is normal, not a bug.
+No in-app viewer page for this table yet (not asked for) — a host can
+still query it directly in Supabase.
 
 ## Explicitly NOT in v1
 
