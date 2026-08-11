@@ -694,6 +694,21 @@ Groq has neither restriction and is faster besides. Needs `GROQ_API_KEY`
 (free, no card, from console.groq.com/keys) — the page shows a host-only
 setup message instead of crashing when it's unset.
 
+**Web search (2026-08-11):** student's point — a plain model doesn't
+actually know today's specific motors/sensors/parts without looking them
+up. A toggle (default on) switches the model from `llama-3.3-70b-versatile`
+to `groq/compound`, Groq's own system that decides FOR ITSELF whether a
+given question needs a web search and runs the whole search-and-read loop
+server-side — no separate search API, scraping, or manual RAG step on our
+end. `compound_custom.tools.enabled_tools` is scoped to just
+`web_search`/`visit_website` (leaves out `code_interpreter`/
+`wolfram_alpha`, not relevant here). When it does search, the actual
+sources it read (`response.choices[0].message.executed_tools[].
+search_results.results[]`, each with a title/url) are shown in a small
+expander under that reply — verified directly against the installed
+`groq` SDK's own type definitions, not just the docs, since exactly
+what the response shape looks like isn't obvious from the docs alone.
+
 ## Discord integration (2026-08-09, in progress)
 
 Chunk 1 — new competition event notifications — done: student wants

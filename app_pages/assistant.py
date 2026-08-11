@@ -27,6 +27,14 @@ from groq import Groq
 from shared import IST, cached_table, send_email, today_ist
 
 GROQ_MODEL = "llama-3.3-70b-versatile"
+# Groq's "compound" system is the same models above, PLUS Groq automatically
+# lets it call built-in tools (web search, page visits) server-side when it
+# decides a question needs current/outside info — no separate search API or
+# manual RAG step to wire up ourselves. Used only when the toggle below is
+# on: it's a heavier request than a plain chat completion, and most
+# questions here are about the member's OWN data, which never needs the
+# open internet.
+COMPOUND_MODEL = "groq/compound"
 
 current_user_id = st.session_state.current_user_id
 current_user_name = st.session_state.current_user_name
@@ -53,6 +61,18 @@ if not api_key:
     st.stop()
 
 groq_client = Groq(api_key=api_key)
+
+if "assistant_web_search" not in st.session_state:
+    # On by default: the whole point is that a plain model doesn't actually
+    # know today's specific motors/sensors/parts without looking them up.
+    st.session_state.assistant_web_search = True
+st.toggle(
+    ":material/travel_explore: Web search",
+    key="assistant_web_search",
+    help="Lets the assistant look things up online when it doesn't already know "
+         "something — useful for specific motors, sensors, or parts. Off answers "
+         "from what it already knows, a little faster.",
+)
 
 
 # --- Gather ONLY this member's own data ---------------------------------------
@@ -210,6 +230,31 @@ def _save_chat_by_email():
     return to_email
 
 
+def _extract_sources(response):
+    # The compound models run the whole "decide to search, search, read
+    # results" loop server-side — this just reads back what it actually
+    # looked at, defensively (getattr everywhere) since it's undocumented
+    # exactly how the SDK exposes it, and a shape mismatch here shouldn't
+    # break an otherwise-successful reply.
+    sources = []
+    executed_tools = getattr(response.choices[0].message, "executed_tools", None) or []
+    for tool in executed_tools:
+        search_results = getattr(tool, "search_results", None)
+        results = getattr(search_results, "results", None) or []
+        for r in results:
+            url = getattr(r, "url", None)
+            if url:
+                sources.append((getattr(r, "title", None) or url, url))
+    return sources
+
+
+def _render_sources(sources):
+    if sources:
+        with st.expander(f":material/travel_explore: {len(sources)} web source(s)"):
+            for title, url in sources:
+                st.markdown(f"- [{title}]({url})")
+
+
 if "assistant_messages" not in st.session_state:
     st.session_state.assistant_messages = []
 
@@ -244,6 +289,7 @@ if st.session_state.assistant_messages:
 for msg in st.session_state.assistant_messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
+        _render_sources(msg.get("sources"))
 
 prompt = st.chat_input("Ask something…")
 if prompt:
@@ -251,8 +297,10 @@ if prompt:
     with st.chat_message("user"):
         st.markdown(prompt)
 
+    web_search_enabled = st.session_state.assistant_web_search
     with st.chat_message("assistant"):
-        with st.spinner("Thinking…"):
+        sources = []
+        with st.spinner("Searching and thinking…" if web_search_enabled else "Thinking…"):
             try:
                 messages = [
                     {
@@ -264,14 +312,26 @@ if prompt:
                         for m in st.session_state.assistant_messages
                     ),
                 ]
-                response = groq_client.chat.completions.create(
-                    model=GROQ_MODEL, messages=messages,
-                )
+                create_kwargs = {
+                    "model": COMPOUND_MODEL if web_search_enabled else GROQ_MODEL,
+                    "messages": messages,
+                }
+                if web_search_enabled:
+                    # Scoped to search/browsing only — code_interpreter and
+                    # wolfram_alpha aren't relevant here and would just be
+                    # more that could go wrong for no benefit to this app.
+                    create_kwargs["compound_custom"] = {
+                        "tools": {"enabled_tools": ["web_search", "visit_website"]}
+                    }
+                response = groq_client.chat.completions.create(**create_kwargs)
                 reply = response.choices[0].message.content or "I didn't get a response — try asking again."
+                if web_search_enabled:
+                    sources = _extract_sources(response)
             except Exception as e:
                 # Same best-effort spirit as the rest of this app: a free-tier
                 # rate limit or network hiccup shouldn't crash the page, just
                 # show up as a plain inline message.
                 reply = f"Sorry, I couldn't get a response right now ({e})."
             st.markdown(reply)
-    st.session_state.assistant_messages.append({"role": "assistant", "content": reply})
+            _render_sources(sources)
+    st.session_state.assistant_messages.append({"role": "assistant", "content": reply, "sources": sources})
