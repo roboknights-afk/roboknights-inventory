@@ -412,3 +412,9 @@ create table if not exists discord_channel_log (
     created_at          timestamptz not null default now(),
     updated_at          timestamptz not null default now()
 );
+
+-- Added later: the display name at time of logging, not just the numeric
+-- Discord ID — most members never link their account (linked_user_id),
+-- so without this a later chat-history search has no readable way to
+-- say who actually said what.
+alter table discord_channel_log add column if not exists discord_display_name text;

@@ -136,6 +136,68 @@ def _tavily_search(query):
     except Exception as e:
         return f"(search failed: {e})", []
 
+
+# Separate from the small in-memory channel_log below (capped at
+# CHANNEL_LOG_SIZE, so it only ever covers the last day or so of an
+# active channel) - this queries discord_channel_log in Supabase, which
+# has logged EVERY message the bot has seen since it started, with no
+# cap. Added after the bot confidently claimed "I don't have access to
+# yesterday's chat logs" when it in fact does, just not in the small
+# rolling window that gets resent on every reply - this tool is what
+# actually gets that history, on demand, only when a question needs it.
+CHAT_HISTORY_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "search_chat_history",
+        "description": "Search this channel's actual message history - "
+                        "use this for questions about what was said "
+                        "previously, who said what, or what happened on "
+                        "a past day (e.g. 'what happened yesterday', "
+                        "'why was X arguing with Y', 'did anyone mention "
+                        "the new motor'). Covers everything the bot has "
+                        "ever seen in this channel, not just recent "
+                        "messages.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "days_back": {
+                    "type": "integer",
+                    "description": "How many days back to search, e.g. 1 for "
+                                    "yesterday/today, 7 for the last week.",
+                },
+            },
+            "required": ["days_back"],
+        },
+    },
+}
+
+
+def _search_chat_history(channel_id, days_back):
+    try:
+        since = (datetime.now(IST) - timedelta(days=max(1, min(days_back, 30)))).isoformat()
+        rows = (
+            supabase.table("discord_channel_log")
+            .select("discord_display_name,content,created_at")
+            .eq("discord_channel_id", str(channel_id))
+            .gte("created_at", since)
+            .order("created_at")
+            # Capped, same reasoning as _tavily_search - this app decides
+            # how much text a tool call can add, not an open-ended dump.
+            .limit(150)
+            .execute()
+            .data
+        )
+        if not rows:
+            return "(no messages found in that time range)"
+        return "\n".join(
+            f"[{r['created_at'][:16]}] {r.get('discord_display_name') or 'Unknown'}: {r['content']}"
+            for r in rows
+            if r.get("content")
+        )
+    except Exception as e:
+        return f"(chat history search failed: {e})"
+
+
 # Fallback for when Groq's daily/rate limit is hit (see the token-budget
 # comments below - a real, now-confirmed way to run out mid-day). Tried
 # Cerebras for this role first - genuinely free tier on paper (1M
@@ -210,7 +272,13 @@ SYSTEM_PROMPT_TEMPLATE = (
     "anyone NOT on that list, do not write anything that looks like a "
     "mention (no '@Name') - say plainly that they haven't linked their "
     "Discord ID yet (Home page on the dashboard) so you can't ping them, "
-    "and list their name as plain text instead.\n\n{context}"
+    "and list their name as plain text instead.\n\n"
+    "Past conversations: the 'recent channel activity' below is only the "
+    "last few messages - for anything further back ('what happened "
+    "yesterday', 'why was X arguing with Y', 'did anyone mention Z last "
+    "week'), use the search_chat_history tool rather than saying you "
+    "don't have access to history - you do, just not in what's shown "
+    "below by default.\n\n{context}"
 )
 
 groq_client = Groq(api_key=GROQ_API_KEY)
@@ -387,12 +455,16 @@ def _log_channel_message(message, linked_user_id, is_edit=False):
     # a host can pull up real conversations later to spot a bad reply
     # (like the fake-ping incident) and know exactly what led to it.
     # discord_message_id has a unique constraint, so an edit UPSERTs onto
-    # the same row instead of creating a duplicate.
+    # the same row instead of creating a duplicate. display_name is
+    # captured here too, not just the numeric ID - most members never
+    # link their account, so this is the only readable "who said this"
+    # a later chat-history search has to work with.
     try:
         supabase.table("discord_channel_log").upsert({
             "discord_message_id": str(message.id),
             "discord_channel_id": str(message.channel.id),
             "discord_user_id": str(message.author.id),
+            "discord_display_name": message.author.display_name,
             "linked_user_id": linked_user_id,
             "content": message.content,
             "was_edited": is_edit,
@@ -510,15 +582,20 @@ def _ask_with_compound(messages):
             )
 
 
-def _ask_with_tavily(messages):
-    # The model decides for itself (a normal tool call) whether a question
-    # needs a search - same "decides for itself" behavior groq/compound
-    # advertises, but WE execute the search and control exactly how much
-    # text comes back (see TAVILY_API_KEY comment above), which is what
-    # actually avoids the "request too large" failure.
+def _ask_with_tools(messages, channel_id):
+    # The model decides for itself (normal tool calls) whether a question
+    # needs a web search and/or its own chat history searched - same
+    # "decides for itself" behavior groq/compound advertises for search,
+    # but WE execute both and control exactly how much text comes back
+    # (see TAVILY_API_KEY/CHAT_HISTORY_TOOL comments above), which is what
+    # actually avoids the "request too large" failure. Chat history search
+    # is always available (it's our own Supabase data, no external key
+    # needed); web search only gets offered as a tool when TAVILY_API_KEY
+    # is set, so the model can't try to call something that isn't wired up.
+    tools = [CHAT_HISTORY_TOOL] + ([WEB_SEARCH_TOOL] if TAVILY_API_KEY else [])
     try:
         response = groq_client.chat.completions.create(
-            model=GROQ_MODEL, messages=messages, tools=[WEB_SEARCH_TOOL], tool_choice="auto",
+            model=GROQ_MODEL, messages=messages, tools=tools, tool_choice="auto",
         )
         msg = response.choices[0].message
         if not msg.tool_calls:
@@ -535,9 +612,11 @@ def _ask_with_tavily(messages):
                 args = json.loads(tc.function.arguments)
             except Exception:
                 args = {}
-            query = args.get("query") or ""
-            result_text, result_sources = _tavily_search(query)
-            all_sources.extend(result_sources)
+            if tc.function.name == "search_chat_history":
+                result_text = _search_chat_history(channel_id, args.get("days_back") or 1)
+            else:
+                result_text, result_sources = _tavily_search(args.get("query") or "")
+                all_sources.extend(result_sources)
             messages.append({"role": "tool", "tool_call_id": tc.id, "content": result_text})
 
         final = groq_client.chat.completions.create(model=GROQ_MODEL, messages=messages)
@@ -547,7 +626,9 @@ def _ask_with_tavily(messages):
         # A Groq failure here (rate limit, etc.) falls through to the same
         # compound/plain/Gemini chain as the no-Tavily path, rather than
         # a second, different error message for what's really the same
-        # underlying problem.
+        # underlying problem. Loses chat-history-search ability on this
+        # one reply (compound/plain/Gemini don't have that tool), but
+        # still answers something rather than nothing.
         return _ask_with_compound(messages)
 
 
@@ -567,10 +648,7 @@ def _ask_llm(conversation_key, channel_id, user_text):
     )
     messages = [{"role": "system", "content": system_content}] + list(history[conversation_key])
 
-    if TAVILY_API_KEY:
-        reply, sources = _ask_with_tavily(messages)
-    else:
-        reply, sources = _ask_with_compound(messages)
+    reply, sources = _ask_with_tools(messages, channel_id)
 
     if sources:
         reply += "\n\n" + "\n".join(f"<{url}>" for _title, url in sources[:3])
