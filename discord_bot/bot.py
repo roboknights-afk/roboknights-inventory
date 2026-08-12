@@ -134,7 +134,10 @@ def _tavily_search(query):
         sources = [(res.get("title") or res.get("url"), res.get("url")) for res in results if res.get("url")]
         return text, sources
     except Exception as e:
-        return f"(search failed: {e})", []
+        # Terse for the model (which may quote it back into Discord),
+        # full detail to the logs. Same pattern as the other tools.
+        print(f"Tavily search failed: {e!r}", flush=True)
+        return "(the web search didn't work this time)", []
 
 
 # Separate from the small in-memory channel_log below (capped at
@@ -225,7 +228,8 @@ def _search_chat_history(channel_id, days_back):
             if r.get("content")
         )
     except Exception as e:
-        return f"(chat history search failed: {e})"
+        print(f"Chat history search failed: {e!r}", flush=True)
+        return "(couldn't read the chat history this time)"
 
 
 # Fallback for when Groq's daily/rate limit is hit (see the token-budget
@@ -465,7 +469,8 @@ def _safe_club_context():
     try:
         return _build_club_context()
     except Exception as e:
-        return f"(club data unavailable right now: {e})"
+        print(f"Club data fetch failed: {e!r}", flush=True)
+        return "(the club's data isn't reachable right now)"
 
 
 intents = discord.Intents.default()
@@ -749,15 +754,17 @@ def _ask_with_compound(messages, channel_id=None):
             openrouter_reply = _ask_with_openrouter(no_tools_messages)
             if openrouter_reply is not None:
                 return openrouter_reply, []
-            # Names every provider actually tried. The first version of
-            # this listed only the two Groq errors, which read as "it
-            # never even tried the fallback" when Gemini had also hit its
-            # own quota - confusing to debug from the Discord side.
+            # Members get a short, human sentence - NOT the raw provider
+            # error. Dumping those into Discord (what this did before)
+            # pasted a wall of JSON, leaked the org id, and included a
+            # billing URL that Discord then turned into a big link-preview
+            # embed. The full detail still exists, in the Railway logs,
+            # where it's actually useful for debugging.
+            print(f"ALL PROVIDERS FAILED - compound: {compound_error!r}; plain: {groq_error!r}; "
+                  f"gemini: no reply; openrouter: no reply", flush=True)
             return (
-                f"Sorry, I couldn't get a response right now - every model "
-                f"is rate-limited or erroring (search: {compound_error}; "
-                f"plain: {groq_error}; Gemini and OpenRouter fallbacks "
-                f"also failed).", []
+                "I'm maxed out on my daily AI usage limit right now, so I can't "
+                "answer this one. It resets on its own - try again a bit later.", []
             )
 
 
@@ -859,8 +866,14 @@ def _ask_llm(conversation_key, channel_id, user_text):
 async def _send(channel, text):
     # Discord hard-caps a single message at 2000 characters - split rather
     # than truncate, since a cut-off answer is worse than two messages.
+    #
+    # suppress_embeds stops Discord expanding any URL in a reply into a
+    # big link-preview card. A single error message that happened to
+    # contain a billing URL turned into a huge embed in the channel;
+    # source links on search answers would do the same. The links stay
+    # clickable, they just don't unfurl.
     for i in range(0, len(text), 2000):
-        await channel.send(text[i:i + 2000])
+        await channel.send(text[i:i + 2000], suppress_embeds=True)
 
 
 @client.event
