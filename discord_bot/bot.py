@@ -1,6 +1,8 @@
 # RoboKnights Discord AI bot: replies whenever it's @mentioned in a server
-# channel or DMed directly, using the same free Groq model
-# send_dashboard_update.py already uses for its release-note summaries.
+# channel or DMed directly, using Groq's compound model (same one the
+# dashboard AI Assistant's web-search toggle uses) so it can actually look
+# things up ("what is a p219 motor") instead of only answering from
+# training data.
 #
 # This runs as its own always-on process (deployed on Railway), separate
 # from the Streamlit app and from the GitHub Actions scripts. A real bot
@@ -68,12 +70,21 @@ GROQ_API_KEY = os.environ["GROQ_API_KEY"]
 # blocks a reply.
 supabase = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
 
-# Same model send_dashboard_update.py uses - fast, free, no web-search tool
-# involved (the AI Assistant page's groq/compound has a known, upstream,
-# query-dependent 413 "request too large" failure on content-heavy web
-# searches - see CLAUDE.md - not worth risking on a bot replying to
-# whatever gets thrown at it in Discord).
+# Plain model - the fallback path when web search fails or isn't needed.
+# Same one send_dashboard_update.py uses for its release-note summaries.
 GROQ_MODEL = "llama-3.3-70b-versatile"
+
+# groq/compound is the same web-search model the AI Assistant page uses -
+# Groq decides FOR ITSELF whether a question needs a live search and runs
+# the whole search-and-read loop server-side. This is now the NORMAL
+# model for every reply (not just a toggle, like the dashboard has) -
+# a Discord bot answering "what is a p219 motor" needs to actually be
+# able to look that up, not just guess from training data. Has a known,
+# upstream, query-dependent 413 "request too large" failure on
+# content-heavy searches (see CLAUDE.md) - COMPOUND_FALLBACK below is the
+# same retry-without-search pattern the AI Assistant already uses for
+# exactly that.
+COMPOUND_MODEL = "groq/compound"
 
 # Fallback for when Groq's daily/rate limit is hit (see the token-budget
 # comments below - a real, now-confirmed way to run out mid-day). Tried
@@ -83,11 +94,27 @@ GROQ_MODEL = "llama-3.3-70b-versatile"
 # free, no card, no waitlist, and a much bigger daily budget (1M
 # tokens/day vs Groq's 100K for this model) - sign up at
 # cloud.cerebras.ai and add CEREBRAS_API_KEY to .env. Entirely optional:
-# if it's not set, the bot just behaves as it did before or the model
-# gets deprecated - check `curl https://api.cerebras.ai/v1/models -H
-# "Authorization: Bearer $CEREBRAS_API_KEY"` for the current list.
+# if it's not set (or not working), the bot just behaves as it did
+# before. No web search on this path - Cerebras is a plain chat
+# fallback, not a search one.
+#
+# The exact model name matters - Cerebras's catalog changes and the
+# free-tier's actual available models don't always match their own docs
+# (confirmed live: llama-4-scout-17b-16e-instruct, the originally
+# documented model, 404s on this account; gpt-oss-120b is what
+# `GET /v1/models` actually lists as available). ALSO confirmed live:
+# this account currently gets 402 Payment Required on every model
+# despite the free-tier signup claiming no card needed - likely an
+# account-type quirk (Team org vs Personal) or Cerebras's free tier
+# changing under us (it's scheduled to require a payment method from
+# Aug 17, 2026 per their own announcement). Left wired in since it's a
+# genuine no-op when broken (falls through to the plain error message
+# below), and may just start working once that's sorted on their end -
+# check `curl https://api.cerebras.ai/v1/models -H "Authorization:
+# Bearer $CEREBRAS_API_KEY"` for the current model list if this needs
+# revisiting.
 CEREBRAS_API_KEY = os.environ.get("CEREBRAS_API_KEY")
-CEREBRAS_MODEL = "llama-4-scout-17b-16e-instruct"
+CEREBRAS_MODEL = "gpt-oss-120b"
 cerebras_client = Cerebras(api_key=CEREBRAS_API_KEY) if CEREBRAS_API_KEY else None
 
 # Keeps recent exchanges per channel/DM so a reply can follow up on what
@@ -358,6 +385,24 @@ def _format_channel_activity(channel_id):
     return "\n".join(f"- {e['author']}: {e['content']}" for e in entries if e["content"])
 
 
+def _extract_sources(response):
+    # Same defensive walk the AI Assistant page uses - the compound models
+    # run the whole "decide to search, search, read results" loop
+    # server-side, and it's undocumented exactly how the SDK exposes what
+    # it looked at, so getattr everywhere rather than let a shape mismatch
+    # break an otherwise-successful reply.
+    sources = []
+    executed_tools = getattr(response.choices[0].message, "executed_tools", None) or []
+    for tool in executed_tools:
+        search_results = getattr(tool, "search_results", None)
+        results = getattr(search_results, "results", None) or []
+        for r in results:
+            url = getattr(r, "url", None)
+            if url:
+                sources.append((getattr(r, "title", None) or url, url))
+    return sources
+
+
 def _ask_llm(conversation_key, channel_id, user_text):
     history[conversation_key].append({"role": "user", "content": user_text})
     try:
@@ -374,25 +419,54 @@ def _ask_llm(conversation_key, channel_id, user_text):
     )
     messages = [{"role": "system", "content": system_content}] + list(history[conversation_key])
 
-    # Normal case: Groq. Only touches Cerebras at all when Groq actually
-    # fails (rate limit, outage, etc.) - Cerebras is strictly a fallback,
-    # never the default, so Groq's budget isn't split across two providers
-    # for no reason on a normal day.
+    # Normal case: Groq's compound model, so it can actually look things
+    # up ("what is a p219 motor") instead of only answering from training
+    # data. On a search-specific failure (the known 413 - see
+    # COMPOUND_MODEL above), retry once on the plain model without search,
+    # same pattern the AI Assistant page already uses. Only touches
+    # Cerebras when Groq fails ENTIRELY (both of the above), since
+    # Cerebras has no web search of its own - strictly a last-resort
+    # plain-chat fallback, not a search one.
+    sources = []
     try:
-        response = groq_client.chat.completions.create(model=GROQ_MODEL, messages=messages)
+        response = groq_client.chat.completions.create(
+            model=COMPOUND_MODEL, messages=messages,
+            compound_custom={"tools": {"enabled_tools": ["web_search", "visit_website"]}},
+        )
         reply = response.choices[0].message.content or "I didn't get a response - try asking again."
-    except Exception as groq_error:
-        if cerebras_client is not None:
-            try:
-                response = cerebras_client.chat.completions.create(model=CEREBRAS_MODEL, messages=messages)
-                reply = response.choices[0].message.content or "I didn't get a response - try asking again."
-            except Exception as cerebras_error:
+        sources = _extract_sources(response)
+    except Exception as compound_error:
+        try:
+            response = groq_client.chat.completions.create(model=GROQ_MODEL, messages=messages)
+            # Flagged, not silent - confirmed live that the plain model
+            # will confidently guess wrong rather than admit it doesn't
+            # know (asked about "a p219 motor," a robotics part, and got
+            # back an automotive OBD-II trouble code). An unflagged wrong
+            # answer is worse than a flagged uncertain one.
+            reply = (
+                "*(Couldn't search the web for this one - answering from what I "
+                "already know instead, so double-check this.)*\n\n"
+                + (response.choices[0].message.content or "I didn't get a response - try asking again.")
+            )
+        except Exception as groq_error:
+            if cerebras_client is not None:
+                try:
+                    response = cerebras_client.chat.completions.create(model=CEREBRAS_MODEL, messages=messages)
+                    reply = response.choices[0].message.content or "I didn't get a response - try asking again."
+                except Exception as cerebras_error:
+                    reply = (
+                        "Sorry, I couldn't get a response right now "
+                        f"(Groq: {groq_error}; Cerebras: {cerebras_error})."
+                    )
+            else:
                 reply = (
-                    "Sorry, I couldn't get a response right now "
-                    f"(Groq: {groq_error}; Cerebras: {cerebras_error})."
+                    f"Sorry, I couldn't get a response right now "
+                    f"(search: {compound_error}; plain: {groq_error})."
                 )
-        else:
-            reply = f"Sorry, I couldn't get a response right now ({groq_error})."
+
+    if sources:
+        reply += "\n\n" + "\n".join(f"<{url}>" for _title, url in sources[:3])
+
     history[conversation_key].append({"role": "assistant", "content": reply})
     return reply
 

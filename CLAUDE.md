@@ -948,6 +948,22 @@ after watching it live in the actual server:
   so a host can review real conversations to catch bad replies like the
   fake-ping one.
 
+**Web search (2026-08-12):** a member asked "what is a p219 motor" and got
+"I don't have information on a p219 motor" — the bot was plain
+`llama-3.3-70b-versatile` with zero search ability. Switched to
+`groq/compound` (same model the AI Assistant's toggle uses) as the NORMAL
+model, not a toggle — a bot in Discord needs to just look things up, no
+UI to flip a switch. Confirmed live that this exact query trips Groq's
+known 413 (see AI Assistant section above) — falls back to the plain
+model on that, same pattern as the Assistant page, but ALSO confirmed
+live that the plain model then confidently answers WRONG (interpreted
+"p219 motor" as an automotive OBD-II trouble code, not a robotics part) —
+so that fallback reply is explicitly flagged ("answering from what I
+already know instead, so double-check this") rather than presented as
+a real, searched answer. Source links (up to 3) get appended to a
+successful search reply, wrapped in `<>` so Discord doesn't auto-embed
+them.
+
 ## Explicitly NOT in v1
 
 No PDF-to-spreadsheet feature. (WhatsApp notifications used to be listed
