@@ -964,6 +964,25 @@ a real, searched answer. Source links (up to 3) get appended to a
 successful search reply, wrapped in `<>` so Discord doesn't auto-embed
 them.
 
+**Web search, take 2 — Tavily (2026-08-12):** the groq/compound fix above
+turned out not to be enough — a member's very next two real questions
+("what is a p219 motor," "ingenium drives??") BOTH hit the 413. Tested
+directly: confirmed it fails on real queries ("latest Arduino Uno
+price," "who won the last F1 race," "what year is it") even with a bare
+system prompt and zero club-data context — a genuinely unreliable
+upstream bug on Groq's side, not something fixable by trimming our own
+prompt. Replaced it as the PREFERRED path with Tavily (1,000 free
+searches/month, no card, purpose-built for feeding LLMs search results,
+not a general search engine wrapper) via normal OpenAI-style tool
+calling on the plain `llama-3.3-70b-versatile` model: the model still
+decides for itself whether to search, but this app executes the search
+and controls exactly how much text comes back (capped per-result in
+`_tavily_search`), which is what actually avoids the oversized-request
+problem — groq/compound has no such control since it runs entirely
+server-side. `groq/compound` stays as the automatic fallback for when
+`TAVILY_API_KEY` isn't set, same best-effort spirit as everything else
+here, but Tavily is what actually works reliably once configured.
+
 ## Explicitly NOT in v1
 
 No PDF-to-spreadsheet feature. (WhatsApp notifications used to be listed
