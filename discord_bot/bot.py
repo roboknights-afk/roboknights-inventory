@@ -446,7 +446,16 @@ def _build_club_context():
     if _context_cache["text"] is not None and now - _context_cache["fetched_at"] < CONTEXT_TTL_SECONDS:
         return _context_cache["text"]
 
-    all_users = supabase.table("users").select("user_id,name,discord_user_id").execute().data
+    # grade/section/role are included; email, phone and admission number
+    # deliberately are NOT. This bot answers in a channel the whole
+    # server can read, so it only ever gets the same roster facts members
+    # already know about each other - never anyone's contact details.
+    all_users = (
+        supabase.table("users")
+        .select("user_id,name,discord_user_id,grade,section,role")
+        .execute()
+        .data
+    )
     users_by_id = {u["user_id"]: u["name"] for u in all_users}
     today = _today_ist()
 
@@ -460,6 +469,20 @@ def _build_club_context():
     linked_lines = [
         f"- {u['name']}: <@{u['discord_user_id']}>" for u in all_users if u.get("discord_user_id")
     ]
+
+    # The full roster. Without it the bot only knew people who happened to
+    # own a part or be on a team, so "gimme the details of Krishna"
+    # answered "I don't have any information on a member named Krishna" -
+    # he's a real member, just not on either of those lists.
+    ROLE_LABELS = {"core_member": "core member", "member": "member", "adhoc": "ad hoc"}
+    member_lines = []
+    for u in sorted(all_users, key=lambda x: (x.get("name") or "").lower()):
+        bits = []
+        if u.get("grade"):
+            bits.append(f"grade {u['grade']}{u.get('section') or ''}")
+        if u.get("role"):
+            bits.append(ROLE_LABELS.get(u["role"], u["role"]))
+        member_lines.append(f"- {u['name']}" + (f" ({', '.join(bits)})" if bits else ""))
 
     parts = supabase.table("parts").select("part_number,name,status,owner_id").execute().data
     parts_lines = [
@@ -596,6 +619,7 @@ def _build_club_context():
         + f"\n\nUPCOMING COMPETITIONS:\n" + ("\n".join(comp_lines) or "(none upcoming)")
         + f"\n\nUPCOMING MEETINGS:\n" + ("\n".join(meeting_lines) or "(none upcoming)")
         + f"\n\nRECENT ACHIEVEMENTS:\n" + ("\n".join(achievement_lines) or "(none logged)")
+        + f"\n\nCLUB MEMBERS ({len(member_lines)}):\n" + ("\n".join(member_lines) or "(none)")
         + "\n\nMEMBERS WHO CAN BE @MENTIONED (linked their Discord ID):\n"
         + ("\n".join(linked_lines) or "(nobody has linked their Discord ID yet)")
     )
@@ -872,27 +896,59 @@ CLUB_KEYWORDS = (
 )
 
 
-def _needs_club_data(messages):
-    last_user = next(
+# Same problem as CLUB_KEYWORDS, for the other tool: "what did people
+# talk about yesterday" only worked while Groq had budget, because
+# search_chat_history is a tool and the fallback providers have none.
+# The log itself is right there in Supabase, so it gets pasted in the
+# same way rather than telling members to come back later.
+HISTORY_KEYWORDS = (
+    "yesterday", "earlier", "last night", "before", "previously", "chat",
+    "said", "talked", "talking", "discussed", "conversation", "happened",
+    "who was", "what did", "go through", "history", "logs", "argu", "fight",
+)
+
+
+def _last_user_text(messages):
+    return next(
         (m.get("content", "") for m in reversed(messages) if m.get("role") == "user"), ""
-    )
-    text = last_user.lower()
-    return any(k in text for k in CLUB_KEYWORDS)
+    ).lower()
 
 
-def _with_no_tools_note(messages):
-    # Inline the club data when the question looks club-related, so these
-    # paths can still answer it; otherwise just say the tools are off.
-    if _needs_club_data(messages):
-        note = (
-            "\n\nIMPORTANT FOR THIS REPLY: you cannot search the web or the chat "
-            "history right now, so don't claim to have. But the club's CURRENT "
-            "data is included below - answer club questions from it directly, and "
-            "never say you can't access the club data when it's right here. Never "
-            "invent anything that isn't in it.\n\n" + _safe_club_context()
+def _needs_club_data(messages):
+    return any(k in _last_user_text(messages) for k in CLUB_KEYWORDS)
+
+
+def _needs_chat_history(messages):
+    return any(k in _last_user_text(messages) for k in HISTORY_KEYWORDS)
+
+
+def _with_no_tools_note(messages, channel_id=None):
+    # Inline whichever data the question actually needs, so these paths
+    # can still answer it; otherwise just say the tools are off.
+    # Club data goes in UNCONDITIONALLY on this path. It started
+    # keyword-gated, and the gate kept missing real questions - "please
+    # gimme the details of @Krishna" matched nothing and got "I can't
+    # look that up right now" even though the answer was sitting in the
+    # data. Guessing which wordings need club data is the same
+    # whack-a-mole as trying to block "counting" requests: there are
+    # endless phrasings. ~1,200 tokens on a path that only runs when
+    # Groq is already down is worth never wrongly claiming ignorance.
+    extras = ["The club's CURRENT data:\n\n" + _safe_club_context()]
+    if _needs_chat_history(messages) and channel_id is not None:
+        extras.append(
+            "THIS CHANNEL'S ACTUAL MESSAGE LOG for the last few days is below - "
+            "these ARE the older messages, already retrieved for you. Answer "
+            "questions about what was said, who said it, or who was arguing "
+            "straight from this. Do NOT say you can only see recent messages or "
+            "that they should scroll up - you are looking at the log right "
+            "now:\n\n" + _search_chat_history(channel_id, 3)
         )
-    else:
-        note = NO_TOOLS_NOTE
+    note = (
+        "\n\nIMPORTANT FOR THIS REPLY: you cannot search the web right now, so "
+        "don't claim to have. Everything below is real data already fetched for "
+        "you - answer directly from it, never say you can't access it, and never "
+        "invent anything that isn't in it.\n\n" + "\n\n".join(extras)
+    )
     patched = []
     for m in messages:
         if m.get("role") == "system":
@@ -974,7 +1030,7 @@ def _ask_with_compound(messages, channel_id=None):
     # (raise, don't return) so it falls through to the next fallback -
     # returning a "try asking again" placeholder instead was what made
     # this whole chain dead-end on members with no real attempt made.
-    no_tools_messages = _with_no_tools_note(messages)
+    no_tools_messages = _with_no_tools_note(messages, channel_id)
     try:
         response = groq_client.chat.completions.create(
             model=COMPOUND_MODEL, messages=no_tools_messages,
@@ -1236,6 +1292,16 @@ async def _handle_incoming(message, is_edit=False):
     text = message.content
     if is_mentioned:
         text = text.replace(f"<@{client.user.id}>", "").replace(f"<@!{client.user.id}>", "").strip()
+    # Anyone ELSE tagged in the message arrives as a raw "<@123456789>",
+    # which means nothing to the model - "please gimme the details of
+    # @Krishna" reached it as an 18-digit number, so it couldn't match
+    # that person against the club data and said it couldn't look them
+    # up. Swapped for the display name Discord already resolved.
+    for mentioned in message.mentions:
+        if mentioned.id == client.user.id:
+            continue
+        for form in (f"<@{mentioned.id}>", f"<@!{mentioned.id}>"):
+            text = text.replace(form, mentioned.display_name)
     if not text:
         return
 
