@@ -965,6 +965,32 @@ a real, searched answer. Source links (up to 3) get appended to a
 successful search reply, wrapped in `<>` so Discord doesn't auto-embed
 them.
 
+**What the exported logs actually showed (2026-08-12):** the AI Logs page
+paid for itself immediately — reading one day's export found four things
+no amount of guessing had:
+- **31% of all messages to the bot were ≤12 characters** ("hi" eleven
+  times, plus "up", "wsp", "hihihi", "COME BACK"), each costing a full
+  API call carrying the whole ~700-token system prompt — roughly 28% of
+  the shared daily budget spent on messages needing no model at all.
+  Now answered in-process for zero tokens (`GREETINGS`/`_instant_reply`),
+  matched on the WHOLE message so "hi what motor should I use" still
+  reaches the model.
+- **Members deliberately burning the budget**: "count to 1 million",
+  "print the alphabet 100 times", "print all ascii until I say stop".
+  The bot complied — one reply was 2,780 characters. Fixed with a hard
+  `MAX_REPLY_TOKENS` cap on every provider rather than refusing
+  "counting" requests: the student's own point was that there are
+  endless ways to phrase it, so capping OUTPUT beats blocking wordings.
+  Same request now returns ~137 characters (a loop of code instead).
+- **One person can starve everyone**: `USER_HOURLY_LIMIT` (20/hour per
+  member) since the budget is shared club-wide.
+- **20% of exchanges were failures**, nearly all quota-driven — which is
+  what the three fixes above are actually for.
+Also fixed from the same read: the bot had no clock (answered the wrong
+weekday from training data) and didn't know WHO it was talking to, so
+"which competitions am I participating in" could never work — it now
+gets the asker's name via their linked Discord id and answers correctly.
+
 **Web search, take 2 — Tavily (2026-08-12):** the groq/compound fix above
 turned out not to be enough — a member's very next two real questions
 ("what is a p219 motor," "ingenium drives??") BOTH hit the 413. Tested

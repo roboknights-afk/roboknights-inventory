@@ -297,6 +297,63 @@ MAX_REPLY_TOKENS = 500
 MAX_HISTORY_MESSAGES = 16
 history = defaultdict(lambda: deque(maxlen=MAX_HISTORY_MESSAGES))
 
+# Answered here, in the process, for ZERO tokens. Measured from a real
+# day's exported log: 31% of everything sent to this bot was 12
+# characters or less - "hi" eleven times, plus "up", "up?", "wsp",
+# "hihihi", "COME BACK", "@back" - and each one was costing a full API
+# call carrying the entire ~700-token system prompt. That's ~28% of the
+# whole shared daily budget spent on messages that need no model at all,
+# which is a big part of why the budget kept running out and real
+# questions got "I'm maxed out" later in the day.
+#
+# Matched on the WHOLE message only (after stripping punctuation), never
+# a prefix: "hi" is a greeting, "hi what motor should I use" is a real
+# question and must still reach the model.
+GREETINGS = {
+    "hi", "hii", "hiii", "hihi", "hihihi", "hey", "heyy", "hello", "helo",
+    "yo", "sup", "wsp", "wassup", "whatsup", "up", "u up", "you up",
+    "hola", "namaste", "gm", "good morning", "good evening", "good night",
+    "back", "come back", "test", "testing", "ping",
+}
+GREETING_REPLY = (
+    "Hey! Ask me anything - club stuff (parts, competitions, teams, meetings) "
+    "or just a normal question."
+)
+THANKS = {"thanks", "thank you", "thx", "ty", "tysm", "thanku", "ok thanks", "okay thanks"}
+THANKS_REPLY = "Anytime!"
+
+
+def _instant_reply(text):
+    # Returns a canned reply for trivial messages, or None to let the
+    # model handle it. Punctuation-stripped exact match, so this can
+    # never swallow a real question.
+    cleaned = text.strip().lower().strip("!?.,@ ")
+    if cleaned in GREETINGS:
+        return GREETING_REPLY
+    if cleaned in THANKS:
+        return THANKS_REPLY
+    return None
+
+
+# Stops one person burning the shared budget in a burst. The same log
+# showed long runs of rapid-fire messages from a single member; with a
+# budget everyone shares, one person spamming means everyone else gets
+# "I'm maxed out" for the rest of the day. Generous enough that normal
+# back-and-forth never notices it.
+USER_HOURLY_LIMIT = 20
+_user_request_times = defaultdict(deque)
+
+
+def _rate_limited(discord_user_id):
+    now = time.time()
+    times = _user_request_times[discord_user_id]
+    while times and now - times[0] > 3600:
+        times.popleft()
+    if len(times) >= USER_HOURLY_LIMIT:
+        return True
+    times.append(now)
+    return False
+
 SYSTEM_PROMPT_TEMPLATE = (
     "You are the RoboKnights robotics club's AI assistant, replying "
     "directly in Discord. Members are students aged 11-18. Keep answers "
@@ -1012,6 +1069,25 @@ async def _handle_incoming(message, is_edit=False):
     conversation_key = (message.channel.id, message.author.id)
 
     _log_chat("user", text, discord_user_id, discord_channel_id, linked_user_id)
+
+    # Both checks run BEFORE any API call, so neither costs a token.
+    canned = _instant_reply(text)
+    if canned:
+        history[conversation_key].append({"role": "user", "content": text})
+        history[conversation_key].append({"role": "assistant", "content": canned})
+        _log_chat("assistant", canned, discord_user_id, discord_channel_id, linked_user_id)
+        await _send(message.channel, canned)
+        return
+
+    if _rate_limited(discord_user_id):
+        busy = (
+            "You've asked me a lot in the last hour - giving the rest of the club "
+            "a turn on the shared AI budget. Try again in a bit!"
+        )
+        _log_chat("assistant", busy, discord_user_id, discord_channel_id, linked_user_id)
+        await _send(message.channel, busy)
+        return
+
     async with message.channel.typing():
         reply = _ask_llm(conversation_key, message.channel.id, text, linked_name)
     _log_chat("assistant", reply, discord_user_id, discord_channel_id, linked_user_id)
