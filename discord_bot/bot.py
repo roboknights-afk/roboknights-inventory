@@ -592,6 +592,13 @@ def _ask_with_tools(messages, channel_id):
     # is always available (it's our own Supabase data, no external key
     # needed); web search only gets offered as a tool when TAVILY_API_KEY
     # is set, so the model can't try to call something that isn't wired up.
+    # Kept separate from `messages` (which gets tool-call-shaped entries
+    # appended below) so a fallback below can use the CLEAN conversation -
+    # compound/plain/Gemini don't understand this app's tool-call message
+    # shapes, and passing them a stray "tool" role or a content-less
+    # "assistant" message just confuses them further, which is exactly
+    # what produced an empty/unhelpful reply here once already.
+    original_messages = list(messages)
     tools = [CHAT_HISTORY_TOOL] + ([WEB_SEARCH_TOOL] if TAVILY_API_KEY else [])
     try:
         response = groq_client.chat.completions.create(
@@ -599,7 +606,13 @@ def _ask_with_tools(messages, channel_id):
         )
         msg = response.choices[0].message
         if not msg.tool_calls:
-            return msg.content or "I didn't get a response - try asking again.", []
+            if msg.content:
+                return msg.content, []
+            # A genuinely empty response with no tool call and no content
+            # DOES happen (seen live) - treated as a failure, same as an
+            # exception, rather than shown to a member as an unhelpful
+            # "try asking again" with no real fallback attempted.
+            raise ValueError("empty response, no tool call")
 
         messages.append({
             "role": "assistant",
@@ -620,16 +633,22 @@ def _ask_with_tools(messages, channel_id):
             messages.append({"role": "tool", "tool_call_id": tc.id, "content": result_text})
 
         final = groq_client.chat.completions.create(model=GROQ_MODEL, messages=messages)
-        reply = final.choices[0].message.content or "I didn't get a response - try asking again."
+        reply = final.choices[0].message.content
+        if not reply:
+            # Same reasoning as above - an empty final response (seen
+            # live, e.g. right as the daily budget runs out mid-exchange)
+            # gets a real fallback attempt, not a dead-end message.
+            raise ValueError("empty final response after tool call")
         return reply, all_sources
     except Exception:
-        # A Groq failure here (rate limit, etc.) falls through to the same
-        # compound/plain/Gemini chain as the no-Tavily path, rather than
-        # a second, different error message for what's really the same
-        # underlying problem. Loses chat-history-search ability on this
-        # one reply (compound/plain/Gemini don't have that tool), but
-        # still answers something rather than nothing.
-        return _ask_with_compound(messages)
+        # A Groq failure here (rate limit, empty response, etc.) falls
+        # through to the same compound/plain/Gemini chain as the
+        # no-Tavily path, rather than a second, different error message
+        # for what's really the same underlying problem. Loses
+        # chat-history-search ability on this one reply
+        # (compound/plain/Gemini don't have that tool), but still answers
+        # something rather than nothing.
+        return _ask_with_compound(original_messages)
 
 
 def _ask_llm(conversation_key, channel_id, user_text):
