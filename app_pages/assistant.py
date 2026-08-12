@@ -28,7 +28,7 @@ from groq import Groq
 
 from shared import (
     IST, cached_table, get_client, is_meeting_visible, meeting_invited_ids,
-    send_email, today_ist,
+    meeting_invitee_rows, send_email, today_ist,
 )
 
 GROQ_MODEL = "llama-3.3-70b-versatile"
@@ -118,7 +118,7 @@ def _build_context_text():
     # Private meetings (meeting_invitees) must not reach the prompt for
     # someone who isn't invited — this page's whole privacy rule is that a
     # member's context only ever contains what that member can already see.
-    invited_by_meeting = meeting_invited_ids(cached_table("meeting_invitees"))
+    invited_by_meeting = meeting_invited_ids(meeting_invitee_rows())
     upcoming_meetings = [
         m for m in meetings
         if m["meeting_date"] >= today.isoformat()

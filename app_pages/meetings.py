@@ -15,7 +15,7 @@ import streamlit as st
 
 from shared import (
     cached_table, get_client, invalidate_cache, is_meeting_visible,
-    meeting_invited_ids, safe_write, today_ist,
+    meeting_invited_ids, meeting_invitee_rows, safe_write, today_ist,
 )
 
 client = get_client()
@@ -128,7 +128,7 @@ if st.session_state.meeting_message:
 
 # meeting_id as a tiebreak alongside meeting_date, so two meetings on the
 # same day sort deterministically rather than by undefined storage order.
-all_invitees = cached_table("meeting_invitees")
+all_invitees = meeting_invitee_rows()
 invited_by_meeting = meeting_invited_ids(all_invitees)
 # Filtered before anything else touches it - the counts, the tabs, and
 # every card all work off this, so a private meeting can't leak through

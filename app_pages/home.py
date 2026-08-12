@@ -17,7 +17,7 @@ import streamlit as st
 
 from shared import (
     cached_table, format_ist, get_client, invalidate_cache, is_meeting_visible,
-    meeting_invited_ids, safe_write, today_ist,
+    meeting_invited_ids, meeting_invitee_rows, safe_write, today_ist,
 )
 
 # Read-only page — every table it needs goes through the shared 8-second
@@ -91,7 +91,7 @@ queries_waiting = _threads_awaiting_me(my_queries)
 # Meetings: upcoming ones for the list, plus any already-happened ones I
 # never checked into — check-in unlocks on the meeting's own day (see
 # meetings.py), so "today" counts as both upcoming and checkable.
-_invited_by_meeting = meeting_invited_ids(cached_table("meeting_invitees"))
+_invited_by_meeting = meeting_invited_ids(meeting_invitee_rows())
 upcoming_meetings = sorted(
     (
         m for m in cached_table("meetings")

@@ -161,6 +161,19 @@ def has_unread_exun_channel(user_id):
     return not my_read_at or latest > my_read_at
 
 
+def meeting_invitee_rows():
+    # Returns [] if the meeting_invitees table doesn't exist yet, instead
+    # of letting a PostgREST "relation does not exist" error take down
+    # whichever page asked. App code and the SQL schema get deployed
+    # separately here (push goes live before anyone runs the migration in
+    # Supabase), and an unrun migration should degrade to the old
+    # behaviour - every meeting club-wide - not a crashed Home page.
+    try:
+        return cached_table("meeting_invitees")
+    except Exception:
+        return []
+
+
 def meeting_invited_ids(invitee_rows):
     # {meeting_id: {user_id, ...}} — only meetings that actually have named
     # invitees appear as keys, which is what makes "absent = open to
