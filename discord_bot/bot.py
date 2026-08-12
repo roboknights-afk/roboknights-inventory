@@ -423,15 +423,25 @@ def _build_club_context():
 
     meetings = (
         supabase.table("meetings")
-        .select("title,agenda,meeting_date,meeting_time")
+        .select("meeting_id,title,agenda,meeting_date,meeting_time")
         .gte("meeting_date", today.isoformat())
         .order("meeting_date")
         .execute()
         .data
     )
+    # A meeting with named invitees (meeting_invitees) is private - a host
+    # limited it to specific people. This bot answers in a channel anyone
+    # in the server can read, and it has no idea who's actually asking
+    # beyond a Discord id, so private meetings are left out entirely
+    # rather than risking announcing one to the whole club.
+    private_meeting_ids = {
+        row["meeting_id"]
+        for row in supabase.table("meeting_invitees").select("meeting_id").execute().data
+    }
     meeting_lines = [
         f"- {m['title']} on {m['meeting_date']}" + (f" at {m['meeting_time']}" if m.get("meeting_time") else "")
         for m in meetings
+        if m["meeting_id"] not in private_meeting_ids
     ]
 
     achievements = (

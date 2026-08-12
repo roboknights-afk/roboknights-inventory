@@ -13,7 +13,10 @@ from datetime import date, time
 
 import streamlit as st
 
-from shared import cached_table, get_client, invalidate_cache, safe_write, today_ist
+from shared import (
+    cached_table, get_client, invalidate_cache, is_meeting_visible,
+    meeting_invited_ids, safe_write, today_ist,
+)
 
 client = get_client()
 is_host = st.session_state.is_host
@@ -57,6 +60,17 @@ def render_schedule_meeting():
     idcol, pwcol = st.columns(2)
     meeting_id_code = idcol.text_input("Meeting ID (optional)", key="new_meeting_id_code")
     meeting_password = pwcol.text_input("Meeting password (optional)", key="new_meeting_password")
+    # Empty = the whole club, which is both the common case and what every
+    # meeting scheduled before this feature existed already is. Naming
+    # anyone here is what makes it private.
+    invitees = st.multiselect(
+        "Only for (leave empty for everyone)",
+        options=list(user_name_by_id.keys()),
+        format_func=lambda uid: user_name_by_id.get(uid, "Unknown"),
+        key="new_meeting_invitees",
+        help="Pick people to make this a private meeting — only they (and hosts) "
+             "will see it anywhere in the app. Leave empty and the whole club sees it.",
+    )
     if st.button("Schedule", icon=":material/check:", type="primary", key="confirm_schedule_meeting"):
         # Validation errors show here inside the dialog — stashing them for the
         # page behind would mean closing the form and losing what was typed.
@@ -69,7 +83,7 @@ def render_schedule_meeting():
             if link and not link.startswith(("http://", "https://")):
                 link = "https://" + link
             with safe_write("schedule this meeting"):
-                client.table("meetings").insert({
+                created = client.table("meetings").insert({
                     "title": title.strip(),
                     "agenda": agenda.strip(),
                     "meeting_date": meeting_date.isoformat(),
@@ -78,12 +92,17 @@ def render_schedule_meeting():
                     "meeting_id_code": meeting_id_code.strip() or None,
                     "meeting_password": meeting_password.strip() or None,
                 }).execute()
+                if invitees:
+                    new_id = created.data[0]["meeting_id"]
+                    client.table("meeting_invitees").insert(
+                        [{"meeting_id": new_id, "user_id": uid} for uid in invitees]
+                    ).execute()
                 invalidate_cache()
             st.session_state.meeting_message = ("success", f"Scheduled {title.strip()}.")
             # Clear the form so reopening the dialog starts blank.
             for k in (
                 "new_meeting_title", "new_meeting_agenda", "new_meeting_link",
-                "new_meeting_id_code", "new_meeting_password",
+                "new_meeting_id_code", "new_meeting_password", "new_meeting_invitees",
             ):
                 st.session_state.pop(k, None)
             _close_schedule_meeting()
@@ -109,7 +128,18 @@ if st.session_state.meeting_message:
 
 # meeting_id as a tiebreak alongside meeting_date, so two meetings on the
 # same day sort deterministically rather than by undefined storage order.
-meetings = sorted(cached_table("meetings"), key=lambda m: (m["meeting_date"], m["meeting_id"]))
+all_invitees = cached_table("meeting_invitees")
+invited_by_meeting = meeting_invited_ids(all_invitees)
+# Filtered before anything else touches it - the counts, the tabs, and
+# every card all work off this, so a private meeting can't leak through
+# whichever one got overlooked.
+meetings = sorted(
+    (
+        m for m in cached_table("meetings")
+        if is_meeting_visible(m, invited_by_meeting, current_user_id, is_host)
+    ),
+    key=lambda m: (m["meeting_date"], m["meeting_id"]),
+)
 all_rsvps = cached_table("meeting_rsvps")
 all_attendance = cached_table("meeting_attendance")
 # IST "today", not the UTC server's — otherwise check-in for a meeting
@@ -169,6 +199,14 @@ def render_meeting_card(m):
                 "Meeting password (optional)", value=m.get("meeting_password") or "",
                 key=f"edit_password_{m['meeting_id']}",
             )
+            edit_invitees = st.multiselect(
+                "Only for (leave empty for everyone)",
+                options=list(user_name_by_id.keys()),
+                default=sorted(invited_by_meeting.get(m["meeting_id"], set())),
+                format_func=lambda uid: user_name_by_id.get(uid, "Unknown"),
+                key=f"edit_invitees_{m['meeting_id']}",
+                help="Clearing this makes the meeting visible to the whole club again.",
+            )
             save_col, cancel_col = st.columns(2)
             if save_col.button(
                 "Save changes", key=f"save_meeting_{m['meeting_id']}", icon=":material/check:", type="primary"
@@ -189,6 +227,19 @@ def render_meeting_card(m):
                             "meeting_id_code": edit_id_code.strip() or None,
                             "meeting_password": edit_password.strip() or None,
                         }).eq("meeting_id", m["meeting_id"]).execute()
+                        # Only the difference is written, so re-saving a
+                        # meeting without touching this list doesn't churn
+                        # rows (and an unchanged list costs no writes).
+                        was_invited = invited_by_meeting.get(m["meeting_id"], set())
+                        now_invited = set(edit_invitees)
+                        for uid in now_invited - was_invited:
+                            client.table("meeting_invitees").insert({
+                                "meeting_id": m["meeting_id"], "user_id": uid,
+                            }).execute()
+                        for uid in was_invited - now_invited:
+                            client.table("meeting_invitees").delete().eq(
+                                "meeting_id", m["meeting_id"]
+                            ).eq("user_id", uid).execute()
                         invalidate_cache()
                     st.session_state.meeting_message = ("success", f"Updated {edit_title.strip()}.")
                     st.session_state.editing_meeting_id = None
@@ -233,6 +284,16 @@ def render_meeting_card(m):
                 # Comes back from Postgres as "HH:MM:SS".
                 info_bits.append(f":material/schedule: {m['meeting_time'][:5]}")
             st.caption("  •  ".join(info_bits))
+
+            # Shown to everyone who can see the meeting, not just the host:
+            # if you're in a small invited group it matters that you know
+            # the rest of the club isn't.
+            this_meeting_invitees = invited_by_meeting.get(m["meeting_id"])
+            if this_meeting_invitees:
+                invited_names = ", ".join(
+                    sorted(user_name_by_id.get(uid, "Unknown") for uid in this_meeting_invitees)
+                )
+                st.caption(f":material/lock: Private — only for {invited_names}")
 
             if m.get("agenda"):
                 st.write(m["agenda"])
@@ -313,7 +374,14 @@ def render_meeting_card(m):
             # themselves in, same "self-report then host override"
             # pattern as the Members directory edit.
             if is_host and is_past_or_today:
-                all_member_ids = list(user_name_by_id.keys())
+                # For a private meeting the picker is scoped to the people
+                # actually invited (plus anyone already marked present, so
+                # a mistaken entry can still be removed rather than being
+                # stuck in the list with no way to deselect it).
+                if this_meeting_invitees:
+                    all_member_ids = sorted(set(this_meeting_invitees) | attended_ids)
+                else:
+                    all_member_ids = list(user_name_by_id.keys())
                 final_attendees = st.multiselect(
                     "Attendance (host can correct)",
                     options=all_member_ids,

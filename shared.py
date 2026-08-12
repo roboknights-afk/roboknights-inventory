@@ -161,6 +161,31 @@ def has_unread_exun_channel(user_id):
     return not my_read_at or latest > my_read_at
 
 
+def meeting_invited_ids(invitee_rows):
+    # {meeting_id: {user_id, ...}} — only meetings that actually have named
+    # invitees appear as keys, which is what makes "absent = open to
+    # everyone" work below.
+    invited = {}
+    for row in invitee_rows:
+        invited.setdefault(row["meeting_id"], set()).add(row["user_id"])
+    return invited
+
+
+def is_meeting_visible(meeting, invited_by_meeting, user_id, is_host=False):
+    # ONE definition of who can see a meeting, shared by the Meetings page,
+    # the Home page's next-meeting nudge, and the AI Assistant's context —
+    # three separate readers that would otherwise drift apart and leak a
+    # private meeting through whichever one got missed.
+    #
+    # No named invitees at all = a normal club-wide meeting (including
+    # every meeting that predates this feature). Named invitees = only
+    # those people, plus hosts, who schedule and run them.
+    invited = invited_by_meeting.get(meeting["meeting_id"])
+    if not invited:
+        return True
+    return is_host or user_id in invited
+
+
 IST = timezone(timedelta(hours=5, minutes=30))
 
 

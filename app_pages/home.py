@@ -15,7 +15,10 @@ from datetime import date
 
 import streamlit as st
 
-from shared import cached_table, format_ist, get_client, invalidate_cache, safe_write, today_ist
+from shared import (
+    cached_table, format_ist, get_client, invalidate_cache, is_meeting_visible,
+    meeting_invited_ids, safe_write, today_ist,
+)
 
 # Read-only page — every table it needs goes through the shared 8-second
 # cache instead of a fresh Supabase round trip per query, so landing here
@@ -88,8 +91,15 @@ queries_waiting = _threads_awaiting_me(my_queries)
 # Meetings: upcoming ones for the list, plus any already-happened ones I
 # never checked into — check-in unlocks on the meeting's own day (see
 # meetings.py), so "today" counts as both upcoming and checkable.
+_invited_by_meeting = meeting_invited_ids(cached_table("meeting_invitees"))
 upcoming_meetings = sorted(
-    (m for m in cached_table("meetings") if m["meeting_date"] >= today_iso),
+    (
+        m for m in cached_table("meetings")
+        if m["meeting_date"] >= today_iso
+        # Same visibility rule the Meetings page uses - a host-only
+        # meeting shouldn't surface here either.
+        and is_meeting_visible(m, _invited_by_meeting, current_user_id, is_host)
+    ),
     key=lambda m: (m["meeting_date"], m["meeting_id"]),
 )
 my_rsvp_ids = {

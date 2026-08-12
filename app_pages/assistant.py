@@ -26,7 +26,10 @@ from datetime import datetime
 import streamlit as st
 from groq import Groq
 
-from shared import IST, cached_table, get_client, send_email, today_ist
+from shared import (
+    IST, cached_table, get_client, is_meeting_visible, meeting_invited_ids,
+    send_email, today_ist,
+)
 
 GROQ_MODEL = "llama-3.3-70b-versatile"
 # Resending the ENTIRE conversation on every turn (the standard chat
@@ -112,7 +115,15 @@ def _build_context_text():
     my_rsvp_ids = {
         r["meeting_id"] for r in cached_table("meeting_rsvps") if r["user_id"] == current_user_id
     }
-    upcoming_meetings = [m for m in meetings if m["meeting_date"] >= today.isoformat()]
+    # Private meetings (meeting_invitees) must not reach the prompt for
+    # someone who isn't invited — this page's whole privacy rule is that a
+    # member's context only ever contains what that member can already see.
+    invited_by_meeting = meeting_invited_ids(cached_table("meeting_invitees"))
+    upcoming_meetings = [
+        m for m in meetings
+        if m["meeting_date"] >= today.isoformat()
+        and is_meeting_visible(m, invited_by_meeting, current_user_id, st.session_state.is_host)
+    ]
 
     lines = [f"Today's date: {today.isoformat()}.", f"You are talking to: {current_user_name}.", ""]
 
