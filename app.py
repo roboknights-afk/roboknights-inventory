@@ -1047,6 +1047,10 @@ if st.session_state.is_host or st.session_state.is_exun:
 # competitions channel and the private Exun<>RK channel.
 if st.session_state.is_host:
     pages.append(st.Page("app_pages/discord_messages.py", title="Discord Messages", icon=":material/forum:"))
+    # Read-only viewer for what the AI actually said (Discord bot + AI
+    # Assistant page), so a bad answer can be looked at without opening
+    # Supabase directly.
+    pages.append(st.Page("app_pages/ai_logs.py", title="AI Logs", icon=":material/history:"))
 
 # The private RoboKnights <> Exun channel — only the specific hand-picked
 # people in EXUN_CHANNEL_MEMBERS ever see this page exists at all.
