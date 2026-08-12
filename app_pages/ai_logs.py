@@ -18,6 +18,8 @@
 # message the app SENT is a different thing and already lives on the
 # Discord Messages page.
 
+import csv
+import io
 from datetime import timedelta
 
 import streamlit as st
@@ -79,6 +81,28 @@ def _who(row, discord_names=None):
     return discord_id or "Unknown"
 
 
+def _export_rows(rows, columns):
+    # Exports whatever the filters currently select — the whole filtered
+    # set, not just the capped number rendered on screen, since the point
+    # of exporting is usually to look at more than fits comfortably here.
+    #
+    # Oldest first, the opposite of the on-screen order: a transcript
+    # someone opens elsewhere reads top-down as the conversation
+    # happened, while the page itself leads with what just broke.
+    ordered = sorted(rows, key=lambda r: r.get("created_at") or "")
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow([label for label, _ in columns])
+    for r in ordered:
+        writer.writerow([value(r) for _, value in columns])
+    return buffer.getvalue()
+
+
+def _export_text(rows, line):
+    ordered = sorted(rows, key=lambda r: r.get("created_at") or "")
+    return "\n".join(line(r) for r in ordered)
+
+
 tab_chats, tab_channel = st.tabs(["AI conversations", "Discord channel log"])
 
 
@@ -111,6 +135,37 @@ with tab_chats:
         # something that just happened, not reading from the beginning.
         shown = sorted(shown, key=lambda r: r.get("created_at") or "", reverse=True)
         st.caption(f"{len(shown)} of {len(rows)} messages")
+
+        if shown:
+            stamp = today_ist().isoformat()
+            xcol1, xcol2 = st.columns(2)
+            xcol1.download_button(
+                f"Export {len(shown)} as CSV",
+                data=_export_rows(shown, [
+                    ("When (IST)", lambda r: format_ist(r["created_at"])),
+                    ("Where", lambda r: r.get("source") or ""),
+                    ("Who", lambda r: "AI" if r.get("role") == "assistant" else _who(r, discord_names)),
+                    ("Role", lambda r: r.get("role") or ""),
+                    ("Message", lambda r: r.get("content") or ""),
+                ]),
+                file_name=f"roboknights_ai_chats_{stamp}.csv",
+                mime="text/csv",
+                icon=":material/download:",
+                width="stretch",
+            )
+            xcol2.download_button(
+                "Export as transcript",
+                data=_export_text(shown, lambda r: (
+                    f"[{format_ist(r['created_at'])}] "
+                    f"{'AI' if r.get('role') == 'assistant' else _who(r, discord_names)}: "
+                    f"{r.get('content') or ''}"
+                )),
+                file_name=f"roboknights_ai_chats_{stamp}.txt",
+                mime="text/plain",
+                icon=":material/description:",
+                width="stretch",
+                help="Plain readable version — easier to skim or paste somewhere than the CSV.",
+            )
 
         for r in shown[:200]:
             is_assistant = r.get("role") == "assistant"
@@ -157,6 +212,36 @@ with tab_channel:
         shown = sorted(shown, key=lambda r: r.get("created_at") or "", reverse=True)
 
         st.caption(f"{len(shown)} messages")
+
+        if shown:
+            stamp = today_ist().isoformat()
+            ccol1, ccol2 = st.columns(2)
+            ccol1.download_button(
+                f"Export {len(shown)} as CSV",
+                data=_export_rows(shown, [
+                    ("When (IST)", lambda r: format_ist(r["created_at"])),
+                    ("Who", lambda r: _who(r)),
+                    ("Message", lambda r: r.get("content") or ""),
+                    ("Edited", lambda r: "yes" if r.get("was_edited") else ""),
+                ]),
+                file_name=f"roboknights_discord_channel_{stamp}.csv",
+                mime="text/csv",
+                icon=":material/download:",
+                width="stretch",
+            )
+            ccol2.download_button(
+                "Export as transcript",
+                data=_export_text(shown, lambda r: (
+                    f"[{format_ist(r['created_at'])}] {_who(r)}: {r.get('content') or ''}"
+                    + (" (edited)" if r.get("was_edited") else "")
+                )),
+                file_name=f"roboknights_discord_channel_{stamp}.txt",
+                mime="text/plain",
+                icon=":material/description:",
+                width="stretch",
+                help="Plain readable version — easier to skim or paste somewhere than the CSV.",
+            )
+
         for r in shown[:300]:
             edited = " *(edited)*" if r.get("was_edited") else ""
             st.markdown(
