@@ -28,15 +28,15 @@
 #
 # Normal case: everything runs on Groq. If Groq fails (its 100K-token/day
 # budget for this model IS reachable in real use - see the comments
-# around CEREBRAS_API_KEY/GROQ_MODEL below), it falls back to Cerebras's
-# free tier for that one reply, then goes right back to Groq next time -
-# Cerebras is a fallback, never the default.
+# around GEMINI_API_KEY/GROQ_MODEL below), it falls back to Gemini's free
+# tier for that one reply, then goes right back to Groq next time - Gemini
+# is a fallback, never the default.
 #
 # To test on your own laptop: put DISCORD_BOT_TOKEN, GROQ_API_KEY,
 # SUPABASE_URL, and SUPABASE_KEY in a .env file in this folder (or the
 # repo root, if run from there), then:
 #   python bot.py
-# CEREBRAS_API_KEY is optional - without it, a Groq failure just fails
+# GEMINI_API_KEY is optional - without it, a Groq failure just fails
 # openly like before, no fallback attempted.
 
 import json
@@ -47,8 +47,9 @@ from datetime import datetime, timedelta, timezone
 
 import discord
 import requests
-from cerebras.cloud.sdk import Cerebras
 from dotenv import load_dotenv
+from google import genai
+from google.genai import types as genai_types
 from groq import Groq
 from supabase import create_client
 
@@ -137,34 +138,25 @@ def _tavily_search(query):
 
 # Fallback for when Groq's daily/rate limit is hit (see the token-budget
 # comments below - a real, now-confirmed way to run out mid-day). Tried
-# Gemini for this first, same as the dashboard's AI Assistant did - same
-# result: Gemini's free tier returns a hard 0 quota for India-based
-# accounts, confirmed live (see CLAUDE.md). Cerebras instead: genuinely
-# free, no card, no waitlist, and a much bigger daily budget (1M
-# tokens/day vs Groq's 100K for this model) - sign up at
-# cloud.cerebras.ai and add CEREBRAS_API_KEY to .env. Entirely optional:
-# if it's not set (or not working), the bot just behaves as it did
-# before. No web search on this path - Cerebras is a plain chat
-# fallback, not a search one.
+# Cerebras for this role first - genuinely free tier on paper (1M
+# tokens/day, no card claimed) but confirmed live, repeatedly, that this
+# account gets 402 Payment Required on every model regardless of billing
+# changes made on their dashboard - likely an account-type quirk (Team
+# org vs Personal) that never got resolved, on top of Cerebras
+# shutting this free tier down entirely from Aug 17, 2026 anyway.
 #
-# The exact model name matters - Cerebras's catalog changes and the
-# free-tier's actual available models don't always match their own docs
-# (confirmed live: llama-4-scout-17b-16e-instruct, the originally
-# documented model, 404s on this account; gpt-oss-120b is what
-# `GET /v1/models` actually lists as available). ALSO confirmed live:
-# this account currently gets 402 Payment Required on every model
-# despite the free-tier signup claiming no card needed - likely an
-# account-type quirk (Team org vs Personal) or Cerebras's free tier
-# changing under us (it's scheduled to require a payment method from
-# Aug 17, 2026 per their own announcement). Left wired in since it's a
-# genuine no-op when broken (falls through to the plain error message
-# below), and may just start working once that's sorted on their end -
-# check `curl https://api.cerebras.ai/v1/models -H "Authorization:
-# Bearer $CEREBRAS_API_KEY"` for the current model list if this needs
-# revisiting.
-CEREBRAS_API_KEY = os.environ.get("CEREBRAS_API_KEY")
-CEREBRAS_MODEL = "gpt-oss-120b"
-cerebras_client = Cerebras(api_key=CEREBRAS_API_KEY) if CEREBRAS_API_KEY else None
+# Gemini instead: confirmed live that PLAIN generation genuinely works
+# and is free on this key (unlike an earlier attempt, which hit a hard 0
+# quota - that finding held for grounding/search specifically, not the
+# base model). Google Search grounding (Gemini's own web-search feature)
+# is SEPARATELY gated behind a linked billing account even for its free
+# quota, so this is chat-only here - Tavily above is still what handles
+# search. A paid Gemini Advanced/Google One AI Premium subscription does
+# NOT raise this API key's quota - confirmed live, that's a completely
+# separate consumer product from the API, a common mix-up.
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+GEMINI_MODEL = "gemini-flash-latest"
+gemini_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
 # Keeps recent exchanges per channel/DM so a reply can follow up on what
 # was just said. Lives only in this process's memory - no database - so it
@@ -452,12 +444,32 @@ def _extract_sources(response):
     return sources
 
 
-def _ask_with_cerebras(messages):
-    if cerebras_client is None:
+def _ask_with_gemini(messages):
+    if gemini_client is None:
         return None
     try:
-        response = cerebras_client.chat.completions.create(model=CEREBRAS_MODEL, messages=messages)
-        return response.choices[0].message.content or "I didn't get a response - try asking again."
+        # Gemini's own shape: system prompt is a separate config field, not
+        # a message in the list, and turns are "user"/"model" not
+        # "user"/"assistant". Tool-call messages (left over from a failed
+        # Tavily attempt upstream) have no Gemini equivalent here and are
+        # just dropped - this is a last-resort plain-chat fallback, not
+        # something that needs to replay a tool-call exchange faithfully.
+        system_instruction = None
+        contents = []
+        for m in messages:
+            role = m.get("role")
+            if role == "system":
+                system_instruction = m.get("content")
+            elif role == "user" and m.get("content"):
+                contents.append({"role": "user", "parts": [{"text": m["content"]}]})
+            elif role == "assistant" and m.get("content"):
+                contents.append({"role": "model", "parts": [{"text": m["content"]}]})
+
+        response = gemini_client.models.generate_content(
+            model=GEMINI_MODEL, contents=contents,
+            config=genai_types.GenerateContentConfig(system_instruction=system_instruction),
+        )
+        return response.text or "I didn't get a response - try asking again."
     except Exception:
         return None
 
@@ -489,9 +501,9 @@ def _ask_with_compound(messages):
             )
             return reply, []
         except Exception as groq_error:
-            cerebras_reply = _ask_with_cerebras(messages)
-            if cerebras_reply is not None:
-                return cerebras_reply, []
+            gemini_reply = _ask_with_gemini(messages)
+            if gemini_reply is not None:
+                return gemini_reply, []
             return (
                 f"Sorry, I couldn't get a response right now "
                 f"(search: {compound_error}; plain: {groq_error}).", []
@@ -533,7 +545,7 @@ def _ask_with_tavily(messages):
         return reply, all_sources
     except Exception:
         # A Groq failure here (rate limit, etc.) falls through to the same
-        # compound/plain/Cerebras chain as the no-Tavily path, rather than
+        # compound/plain/Gemini chain as the no-Tavily path, rather than
         # a second, different error message for what's really the same
         # underlying problem.
         return _ask_with_compound(messages)

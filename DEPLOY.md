@@ -165,23 +165,31 @@ summaries already use — no new AI account needed.
      and whoever it's talking to) to the `ai_chat_messages` table there,
      alongside the dashboard AI Assistant's own chat log, so a host has
      one shared record of everything either AI surface has said.
-   - `CEREBRAS_API_KEY` — optional. `llama-3.3-70b-versatile`'s free-tier
+   - `GEMINI_API_KEY` — optional. `llama-3.3-70b-versatile`'s free-tier
      budget on this project's Groq key is 100,000 tokens/day, genuinely
      reachable in real use, not just a theoretical ceiling — confirmed by
      hitting it during testing. When Groq fails, the bot falls back to
-     Cerebras's free tier (1M tokens/day, no card) for that one reply,
-     then goes right back to Groq next time. Sign up at
-     [cloud.cerebras.ai](https://cloud.cerebras.ai) (instant, no card, no
-     waitlist). Gemini was tried first for this same fallback role — same
-     as the dashboard's AI Assistant already found, its free tier returns
-     a hard 0 quota for India-based accounts, so it's not an option here
-     without adding billing.
+     Gemini's free tier for that one reply, then goes right back to Groq
+     next time. Get a key at
+     [aistudio.google.com/apikey](https://aistudio.google.com/apikey)
+     (free, no card). Chat-only here — Gemini's own web-search feature
+     (grounding) needs a linked billing account even for its free quota,
+     confirmed live, so it's not used for that; Tavily above already
+     covers search. Cerebras was tried first for this fallback role —
+     free tier on paper, but this account got 402 Payment Required on
+     every model regardless of billing changes, on top of Cerebras
+     shutting the free tier down entirely from Aug 17, 2026, so it was
+     dropped in favor of Gemini, which is confirmed actually working.
+   - `TAVILY_API_KEY` — optional, but without it web search runs through
+     `groq/compound` instead, which is known to be unreliable (see
+     CLAUDE.md's Discord AI bot section). 1,000 free searches/month, no
+     card, sign up at [tavily.com](https://tavily.com).
 5. Railway auto-deploys on every push to `master`, same as Streamlit Cloud
    — no separate redeploy step needed after this.
 
-To test on your own laptop first: put both variables in a `.env` file
-inside `discord_bot/` (or run from the repo root, which already has one),
-then `pip install -r discord_bot/requirements.txt` and
+To test on your own laptop first: put all the variables above in a
+`.env` file inside `discord_bot/` (or run from the repo root, which
+already has one), then `pip install -r discord_bot/requirements.txt` and
 `python discord_bot/bot.py`.
 
 ## What doesn't change

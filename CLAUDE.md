@@ -942,7 +942,8 @@ after watching it live in the actual server:
   optional) — Gemini was tried first for this exact role, same 0-quota
   India restriction as before, so skipped again in favor of Cerebras
   (1M tokens/day free, no card). Groq stays the normal-case default;
-  Cerebras only gets touched on a Groq failure.
+  Cerebras only gets touched on a Groq failure. **Superseded the same
+  day** — see "Cerebras → Gemini" below.
 - New `discord_channel_log` table — every message the bot sees (not just
   its own turns, which is `ai_chat_messages`) gets logged, specifically
   so a host can review real conversations to catch bad replies like the
@@ -982,6 +983,23 @@ problem — groq/compound has no such control since it runs entirely
 server-side. `groq/compound` stays as the automatic fallback for when
 `TAVILY_API_KEY` isn't set, same best-effort spirit as everything else
 here, but Tavily is what actually works reliably once configured.
+
+**Cerebras → Gemini (2026-08-12):** Cerebras (the fallback for when
+Groq's daily budget runs out) never actually worked — 402 Payment
+Required on every model, every retry, unchanged across multiple billing
+fix attempts on the student's end. Re-tried Gemini instead, and this
+time it's genuinely different from the earlier finding: PLAIN generation
+works fine and is free (confirmed live) — the original "hard 0 quota"
+result was specifically about Google Search grounding, not the base
+model. Grounding is separately gated behind a linked billing account for
+its free quota (per Google's own March 2026 change), which this project
+doesn't have and isn't adding — so Gemini here is chat-only, no search
+(Tavily already covers that). Swapped in as the new last-resort fallback,
+replacing Cerebras entirely (not chained — one clean swap). Also worth
+recording: a paid Gemini Advanced/Google One AI Premium subscription
+does NOT raise this API key's quota — confirmed live, a genuinely
+separate consumer product from the developer API, a common mix-up the
+student ran into.
 
 ## Explicitly NOT in v1
 
