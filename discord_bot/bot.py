@@ -250,6 +250,19 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 GEMINI_MODEL = "gemini-flash-latest"
 gemini_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
+# Third and last fallback, because two turned out not to be enough: on a
+# busy day Groq's 100K tokens and Gemini's free-tier daily request quota
+# can BOTH run out, and then the bot just tells members it's broken.
+# OpenRouter's ":free" models are $0/token with no card ever required
+# (50 requests/day without buying credits), and it's a completely
+# separate quota from the other two - which is the whole point. Plain
+# chat only, no tools, so it gets the NO_TOOLS_NOTE treatment like the
+# other tool-less paths. Optional: unset means this step is skipped.
+# Which models are free rotates over time - if this one 404s, check
+# `curl https://openrouter.ai/api/v1/models` for current ":free" ids.
+OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
+OPENROUTER_MODEL = "nvidia/nemotron-3-super-120b-a12b:free"
+
 # Keeps recent exchanges per channel/DM so a reply can follow up on what
 # was just said. Lives only in this process's memory - no database - so it
 # resets whenever the bot restarts, which is fine for a chat history.
@@ -673,6 +686,26 @@ def _with_no_tools_note(messages):
     return patched
 
 
+def _ask_with_openrouter(messages):
+    # Plain OpenAI-shaped HTTP call - no extra SDK needed, and `requests`
+    # is already a dependency for Tavily. Pass the NO_TOOLS_NOTE version
+    # of the messages: this path has no tools, and without that note the
+    # model invents club data (see NO_TOOLS_NOTE above).
+    if not OPENROUTER_API_KEY:
+        return None
+    try:
+        r = requests.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            headers={"Authorization": f"Bearer {OPENROUTER_API_KEY}"},
+            json={"model": OPENROUTER_MODEL, "messages": messages},
+            timeout=30,
+        )
+        r.raise_for_status()
+        return r.json()["choices"][0]["message"]["content"] or None
+    except Exception:
+        return None
+
+
 def _ask_with_compound(messages, channel_id=None):
     # groq/compound: Groq's own search-and-read loop, server-side, no size
     # control on our end - kept only as what runs when TAVILY_API_KEY isn't
@@ -713,14 +746,18 @@ def _ask_with_compound(messages, channel_id=None):
             gemini_reply = _ask_with_gemini(messages, channel_id)
             if gemini_reply is not None:
                 return gemini_reply, []
-            # Says Gemini was tried too. The earlier version listed only
-            # the two Groq errors, which read as "it never even tried the
-            # fallback" when in fact Gemini had also hit its own quota -
-            # confusing to debug from the Discord side.
+            openrouter_reply = _ask_with_openrouter(no_tools_messages)
+            if openrouter_reply is not None:
+                return openrouter_reply, []
+            # Names every provider actually tried. The first version of
+            # this listed only the two Groq errors, which read as "it
+            # never even tried the fallback" when Gemini had also hit its
+            # own quota - confusing to debug from the Discord side.
             return (
                 f"Sorry, I couldn't get a response right now - every model "
                 f"is rate-limited or erroring (search: {compound_error}; "
-                f"plain: {groq_error}; Gemini fallback also failed).", []
+                f"plain: {groq_error}; Gemini and OpenRouter fallbacks "
+                f"also failed).", []
             )
 
 

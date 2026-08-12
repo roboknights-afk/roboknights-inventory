@@ -184,6 +184,16 @@ summaries already use — no new AI account needed.
      `groq/compound` instead, which is known to be unreliable (see
      CLAUDE.md's Discord AI bot section). 1,000 free searches/month, no
      card, sign up at [tavily.com](https://tavily.com).
+   - `OPENROUTER_API_KEY` — optional third and last fallback, for when
+     Groq AND Gemini have both run out on the same day (confirmed to
+     happen on a busy day, at which point the bot can only tell members
+     it's broken). OpenRouter's `:free` models cost $0/token with no card
+     ever required (50 requests/day without buying credits) and are a
+     completely separate quota from the other two, which is the point.
+     Sign up at [openrouter.ai](https://openrouter.ai), create a key on
+     the Keys page. Which models are free rotates over time — if the one
+     in `bot.py` (`OPENROUTER_MODEL`) starts 404ing, check
+     `curl https://openrouter.ai/api/v1/models` for current `:free` ids.
 5. Railway auto-deploys on every push to `master`, same as Streamlit Cloud
    — no separate redeploy step needed after this.
 
