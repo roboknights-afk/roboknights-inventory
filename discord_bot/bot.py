@@ -265,14 +265,20 @@ gemini_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 # Which models are free rotates over time - if this one 404s, check
 # `curl https://openrouter.ai/api/v1/models` for current ":free" ids.
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
-# Benchmarked against the other ":free" models rather than picked by size:
-# the 120b one this started on took 12-19 SECONDS per reply, and since
-# this path runs after Groq and Gemini have both already failed, that was
-# landing on top of their timeouts - members were waiting ~15s for an
-# answer. This one returned a correct servo-motor definition in 1.7s.
-# Several other free models 500'd or returned null content when tested,
-# so don't swap this without actually timing the replacement.
-OPENROUTER_MODEL = "nvidia/nemotron-3-nano-30b-a3b:free"
+# Chosen by testing every ":free" model on a real club question, not by
+# size or name. Two things disqualified the obvious picks:
+#   - the 120b model took 12-19 SECONDS per reply, and this path only
+#     runs after Groq and Gemini have already failed, so that landed on
+#     top of their timeouts - members waited ~15s.
+#   - the nemotron "nano" model is a REASONING model: fast, but it ships
+#     its scratchpad to the channel ("We need to answer user... Does
+#     Naitik appear? Not listed as volunteer. So not relevant."). No
+#     output filter catches that reliably, because the working-out IS
+#     the answer text.
+# This one is instruct-tuned, answers directly, and got the club
+# question right in 3.8s ("Your next competition is Robotronics '26...").
+# Don't swap it without testing BOTH speed and whether it thinks out loud.
+OPENROUTER_MODEL = "google/gemma-4-26b-a4b-it:free"
 
 # Hard ceiling on how long ANY single reply can be, applied to every
 # provider below. This exists because of what members actually did once
@@ -398,6 +404,14 @@ SYSTEM_PROMPT_TEMPLATE = (
     "from what it returns rather than guessing. If it isn't in there, say "
     "you don't have that information. General robotics/build questions "
     "can still be answered from your own knowledge without the tool.\n\n"
+    "Someone's OWN events ('my next comp', 'which competitions am I in'): "
+    "only count an event if that exact person's name appears in its "
+    "finalized team or volunteer list. Do NOT fall back to the club's "
+    "next competition overall - confirmed live, a member was told his "
+    "next comp was one he isn't on the team for, because it was simply "
+    "the soonest one in the data. Go through the events, keep only the "
+    "ones listing that name, and pick the earliest of THOSE. If none "
+    "list them, say they're not on any upcoming team.\n\n"
     "Pinging/tagging people: writing a plain '@Name' does NOT notify "
     "anyone in Discord - only the exact `<@discord_id>` syntax does, and "
     "only for someone who has linked their Discord ID. The 'MEMBERS WHO "
@@ -480,6 +494,28 @@ def _build_club_context():
     volunteers_by_event = defaultdict(list)
     for v in volunteers:
         volunteers_by_event[v["event_id"]].append(v)
+
+    # Per-member event list, worked out HERE in code rather than left to
+    # the model. Asked "when is my next comp", a free fallback model
+    # answered TECHVVIZ - the club's soonest competition - for a member
+    # who isn't on that team at all, and got it right only about half the
+    # time across repeated runs. Filtering by name and sorting by date is
+    # exact, deterministic work; handing it to a model was the mistake.
+    # _personal_events_by_name is read by _personal_events() below.
+    _personal_events_by_name.clear()
+    for c in competitions:
+        c_date = c.get("competition_date")
+        if c_date and c_date < today.isoformat():
+            continue
+        for e in events_by_comp.get(c["competition_id"], []):
+            for v in volunteers_by_event.get(e["event_id"], []):
+                who = users_by_id.get(v["user_id"])
+                if not who:
+                    continue
+                status = "finalized" if v.get("selected") else "volunteered, not yet finalized"
+                _personal_events_by_name.setdefault(who.strip().lower(), []).append(
+                    (c_date or "9999-99-99", f"{c['name']} - {e['name']} on {c_date or 'date TBD'} ({status})")
+                )
 
     comp_lines = []
     for c in competitions:
@@ -566,6 +602,30 @@ def _build_club_context():
     _context_cache["text"] = context
     _context_cache["fetched_at"] = now
     return context
+
+
+_personal_events_by_name = {}
+
+
+def _personal_events(asker_name):
+    # Exact, date-sorted list of the events this person is actually on -
+    # no model reasoning involved. Populated by _build_club_context, so
+    # that gets called first to make sure it reflects current data.
+    if not asker_name:
+        return None
+    try:
+        _safe_club_context()
+    except Exception:
+        return None
+    rows = _personal_events_by_name.get(asker_name.strip().lower())
+    if not rows:
+        return f"{asker_name} is NOT on the team or volunteer list for any upcoming event."
+    ordered = [line for _date, line in sorted(rows)]
+    return (
+        f"{asker_name}'s upcoming events, earliest first (this list is exact - "
+        f"use it as-is for any question about their own events, and treat the "
+        f"first one as their next competition):\n- " + "\n- ".join(ordered)
+    )
 
 
 def _safe_club_context():
@@ -793,14 +853,78 @@ NO_TOOLS_NOTE = (
 )
 
 
+# The tool-less providers can't call get_club_data, so a member asking
+# "when is my next comp" while Groq is out got "I'm not able to access
+# the club data right now" - technically honest, useless in practice,
+# and it happened on nearly every club question during a rate-limited
+# day. Tool calling isn't a fix here: tested live, the free OpenRouter
+# model accepts a tools parameter and then just narrates ("I need to
+# figure out how to respond using the available tools") instead of
+# emitting a real call. So the data is fetched HERE, deterministically,
+# and pasted in - no model cooperation required.
+#
+# Keyword-gated so it only costs those ~2,000 tokens on questions that
+# actually need club data, not on "what is a servo motor".
+CLUB_KEYWORDS = (
+    "competition", "comp ", "comps", "event", "team", "roster", "volunteer",
+    "part", "inventory", "motor driver", "own", "borrow", "meeting", "meet",
+    "achievement", "won", "member", "club", "next comp", "am i in", "my next",
+)
+
+
+def _needs_club_data(messages):
+    last_user = next(
+        (m.get("content", "") for m in reversed(messages) if m.get("role") == "user"), ""
+    )
+    text = last_user.lower()
+    return any(k in text for k in CLUB_KEYWORDS)
+
+
 def _with_no_tools_note(messages):
+    # Inline the club data when the question looks club-related, so these
+    # paths can still answer it; otherwise just say the tools are off.
+    if _needs_club_data(messages):
+        note = (
+            "\n\nIMPORTANT FOR THIS REPLY: you cannot search the web or the chat "
+            "history right now, so don't claim to have. But the club's CURRENT "
+            "data is included below - answer club questions from it directly, and "
+            "never say you can't access the club data when it's right here. Never "
+            "invent anything that isn't in it.\n\n" + _safe_club_context()
+        )
+    else:
+        note = NO_TOOLS_NOTE
     patched = []
     for m in messages:
         if m.get("role") == "system":
-            patched.append({"role": "system", "content": (m.get("content") or "") + NO_TOOLS_NOTE})
+            patched.append({"role": "system", "content": (m.get("content") or "") + note})
         else:
             patched.append(m)
     return patched
+
+
+REASONING_STARTS = (
+    "we need to", "we should", "the user is", "the user asked", "the user says",
+    "user is asking", "okay, the user", "ok, the user", "let me think",
+    "first, i", "i need to figure", "they are likely",
+)
+
+
+def _strip_reasoning(text):
+    # Drops leading scratchpad paragraphs from reasoning models. Only
+    # removes a paragraph when it BOTH looks like thinking and something
+    # real follows it, so a genuine answer is never eaten - if every
+    # paragraph looks like reasoning, the original is returned untouched
+    # rather than replying with nothing.
+    if not text:
+        return text
+    for marker in ("</think>", "</thinking>", "<|end_thought|>"):
+        if marker in text:
+            text = text.split(marker)[-1]
+    paragraphs = [p for p in text.split("\n\n") if p.strip()]
+    kept = [p for p in paragraphs if not p.strip().lower().startswith(REASONING_STARTS)]
+    if kept and len(kept) < len(paragraphs):
+        return "\n\n".join(kept).strip()
+    return text.strip()
 
 
 def _ask_with_openrouter(messages):
@@ -810,6 +934,20 @@ def _ask_with_openrouter(messages):
     # model invents club data (see NO_TOOLS_NOTE above).
     if not OPENROUTER_API_KEY:
         return None
+    # This model is a reasoning model and, left alone, ships its thinking
+    # to the channel: a real reply began "We need to answer user: 'hi,
+    # when is my next comp'. They are Naitik Jindal? Actually they said
+    # person asking is..." - the whole scratchpad, addressed to nobody.
+    # The instruction below plus _strip_reasoning() catch it from both
+    # ends, since neither is reliable alone.
+    messages = messages + [{
+        "role": "system",
+        "content": (
+            "Reply with ONLY the final answer, written directly to the member in "
+            "Discord. Never show your reasoning, never narrate what you are doing, "
+            "and never refer to 'the user' - talk to them as 'you'."
+        ),
+    }]
     try:
         r = requests.post(
             "https://openrouter.ai/api/v1/chat/completions",
@@ -821,7 +959,7 @@ def _ask_with_openrouter(messages):
             timeout=30,
         )
         r.raise_for_status()
-        return r.json()["choices"][0]["message"]["content"] or None
+        return _strip_reasoning(r.json()["choices"][0]["message"]["content"]) or None
     except Exception:
         return None
 
@@ -999,6 +1137,10 @@ def _ask_llm(conversation_key, channel_id, user_text, asker_name=None):
             f"\n\nThe person asking is {asker_name}. When they say 'I' or 'me', "
             f"that's who they mean - look them up by that name in the club data."
         )
+        # Computed in code, not left to the model - see _personal_events.
+        personal = _personal_events(asker_name)
+        if personal:
+            system_content += "\n\n" + personal
     else:
         # Narrowly scoped on purpose. An earlier, broader version of this
         # made the bot open with "I can't access club data or see who you
