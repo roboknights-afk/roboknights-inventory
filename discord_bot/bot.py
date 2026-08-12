@@ -265,7 +265,14 @@ gemini_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 # Which models are free rotates over time - if this one 404s, check
 # `curl https://openrouter.ai/api/v1/models` for current ":free" ids.
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
-OPENROUTER_MODEL = "nvidia/nemotron-3-super-120b-a12b:free"
+# Benchmarked against the other ":free" models rather than picked by size:
+# the 120b one this started on took 12-19 SECONDS per reply, and since
+# this path runs after Groq and Gemini have both already failed, that was
+# landing on top of their timeouts - members were waiting ~15s for an
+# answer. This one returned a correct servo-motor definition in 1.7s.
+# Several other free models 500'd or returned null content when tested,
+# so don't swap this without actually timing the replacement.
+OPENROUTER_MODEL = "nvidia/nemotron-3-nano-30b-a3b:free"
 
 # Hard ceiling on how long ANY single reply can be, applied to every
 # provider below. This exists because of what members actually did once
@@ -953,6 +960,23 @@ def _ask_with_tools(messages, channel_id):
         return _ask_with_compound(original_messages, channel_id)
 
 
+def _tidy_truncation(reply):
+    # MAX_REPLY_TOKENS is a hard stop, so a long answer can end mid-word -
+    # a real reply ended "...for RoboWar Sr. at **Robot", which reads like
+    # the bot broke. Trim back to the last finished sentence and say it
+    # was shortened, rather than showing a dangling fragment. Only kicks
+    # in when the ending really looks cut off; a normal reply that just
+    # ends without punctuation (a list, a question) is left alone.
+    if not reply or len(reply) < 200:
+        return reply
+    if reply.rstrip().endswith((".", "!", "?", ")", "`", ":", "\"")):
+        return reply
+    cut = max(reply.rfind(". "), reply.rfind("! "), reply.rfind("? "), reply.rfind(".\n"))
+    if cut > len(reply) * 0.5:
+        return reply[:cut + 1] + "\n\n*(trimmed - ask me to continue if you need the rest)*"
+    return reply
+
+
 def _ask_llm(conversation_key, channel_id, user_text, asker_name=None):
     history[conversation_key].append({"role": "user", "content": user_text})
     # Club data is NOT pasted in here anymore - it's the get_club_data
@@ -976,11 +1000,22 @@ def _ask_llm(conversation_key, channel_id, user_text, asker_name=None):
             f"that's who they mean - look them up by that name in the club data."
         )
     else:
+        # Narrowly scoped on purpose. An earlier, broader version of this
+        # made the bot open with "I can't access club data or see who you
+        # are... I have no way to look it up" and then, in the same
+        # message, correctly answer "Kyraan Katyal is in the finalized
+        # team for RoboWar Sr." - it HAD the data and refused anyway.
+        # This only applies when someone asks about THEMSELVES without a
+        # name; a question that names a person needs no identity at all
+        # and must just be answered from the club data.
         system_content += (
-            "\n\nYou don't know which club member this is - their Discord account "
-            "isn't linked to a dashboard account. If they ask about their own "
-            "parts/events/teams, say you can't tell who they are and point them "
-            "at Home -> Discord on the dashboard to link it."
+            "\n\nThis person hasn't linked their Discord account, so you don't "
+            "know which member they are. That ONLY matters if they ask about "
+            "themselves without saying who they are ('am I', 'my team') - then "
+            "ask them which member they are, or to link it at Home -> Discord "
+            "on the dashboard. If they name a person, or ask anything else, "
+            "answer normally from the club data - never say you can't see the "
+            "data when the tool gave it to you."
         )
     system_content += (
         "\n\nRECENT CHANNEL ACTIVITY (for context only - only reply to the "
@@ -990,6 +1025,7 @@ def _ask_llm(conversation_key, channel_id, user_text, asker_name=None):
     messages = [{"role": "system", "content": system_content}] + list(history[conversation_key])
 
     reply, sources = _ask_with_tools(messages, channel_id)
+    reply = _tidy_truncation(reply)
 
     if sources:
         reply += "\n\n" + "\n".join(f"<{url}>" for _title, url in sources[:3])
