@@ -174,13 +174,20 @@ CHAT_HISTORY_TOOL = {
 
 def _search_chat_history(channel_id, days_back):
     try:
-        since = (datetime.now(IST) - timedelta(days=max(1, min(days_back, 30)))).isoformat()
+        # Up to a year back - "read all previous chats" in practice, since
+        # the log itself only starts when the bot did.
+        since = (datetime.now(IST) - timedelta(days=max(1, min(days_back, 365)))).isoformat()
         rows = (
             supabase.table("discord_channel_log")
             .select("discord_display_name,content,created_at")
             .eq("discord_channel_id", str(channel_id))
             .gte("created_at", since)
-            .order("created_at")
+            # DESCENDING + limit, then reversed below, so a wide range
+            # returns the most RECENT messages in it. Ascending + limit
+            # (what this did at first) silently returned the oldest ones
+            # instead - for "what happened yesterday" over a week-long
+            # range, that's the wrong end of the log entirely.
+            .order("created_at", desc=True)
             # Capped, same reasoning as _tavily_search - this app decides
             # how much text a tool call can add, not an open-ended dump.
             .limit(150)
@@ -191,7 +198,7 @@ def _search_chat_history(channel_id, days_back):
             return "(no messages found in that time range)"
         return "\n".join(
             f"[{r['created_at'][:16]}] {r.get('discord_display_name') or 'Unknown'}: {r['content']}"
-            for r in rows
+            for r in reversed(rows)
             if r.get("content")
         )
     except Exception as e:
@@ -516,16 +523,16 @@ def _extract_sources(response):
     return sources
 
 
-def _ask_with_gemini(messages):
+def _ask_with_gemini(messages, channel_id=None):
     if gemini_client is None:
         return None
     try:
         # Gemini's own shape: system prompt is a separate config field, not
         # a message in the list, and turns are "user"/"model" not
         # "user"/"assistant". Tool-call messages (left over from a failed
-        # Tavily attempt upstream) have no Gemini equivalent here and are
-        # just dropped - this is a last-resort plain-chat fallback, not
-        # something that needs to replay a tool-call exchange faithfully.
+        # Groq tool-calling attempt upstream) have no Gemini equivalent
+        # and are just dropped - the tools are re-offered below in
+        # Gemini's own format instead, so nothing is actually lost.
         system_instruction = None
         contents = []
         for m in messages:
@@ -537,30 +544,86 @@ def _ask_with_gemini(messages):
             elif role == "assistant" and m.get("content"):
                 contents.append({"role": "model", "parts": [{"text": m["content"]}]})
 
+        # Gemini gets the SAME tools Groq does, not just plain chat. Found
+        # the hard way: without them it would still TRY to call
+        # search_chat_history (the system prompt tells it to) and return
+        # finish_reason=MALFORMED_FUNCTION_CALL with empty text, which
+        # surfaced to members as "I didn't get a response." Since Groq's
+        # 100K-token/day budget runs out regularly, this path is what
+        # actually answers "what happened yesterday" most of the time -
+        # it has to be able to read the chat log, not just guess.
+        #
+        # These are plain Python functions on purpose: the google-genai
+        # SDK reads their signature/docstring and runs the whole
+        # call-the-function-and-continue loop itself (automatic function
+        # calling), so there's no second hand-rolled tool loop here.
+        tools = []
+        if channel_id is not None:
+            def search_chat_history(days_back: int) -> str:
+                """Search this Discord channel's real message history.
+
+                Use for questions about what was said before, who said what,
+                or what happened on a past day.
+
+                Args:
+                    days_back: How many days back to search (1 = today and
+                        yesterday, 7 = the past week).
+                """
+                return _search_chat_history(channel_id, days_back)
+
+            tools.append(search_chat_history)
+
+        if TAVILY_API_KEY:
+            def web_search(query: str) -> str:
+                """Search the web for current or specific information.
+
+                Args:
+                    query: What to search for.
+                """
+                return _tavily_search(query)[0]
+
+            tools.append(web_search)
+
         response = gemini_client.models.generate_content(
             model=GEMINI_MODEL, contents=contents,
-            config=genai_types.GenerateContentConfig(system_instruction=system_instruction),
+            config=genai_types.GenerateContentConfig(
+                system_instruction=system_instruction, tools=tools or None,
+            ),
         )
-        return response.text or "I didn't get a response - try asking again."
+        # None, not a placeholder string - an empty answer here should let
+        # the caller fall through to its real error message rather than
+        # dead-end a member with "try asking again" (which is what
+        # happened before, and gave no signal anything was actually wrong).
+        return response.text or None
     except Exception:
         return None
 
 
-def _ask_with_compound(messages):
+def _ask_with_compound(messages, channel_id=None):
     # groq/compound: Groq's own search-and-read loop, server-side, no size
     # control on our end - kept only as what runs when TAVILY_API_KEY isn't
     # set. See TAVILY_API_KEY comment above for why this isn't the
     # preferred path anymore.
+    #
+    # Every step here treats an EMPTY response the same as an exception
+    # (raise, don't return) so it falls through to the next fallback -
+    # returning a "try asking again" placeholder instead was what made
+    # this whole chain dead-end on members with no real attempt made.
     try:
         response = groq_client.chat.completions.create(
             model=COMPOUND_MODEL, messages=messages,
             compound_custom={"tools": {"enabled_tools": ["web_search", "visit_website"]}},
         )
-        reply = response.choices[0].message.content or "I didn't get a response - try asking again."
+        reply = response.choices[0].message.content
+        if not reply:
+            raise ValueError("empty compound response")
         return reply, _extract_sources(response)
     except Exception as compound_error:
         try:
             response = groq_client.chat.completions.create(model=GROQ_MODEL, messages=messages)
+            plain_reply = response.choices[0].message.content
+            if not plain_reply:
+                raise ValueError("empty plain response")
             # Flagged, not silent - confirmed live that the plain model
             # will confidently guess wrong rather than admit it doesn't
             # know (asked about "a p219 motor," a robotics part, and got
@@ -568,12 +631,11 @@ def _ask_with_compound(messages):
             # answer is worse than a flagged uncertain one.
             reply = (
                 "*(Couldn't search the web for this one - answering from what I "
-                "already know instead, so double-check this.)*\n\n"
-                + (response.choices[0].message.content or "I didn't get a response - try asking again.")
+                "already know instead, so double-check this.)*\n\n" + plain_reply
             )
             return reply, []
         except Exception as groq_error:
-            gemini_reply = _ask_with_gemini(messages)
+            gemini_reply = _ask_with_gemini(messages, channel_id)
             if gemini_reply is not None:
                 return gemini_reply, []
             return (
@@ -648,7 +710,7 @@ def _ask_with_tools(messages, channel_id):
         # chat-history-search ability on this one reply
         # (compound/plain/Gemini don't have that tool), but still answers
         # something rather than nothing.
-        return _ask_with_compound(original_messages)
+        return _ask_with_compound(original_messages, channel_id)
 
 
 def _ask_llm(conversation_key, channel_id, user_text):
