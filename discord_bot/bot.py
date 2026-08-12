@@ -39,12 +39,14 @@
 # CEREBRAS_API_KEY is optional - without it, a Groq failure just fails
 # openly like before, no fallback attempted.
 
+import json
 import os
 import time
 from collections import defaultdict, deque
 from datetime import datetime, timedelta, timezone
 
 import discord
+import requests
 from cerebras.cloud.sdk import Cerebras
 from dotenv import load_dotenv
 from groq import Groq
@@ -70,21 +72,68 @@ GROQ_API_KEY = os.environ["GROQ_API_KEY"]
 # blocks a reply.
 supabase = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
 
-# Plain model - the fallback path when web search fails or isn't needed.
-# Same one send_dashboard_update.py uses for its release-note summaries.
+# Plain model - handles every reply's actual thinking, whether or not a
+# search happened. Same one send_dashboard_update.py uses for its
+# release-note summaries.
 GROQ_MODEL = "llama-3.3-70b-versatile"
 
-# groq/compound is the same web-search model the AI Assistant page uses -
-# Groq decides FOR ITSELF whether a question needs a live search and runs
-# the whole search-and-read loop server-side. This is now the NORMAL
-# model for every reply (not just a toggle, like the dashboard has) -
-# a Discord bot answering "what is a p219 motor" needs to actually be
-# able to look that up, not just guess from training data. Has a known,
-# upstream, query-dependent 413 "request too large" failure on
-# content-heavy searches (see CLAUDE.md) - COMPOUND_FALLBACK below is the
-# same retry-without-search pattern the AI Assistant already uses for
-# exactly that.
+# Tavily: purpose-built for feeding LLMs search results (not a general
+# search engine API) - 1,000 free searches/month, no card. This is the
+# PREFERRED search path: the model decides for itself (via a tool call)
+# whether a question needs a search, WE run it and hand back trimmed
+# results, so WE control exactly how much text goes into the next
+# request - unlike groq/compound below, which runs the whole
+# search-and-read loop server-side with no size control on our end.
+#
+# Why not just use groq/compound (same model the AI Assistant's
+# web-search toggle uses)? Confirmed live, with a bare prompt and zero
+# extra context, that it 413s "Request Entity Too Large" on real
+# everyday queries - "latest Arduino Uno price," "who won the last F1
+# race," "what year is it" - a query-dependent upstream bug (see
+# CLAUDE.md), not something fixable from this end. It's kept as a
+# fallback for when TAVILY_API_KEY isn't set, same best-effort spirit as
+# everything else here, but Tavily is what actually works reliably.
+TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY")
 COMPOUND_MODEL = "groq/compound"
+WEB_SEARCH_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "web_search",
+        "description": "Search the web for current information - prices, "
+                        "recent events, specific products/parts, anything "
+                        "that needs up-to-date or specific facts beyond "
+                        "general knowledge.",
+        "parameters": {
+            "type": "object",
+            "properties": {"query": {"type": "string", "description": "The search query"}},
+            "required": ["query"],
+        },
+    },
+}
+
+
+def _tavily_search(query):
+    try:
+        r = requests.post(
+            "https://api.tavily.com/search",
+            json={"api_key": TAVILY_API_KEY, "query": query, "max_results": 4},
+            timeout=15,
+        )
+        r.raise_for_status()
+        results = r.json().get("results", [])
+        # Content is already trimmed/summarized by Tavily itself (built for
+        # this exact use case), but capped again here regardless - this is
+        # what fixes the "request too large" problem groq/compound has:
+        # WE decide how much text a search can add, not an opaque
+        # server-side loop.
+        text = "\n\n".join(
+            f"{res.get('title', '')} ({res.get('url', '')})\n{(res.get('content') or '')[:600]}"
+            for res in results
+        ) or "(no results found)"
+        sources = [(res.get("title") or res.get("url"), res.get("url")) for res in results if res.get("url")]
+        return text, sources
+    except Exception as e:
+        return f"(search failed: {e})", []
 
 # Fallback for when Groq's daily/rate limit is hit (see the token-budget
 # comments below - a real, now-confirmed way to run out mid-day). Tried
@@ -403,6 +452,93 @@ def _extract_sources(response):
     return sources
 
 
+def _ask_with_cerebras(messages):
+    if cerebras_client is None:
+        return None
+    try:
+        response = cerebras_client.chat.completions.create(model=CEREBRAS_MODEL, messages=messages)
+        return response.choices[0].message.content or "I didn't get a response - try asking again."
+    except Exception:
+        return None
+
+
+def _ask_with_compound(messages):
+    # groq/compound: Groq's own search-and-read loop, server-side, no size
+    # control on our end - kept only as what runs when TAVILY_API_KEY isn't
+    # set. See TAVILY_API_KEY comment above for why this isn't the
+    # preferred path anymore.
+    try:
+        response = groq_client.chat.completions.create(
+            model=COMPOUND_MODEL, messages=messages,
+            compound_custom={"tools": {"enabled_tools": ["web_search", "visit_website"]}},
+        )
+        reply = response.choices[0].message.content or "I didn't get a response - try asking again."
+        return reply, _extract_sources(response)
+    except Exception as compound_error:
+        try:
+            response = groq_client.chat.completions.create(model=GROQ_MODEL, messages=messages)
+            # Flagged, not silent - confirmed live that the plain model
+            # will confidently guess wrong rather than admit it doesn't
+            # know (asked about "a p219 motor," a robotics part, and got
+            # back an automotive OBD-II trouble code). An unflagged wrong
+            # answer is worse than a flagged uncertain one.
+            reply = (
+                "*(Couldn't search the web for this one - answering from what I "
+                "already know instead, so double-check this.)*\n\n"
+                + (response.choices[0].message.content or "I didn't get a response - try asking again.")
+            )
+            return reply, []
+        except Exception as groq_error:
+            cerebras_reply = _ask_with_cerebras(messages)
+            if cerebras_reply is not None:
+                return cerebras_reply, []
+            return (
+                f"Sorry, I couldn't get a response right now "
+                f"(search: {compound_error}; plain: {groq_error}).", []
+            )
+
+
+def _ask_with_tavily(messages):
+    # The model decides for itself (a normal tool call) whether a question
+    # needs a search - same "decides for itself" behavior groq/compound
+    # advertises, but WE execute the search and control exactly how much
+    # text comes back (see TAVILY_API_KEY comment above), which is what
+    # actually avoids the "request too large" failure.
+    try:
+        response = groq_client.chat.completions.create(
+            model=GROQ_MODEL, messages=messages, tools=[WEB_SEARCH_TOOL], tool_choice="auto",
+        )
+        msg = response.choices[0].message
+        if not msg.tool_calls:
+            return msg.content or "I didn't get a response - try asking again.", []
+
+        messages.append({
+            "role": "assistant",
+            "content": msg.content or "",
+            "tool_calls": [tc.model_dump() for tc in msg.tool_calls],
+        })
+        all_sources = []
+        for tc in msg.tool_calls:
+            try:
+                args = json.loads(tc.function.arguments)
+            except Exception:
+                args = {}
+            query = args.get("query") or ""
+            result_text, result_sources = _tavily_search(query)
+            all_sources.extend(result_sources)
+            messages.append({"role": "tool", "tool_call_id": tc.id, "content": result_text})
+
+        final = groq_client.chat.completions.create(model=GROQ_MODEL, messages=messages)
+        reply = final.choices[0].message.content or "I didn't get a response - try asking again."
+        return reply, all_sources
+    except Exception:
+        # A Groq failure here (rate limit, etc.) falls through to the same
+        # compound/plain/Cerebras chain as the no-Tavily path, rather than
+        # a second, different error message for what's really the same
+        # underlying problem.
+        return _ask_with_compound(messages)
+
+
 def _ask_llm(conversation_key, channel_id, user_text):
     history[conversation_key].append({"role": "user", "content": user_text})
     try:
@@ -419,50 +555,10 @@ def _ask_llm(conversation_key, channel_id, user_text):
     )
     messages = [{"role": "system", "content": system_content}] + list(history[conversation_key])
 
-    # Normal case: Groq's compound model, so it can actually look things
-    # up ("what is a p219 motor") instead of only answering from training
-    # data. On a search-specific failure (the known 413 - see
-    # COMPOUND_MODEL above), retry once on the plain model without search,
-    # same pattern the AI Assistant page already uses. Only touches
-    # Cerebras when Groq fails ENTIRELY (both of the above), since
-    # Cerebras has no web search of its own - strictly a last-resort
-    # plain-chat fallback, not a search one.
-    sources = []
-    try:
-        response = groq_client.chat.completions.create(
-            model=COMPOUND_MODEL, messages=messages,
-            compound_custom={"tools": {"enabled_tools": ["web_search", "visit_website"]}},
-        )
-        reply = response.choices[0].message.content or "I didn't get a response - try asking again."
-        sources = _extract_sources(response)
-    except Exception as compound_error:
-        try:
-            response = groq_client.chat.completions.create(model=GROQ_MODEL, messages=messages)
-            # Flagged, not silent - confirmed live that the plain model
-            # will confidently guess wrong rather than admit it doesn't
-            # know (asked about "a p219 motor," a robotics part, and got
-            # back an automotive OBD-II trouble code). An unflagged wrong
-            # answer is worse than a flagged uncertain one.
-            reply = (
-                "*(Couldn't search the web for this one - answering from what I "
-                "already know instead, so double-check this.)*\n\n"
-                + (response.choices[0].message.content or "I didn't get a response - try asking again.")
-            )
-        except Exception as groq_error:
-            if cerebras_client is not None:
-                try:
-                    response = cerebras_client.chat.completions.create(model=CEREBRAS_MODEL, messages=messages)
-                    reply = response.choices[0].message.content or "I didn't get a response - try asking again."
-                except Exception as cerebras_error:
-                    reply = (
-                        "Sorry, I couldn't get a response right now "
-                        f"(Groq: {groq_error}; Cerebras: {cerebras_error})."
-                    )
-            else:
-                reply = (
-                    f"Sorry, I couldn't get a response right now "
-                    f"(search: {compound_error}; plain: {groq_error})."
-                )
+    if TAVILY_API_KEY:
+        reply, sources = _ask_with_tavily(messages)
+    else:
+        reply, sources = _ask_with_compound(messages)
 
     if sources:
         reply += "\n\n" + "\n".join(f"<{url}>" for _title, url in sources[:3])

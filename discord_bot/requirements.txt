@@ -3,3 +3,4 @@ groq
 python-dotenv
 supabase
 cerebras_cloud_sdk
+requests
