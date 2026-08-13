@@ -489,6 +489,11 @@ def handle_google_oauth_callback(client):
     code = st.query_params.get("code")
     if not code:
         return
+    # A fresh attempt is starting, so any error from a previous one is
+    # stale - this is the ONLY place it gets cleared. It deliberately is
+    # NOT cleared where the button is rendered: that runs on every rerun,
+    # which would wipe the message before anyone could read it.
+    st.session_state.pop("google_login_error", None)
     st.query_params.clear()
     # Cookie, not st.session_state — see GOOGLE_VERIFIER_COOKIE comment
     # above for why: this callback runs in a BRAND NEW Streamlit session
@@ -497,11 +502,17 @@ def handle_google_oauth_callback(client):
     verifier = st.context.cookies.get(GOOGLE_VERIFIER_COOKIE)
     _clear_google_verifier_cookie()
     if not verifier:
-        # A stale/bookmarked callback URL, an expired 10-minute window, or
-        # cookies blocked in the browser — nothing to recover from; just
-        # fall through to a clean login screen instead of showing a
-        # confusing exchange error for something that can't be retried
-        # with this same code anyway.
+        # Was a silent `return`, which produced the worst possible
+        # outcome: the member lands back on a plain login screen with no
+        # explanation at all. Say what happened instead - a browser
+        # blocking cookies, an expired 10-minute window, or a stale
+        # bookmarked callback URL are all real and all actionable.
+        st.session_state.google_login_error = (
+            "Google sign-in couldn't be completed: the browser didn't return the "
+            "one-time security cookie this login needs. That usually means cookies "
+            "are blocked for this site, or the sign-in took longer than 10 minutes. "
+            "Allow cookies for this site and try again."
+        )
         return
     try:
         result = client.auth.exchange_code_for_session(
@@ -643,8 +654,17 @@ def show_login_signup(client):
         st.title("RoboKnights Dashboard", text_alignment="center")
         st.caption("Log in or create an account to continue.", text_alignment="center")
 
+        # Read, do NOT pop. handle_google_oauth_callback calls
+        # st.query_params.clear(), which schedules an EXTRA rerun after the
+        # current script finishes - so popping here meant the error was
+        # rendered once, removed from session_state, and then wiped by that
+        # rerun a split second later. A member just saw themselves land
+        # back on the login screen with no explanation, which is exactly
+        # the "it redirects me back and I'm not logged in" report. The
+        # error is cleared instead when they start a fresh attempt (see
+        # _google_authorize_url), so it stays on screen until then.
         if st.session_state.get("google_login_error"):
-            st.error(st.session_state.pop("google_login_error"))
+            st.error(st.session_state["google_login_error"])
 
         with st.container(border=True):
             # Opens in a NEW TAB, and that is not a bug to fix - it is the
