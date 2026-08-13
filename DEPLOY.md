@@ -102,6 +102,38 @@ file or from a hosting platform's secrets manager.
   `APP_URL` at all — its emails don't contain a link — so nothing to change
   there.
 
+## Login with Google
+
+A "Continue with Google" button sits above the Log in / Sign up tabs,
+restricted to `@dpsrkp.net` accounts — same domain gate every other signup
+path in this app already enforces. Needs two things set up once, both
+outside this repo:
+
+1. **Google Cloud Console** ([console.cloud.google.com](https://console.cloud.google.com)):
+   - Create a project (or reuse one) → **APIs & Services → Credentials**
+   - **Create Credentials → OAuth client ID** → Application type **Web application**
+   - Under **Authorized redirect URIs**, add your Supabase project's
+     callback URL: `https://<your-project-ref>.supabase.co/auth/v1/callback`
+     (find `<your-project-ref>` in `SUPABASE_URL`)
+   - Copy the generated **Client ID** and **Client Secret**
+2. **Supabase Dashboard** → **Authentication → Providers → Google**:
+   - Toggle it on, paste in the Client ID and Client Secret from above,
+     Save
+   - Under **Authentication → URL Configuration**, make sure `APP_URL`
+     (e.g. `https://roboknights.in/dashboard`) is in **Redirect URLs** —
+     it's probably there already from the password-reset link fix; if
+     not, add it
+
+No code changes or new env vars needed beyond that — `SUPABASE_URL` and
+`APP_URL`, both already required, are all `app.py` uses to build the
+Google sign-in link.
+
+**First-time login**: if someone signs in with Google and has no existing
+profile (grade/section/etc.), they land on a short "one more step" form —
+same required fields signup already collects, just no password. Host and
+Exun accounts skip this; those are decided purely by email, not a
+database row.
+
 ## Dashboard update notices (Discord)
 
 `.github/workflows/dashboard-update.yml` runs `send_dashboard_update.py` on

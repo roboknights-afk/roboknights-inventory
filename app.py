@@ -1,10 +1,13 @@
 import base64
+import os
 import time
 from pathlib import Path
+from urllib.parse import urlencode
 
 import streamlit as st
 import streamlit.components.v1 as components
 from dotenv import load_dotenv
+from supabase_auth.helpers import generate_pkce_challenge, generate_pkce_verifier
 
 from shared import (
     APP_URL, EXUN_CHANNEL_MEMBERS, EXUN_EMAILS, HOST_EMAILS, HOST_ROLES, cached_table,
@@ -406,6 +409,144 @@ def admission_no_input(key_prefix):
     return f"{prefix}{digits.strip()}"
 
 
+# --- Login with Google -------------------------------------------------------
+# Requires Google enabled as a provider in Supabase (Authentication ->
+# Providers -> Google) with a Google Cloud OAuth client — see DEPLOY.md for
+# the exact steps and the redirect URI to register.
+#
+# Built by hand rather than via client.auth.sign_in_with_oauth(): that
+# method generates the PKCE code_verifier and stores it in the CALLING
+# client's own storage — and get_client() is @st.cache_resource, one
+# client object shared by the whole app process, not one per visitor. Two
+# people starting a Google login around the same time would silently
+# overwrite each other's verifier under that default. Generating and
+# keeping the verifier in st.session_state instead — genuinely scoped to
+# one browser session — avoids that race entirely.
+def _google_authorize_url():
+    verifier = generate_pkce_verifier()
+    st.session_state.google_pkce_verifier = verifier
+    challenge = generate_pkce_challenge(verifier)
+    params = {
+        "provider": "google",
+        "redirect_to": APP_URL,
+        "code_challenge": challenge,
+        "code_challenge_method": "s256" if challenge != verifier else "plain",
+        # Narrows Google's OWN account picker to the school domain — purely
+        # a convenience so members don't accidentally start with a personal
+        # Gmail. NOT the security boundary: Google still lets someone pick
+        # "use another account" here. handle_google_oauth_callback's
+        # server-side @dpsrkp.net check below is the real gate.
+        "hd": ALLOWED_EMAIL_DOMAIN.lstrip("@"),
+    }
+    # .rstrip("/") because this project's SUPABASE_URL has a trailing
+    # slash (confirmed in .env) — get_client()'s create_client() call
+    # tolerates that fine internally, but building the URL by hand here
+    # doesn't, and would otherwise double up as ".co//auth/v1/...".
+    supabase_url = os.environ["SUPABASE_URL"].rstrip("/")
+    return f"{supabase_url}/auth/v1/authorize?" + urlencode(params)
+
+
+def handle_google_oauth_callback(client):
+    # Runs on every rerun before anything else decides what to show — but
+    # only actually does something the one time a fresh ?code=... shows up
+    # in the URL, right after Supabase redirects back here post-Google.
+    # Cleared immediately either way, so refreshing the page afterward
+    # doesn't try to re-exchange an already-spent (by then invalid) code.
+    code = st.query_params.get("code")
+    if not code:
+        return
+    st.query_params.clear()
+    verifier = st.session_state.pop("google_pkce_verifier", None)
+    if not verifier:
+        # A stale/bookmarked callback URL, or it landed in a different
+        # browser session than the one that started the login — nothing to
+        # recover from; just fall through to a clean login screen instead
+        # of showing a confusing exchange error for something the person
+        # never actually did in this session.
+        return
+    try:
+        result = client.auth.exchange_code_for_session(
+            {"auth_code": code, "code_verifier": verifier}
+        )
+    except Exception as e:
+        st.session_state.google_login_error = f"Google sign-in failed: {e}"
+        return
+
+    email = (result.user.email or "").lower()
+    if not email.endswith(ALLOWED_EMAIL_DOMAIN):
+        # The real domain check — see _google_authorize_url's hd= comment.
+        # Signs them back out rather than leaving a live session for an
+        # account that has no place in this app.
+        client.auth.sign_out()
+        st.session_state.google_login_error = (
+            f"{result.user.email} isn't a {ALLOWED_EMAIL_DOMAIN} account — "
+            "sign in with your school Google account instead."
+        )
+        return
+
+    st.session_state.auth_user = {"id": result.user.id, "email": email}
+    if result.session and result.session.refresh_token:
+        # Always remembered, unlike the password form's checkbox — there's
+        # no password-typing friction here to weigh "save it" against, so
+        # defaulting to staying logged in is the friction-reducing choice a
+        # one-click login is supposed to be.
+        _set_remember_cookie(result.session.refresh_token)
+
+    # Only students need the extra profile step: is_host/is_exun are
+    # decided purely by email (see is_host/is_exun below), and
+    # current_user_name already falls back to the raw email, so a host or
+    # Exun account works fully even with no `users` row at all. A student
+    # with no grade/section on file would silently look ineligible for
+    # every competition, which is worse than one extra screen.
+    has_profile = bool(
+        client.table("users").select("user_id").eq("user_id", result.user.id).execute().data
+    )
+    if not has_profile and email not in HOST_EMAILS and email not in EXUN_EMAILS:
+        st.session_state.needs_google_profile = {"user_id": result.user.id, "email": email}
+    st.rerun()
+
+
+def show_complete_google_profile_screen(client, user_id, email):
+    # Same required fields sign-up already collects — Competitions
+    # eligibility, the Members directory, etc. all assume they exist, so
+    # this isn't optional polish, it's the same gate signup already has,
+    # just without a password field since Google already authenticated them.
+    pad_left, middle, pad_right = st.columns([1, 1.1, 1])
+    with middle:
+        st.title("One more step", text_alignment="center")
+        st.caption(f"Signed in as {email} — finish setting up your profile.", text_alignment="center")
+        with st.container(border=True):
+            name = st.text_input("Your name", key="google_profile_name")
+            is_staff = st.checkbox("I'm a staff member (not a student)", key="google_profile_is_staff")
+            if is_staff:
+                grade, section, admission_no = None, "", ""
+            else:
+                grade = st.selectbox("Your grade", [7, 8, 9, 10, 11, 12], key="google_profile_grade")
+                section = st.text_input("Section", key="google_profile_section")
+                admission_no = admission_no_input("google_profile_admission_no")
+            phone_no = st.text_input("Phone no.", key="google_profile_phone_no")
+            if st.button("Finish", icon=":material/check:", type="primary", width="stretch"):
+                if not name.strip():
+                    st.error("Name is required.")
+                else:
+                    with safe_write("finish setting up your profile"):
+                        client.table("users").upsert({
+                            "user_id": user_id,
+                            "name": name.strip(),
+                            "email": email,
+                            "is_staff": is_staff,
+                            "grade": grade,
+                            "section": section.strip(),
+                            "admission_no": admission_no.strip(),
+                            "phone_no": phone_no.strip(),
+                        }).execute()
+                        invalidate_cache()
+                    send_welcome_email(email, name.strip())
+                    st.session_state.pop("needs_google_profile", None)
+                    st.session_state.just_signed_up = True
+                    st.rerun()
+
+
 def send_welcome_email(to_email, name):
     # Sent once, right after signup — a plain-language tour of what the
     # app actually does, since a brand-new member has no way to know that
@@ -463,7 +604,27 @@ def show_login_signup(client):
         st.title("RoboKnights Dashboard", text_alignment="center")
         st.caption("Log in or create an account to continue.", text_alignment="center")
 
+        if st.session_state.get("google_login_error"):
+            st.error(st.session_state.pop("google_login_error"))
+
         with st.container(border=True):
+            # A real <a href> to Supabase's authorize endpoint, not a
+            # button with a click handler — this HAS to be a genuine page
+            # navigation (the browser needs to actually leave for Google's
+            # consent screen and come back), and st.link_button is the
+            # simplest way to get one. No custom JS/redirect trick needed,
+            # unlike the earlier "report an issue" pill saga elsewhere in
+            # this app — a plain anchor tag just works here.
+            st.link_button(
+                "Continue with Google", _google_authorize_url(),
+                icon=":material/login:", width="stretch",
+            )
+            st.caption(
+                "Only @dpsrkp.net Google accounts can sign in this way.",
+                text_alignment="center",
+            )
+            st.divider()
+
             login_tab, signup_tab = st.tabs(["Log in", "Sign up"])
 
             with login_tab:
@@ -713,6 +874,23 @@ if "auth_user" not in st.session_state:
     st.session_state.auth_user = None
 if "show_reset" not in st.session_state:
     st.session_state.show_reset = False
+
+# Runs before anything else decides what to show — only actually does
+# something the one time a fresh ?code=... is present, right after
+# Supabase redirects back here post-Google. Has to happen before the
+# "already logged in?" checks below, since THIS is what sets auth_user in
+# the first place for a Google login.
+if st.session_state.auth_user is None:
+    handle_google_oauth_callback(client)
+
+# Signed in via Google but their profile (grade/section/etc.) still needs
+# filling in — same required fields signup collects, just without a
+# password field. Checked before the normal auth gate so this screen
+# shows even though auth_user IS already set.
+if st.session_state.get("needs_google_profile"):
+    pending = st.session_state.needs_google_profile
+    show_complete_google_profile_screen(client, pending["user_id"], pending["email"])
+    st.stop()
 
 # Silently try a "remembered" session before showing any login UI at all —
 # see _set_remember_cookie for how this cookie gets written in the first
