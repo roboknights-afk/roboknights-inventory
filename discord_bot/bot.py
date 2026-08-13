@@ -508,6 +508,15 @@ def _build_club_context():
     for e in events:
         events_by_comp[e["competition_id"]].append(e)
 
+    # Brochures, websites, registration forms, Discord invites. These were
+    # missing entirely, so "can you give me the brochure link for
+    # Robotronics" got "I couldn't find the brochure link in the club
+    # data" - the link was in the database the whole time, just never
+    # fetched here.
+    links_by_comp = defaultdict(list)
+    for row in supabase.table("competition_links").select("competition_id,label,url").execute().data:
+        links_by_comp[row["competition_id"]].append(f"{row['label']}: {row['url']}")
+
     # Who's actually going, per event — same "finalized vs volunteers" split
     # the Competitions page itself shows, so "who's going to X" has a real
     # answer instead of the bot saying it has no such data.
@@ -552,6 +561,8 @@ def _build_club_context():
             line += f" on {comp_date}"
         if c.get("registration_deadline"):
             line += f" (registration deadline {c['registration_deadline']})"
+        for link in links_by_comp.get(c["competition_id"], []):
+            line += f"\n  - Link | {link}"
         comp_events = events_by_comp.get(c["competition_id"], [])
         for e in comp_events:
             line += f"\n  - Event: {e['name']} (grades {e['min_grade']}-{e['max_grade']})"

@@ -7,8 +7,9 @@ import os
 import re
 import smtplib
 from contextlib import contextmanager
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from email.mime.text import MIMEText
+from urllib.parse import urlencode
 
 import requests
 import streamlit as st
@@ -159,6 +160,53 @@ def has_unread_exun_channel(user_id):
     )
     my_read_at = my_read.get("last_read_at") if my_read else None
     return not my_read_at or latest > my_read_at
+
+
+def google_calendar_link(title, meeting_date, meeting_time=None, details="", location=""):
+    # A plain "add to Google Calendar" URL - no OAuth, no API key, no
+    # calendar integration to maintain. The club is on Google Workspace
+    # (@dpsrkp.net), so one click puts it in the calendar they already
+    # use, and the link still works for anyone else with a Google account.
+    #
+    # ctz=Asia/Kolkata means the times below are read as IST rather than
+    # needing conversion to UTC. A meeting with no time set becomes an
+    # all-day entry (Google wants the end date as the NEXT day for those).
+    if meeting_time:
+        start = datetime.combine(meeting_date, meeting_time)
+        end = start + timedelta(hours=1)  # no end time is stored; an hour is the sane default
+        dates = f"{start.strftime('%Y%m%dT%H%M%S')}/{end.strftime('%Y%m%dT%H%M%S')}"
+    else:
+        dates = f"{meeting_date.strftime('%Y%m%d')}/{(meeting_date + timedelta(days=1)).strftime('%Y%m%d')}"
+    params = {
+        "action": "TEMPLATE",
+        "text": title,
+        "dates": dates,
+        "ctz": "Asia/Kolkata",
+        "details": details,
+        "location": location,
+    }
+    return "https://calendar.google.com/calendar/render?" + urlencode(
+        {k: v for k, v in params.items() if v}
+    )
+
+
+def meeting_email_body(meeting, calendar_link, intro):
+    # Shared by the "scheduled" and "moved" emails so the two can't drift.
+    lines = [intro, ""]
+    lines.append(f"What: {meeting['title']}")
+    lines.append(f"When: {date.fromisoformat(meeting['meeting_date']).strftime('%A, %d %B %Y')}"
+                 + (f" at {meeting['meeting_time'][:5]}" if meeting.get("meeting_time") else ""))
+    if meeting.get("agenda"):
+        lines.append(f"Agenda: {meeting['agenda']}")
+    if meeting.get("join_link"):
+        lines.append(f"Join: {meeting['join_link']}")
+    if meeting.get("meeting_id_code"):
+        lines.append(f"Meeting ID: {meeting['meeting_id_code']}")
+    if meeting.get("meeting_password"):
+        lines.append(f"Password: {meeting['meeting_password']}")
+    lines += ["", f"Add to your calendar: {calendar_link}", "",
+              f"RSVP on the dashboard: {APP_URL}", "", "- RoboKnights"]
+    return "\n".join(lines)
 
 
 def meeting_invitee_rows():

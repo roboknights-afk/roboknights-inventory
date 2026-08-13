@@ -14,8 +14,9 @@ from datetime import date, time
 import streamlit as st
 
 from shared import (
-    cached_table, get_client, invalidate_cache, is_meeting_visible,
-    meeting_invited_ids, meeting_invitee_rows, safe_write, today_ist,
+    EXUN_EMAILS, cached_table, get_client, google_calendar_link, invalidate_cache,
+    is_meeting_visible, meeting_email_body, meeting_invited_ids, meeting_invitee_rows,
+    safe_write, send_email, today_ist,
 )
 
 client = get_client()
@@ -23,6 +24,32 @@ is_host = st.session_state.is_host
 is_exun = st.session_state.is_exun
 current_user_id = st.session_state.current_user_id
 user_name_by_id = st.session_state.user_name_by_id
+user_email_by_id = st.session_state.user_email_by_id
+
+
+def _notify_meeting(meeting, invitee_ids, intro, subject):
+    # Who gets told: exactly the named people if it's a private meeting,
+    # otherwise the whole club. Exun is excluded either way - they can
+    # view meetings in the app but aren't part of the club's mailing.
+    if invitee_ids:
+        emails = [user_email_by_id.get(uid) for uid in invitee_ids]
+    else:
+        emails = list(user_email_by_id.values())
+    emails = [e for e in emails if e and e not in EXUN_EMAILS]
+
+    link = google_calendar_link(
+        title=meeting["title"],
+        meeting_date=date.fromisoformat(meeting["meeting_date"]),
+        meeting_time=(
+            time.fromisoformat(meeting["meeting_time"]) if meeting.get("meeting_time") else None
+        ),
+        details=meeting.get("agenda") or "",
+        location=meeting.get("join_link") or "",
+    )
+    body = meeting_email_body(meeting, link, intro)
+    for email in emails:
+        send_email(email, subject, body)
+    return len(emails)
 
 st.title("Meetings")
 
@@ -98,7 +125,18 @@ def render_schedule_meeting():
                         [{"meeting_id": new_id, "user_id": uid} for uid in invitees]
                     ).execute()
                 invalidate_cache()
-            st.session_state.meeting_message = ("success", f"Scheduled {title.strip()}.")
+            # Meetings never emailed anyone before this - every other part
+            # of the app (announcements, competitions, queries) notified,
+            # so a scheduled meeting silently sitting on a page nobody had
+            # a reason to open was the odd one out.
+            sent_to = _notify_meeting(
+                created.data[0], invitees,
+                f"A meeting has been scheduled{' for you' if invitees else ''}.",
+                f"Meeting: {title.strip()}",
+            )
+            st.session_state.meeting_message = (
+                "success", f"Scheduled {title.strip()} — emailed {sent_to} member(s)."
+            )
             # Clear the form so reopening the dialog starts blank.
             for k in (
                 "new_meeting_title", "new_meeting_agenda", "new_meeting_link",
@@ -241,7 +279,35 @@ def render_meeting_card(m):
                                 "meeting_id", m["meeting_id"]
                             ).eq("user_id", uid).execute()
                         invalidate_cache()
-                    st.session_state.meeting_message = ("success", f"Updated {edit_title.strip()}.")
+                    # Only a moved meeting emails again. Fixing a typo in
+                    # the agenda shouldn't put a message in 53 inboxes,
+                    # but a changed date or time is exactly the thing
+                    # people need to be told about - same rule the
+                    # Competitions page already uses for date changes.
+                    old_time = (m.get("meeting_time") or "")[:5]
+                    new_time = edit_time.strftime("%H:%M") if edit_time else ""
+                    moved = (
+                        m["meeting_date"] != edit_date.isoformat() or old_time != new_time
+                    )
+                    msg = f"Updated {edit_title.strip()}."
+                    if moved:
+                        updated = dict(m)
+                        updated.update({
+                            "title": edit_title.strip(),
+                            "agenda": edit_agenda.strip(),
+                            "meeting_date": edit_date.isoformat(),
+                            "meeting_time": edit_time.isoformat() if edit_time else None,
+                            "join_link": link or None,
+                            "meeting_id_code": edit_id_code.strip() or None,
+                            "meeting_password": edit_password.strip() or None,
+                        })
+                        sent_to = _notify_meeting(
+                            updated, list(now_invited),
+                            "A meeting you're part of has been moved. The new details:",
+                            f"Meeting moved: {edit_title.strip()}",
+                        )
+                        msg += f" Emailed {sent_to} member(s) about the new time."
+                    st.session_state.meeting_message = ("success", msg)
                     st.session_state.editing_meeting_id = None
                 st.rerun()
             if cancel_col.button("Cancel", key=f"cancel_meeting_{m['meeting_id']}", icon=":material/close:"):
