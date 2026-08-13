@@ -702,7 +702,24 @@ def show_login_signup(client):
                         attempts++;
                         const a = window.parent.document.querySelector(SELECTOR);
                         if (a) {
-                            a.removeAttribute('target');
+                            // "_top", NOT removed. Streamlit Cloud serves
+                            // the whole app inside an iframe (confirmed
+                            // live: the app's real DOM lives in a
+                            // ".../~/+/" frame, NOT the top-level
+                            // document - localhost has no such wrapper,
+                            // which is exactly why every local test of
+                            // this passed while production stayed
+                            // broken). With no target, the click
+                            // navigates that IFRAME to Google, and
+                            // Google refuses to render its sign-in page
+                            // inside anyone's iframe -> nothing visibly
+                            // happens. With "_blank" it opens a new tab,
+                            // completes the login THERE, and leaves the
+                            // tab the member is actually looking at
+                            // untouched. "_top" is the one that's right:
+                            // navigates the top-level page, same tab,
+                            // escaping the iframe.
+                            a.setAttribute('target', '_top');
                             a.removeAttribute('rel');
                             clearInterval(timer);
                         } else if (attempts > 100) {  // ~10s at 100ms
