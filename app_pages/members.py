@@ -37,6 +37,13 @@ users = sorted(cached_table("users"), key=lambda u: (u["name"], u["user_id"]))
 
 # --- At-a-glance numbers -----------------------------------------------------
 GRADE_OPTIONS = [7, 8, 9, 10, 11, 12]
+# Maps the raw DB value (see supabase_schema.sql's users_role_check) to
+# what's actually shown/picked in the UI, and back. "" is its own option
+# (not just "no selection") since a member with no standing set yet is a
+# real, common state — most members had none until a host went through
+# and set them by hand — not something to force a choice on immediately.
+STANDING_LABELS = {"core_member": "Core member", "member": "Member", "adhoc": "Ad hoc", None: ""}
+STANDING_VALUES = {v: k for k, v in STANDING_LABELS.items()}
 m1, m2, m3 = st.columns(3)
 m1.metric("Members", len(users), border=True)
 m2.metric(
@@ -69,8 +76,8 @@ with st.expander(":material/info: About this page"):
 if not users:
     st.caption("No members yet.")
 else:
-    # Search + grade filter above the table.
-    search_col, grade_col = st.columns([2, 2], vertical_alignment="center")
+    # Search + grade + standing filters above the table.
+    search_col, grade_col, standing_col = st.columns([2, 1, 1], vertical_alignment="center")
     member_search = search_col.text_input(
         "Search members",
         key="member_search",
@@ -82,6 +89,12 @@ else:
         "Filter by grade", GRADE_OPTIONS, key="member_grade_filter",
         placeholder="All grades", label_visibility="collapsed",
     )
+    standing_filter = standing_col.multiselect(
+        "Filter by standing",
+        ["Core member", "Member", "Ad hoc", "Not set"],
+        key="member_standing_filter",
+        placeholder="All standings", label_visibility="collapsed",
+    )
 
     visible_users = []
     for u in users:
@@ -92,6 +105,10 @@ else:
             continue
         if grade_filter and u.get("grade") not in grade_filter:
             continue
+        if standing_filter:
+            label = STANDING_LABELS.get(u.get("role")) or "Not set"
+            if label not in standing_filter:
+                continue
         visible_users.append(u)
 
     if not visible_users:
@@ -104,6 +121,7 @@ else:
         {
             "Name": u["name"],
             "Role": "Staff" if u.get("is_staff") else "Student",
+            "Standing": STANDING_LABELS.get(u.get("role"), u.get("role") or ""),
             "Institutional email": u["email"],
             "Grade": u.get("grade"),
             "Section": u.get("section") or "",
@@ -129,6 +147,12 @@ else:
             column_config={
                 "Name": st.column_config.TextColumn("Name", width="medium"),
                 "Role": st.column_config.TextColumn("Role", width="small", disabled=True),
+                "Standing": st.column_config.SelectboxColumn(
+                    "Standing", width="small",
+                    options=["", "Core member", "Member", "Ad hoc"],
+                    help="Host-set club standing — separate from Role above, which is "
+                         "just staff vs. student.",
+                ),
                 "Institutional email": st.column_config.TextColumn("Institutional email", width="medium"),
                 "Grade": st.column_config.SelectboxColumn("Grade", options=GRADE_OPTIONS, width="small"),
                 "Section": st.column_config.TextColumn("Section", width="small"),
@@ -158,6 +182,8 @@ else:
                         updates["email"] = edited["Institutional email"].strip()
                     if edited["Grade"] != original.get("grade"):
                         updates["grade"] = edited["Grade"]
+                    if STANDING_VALUES.get(edited["Standing"], edited["Standing"]) != original.get("role"):
+                        updates["role"] = STANDING_VALUES.get(edited["Standing"]) or None
                     if edited["Section"].strip() != (original.get("section") or ""):
                         updates["section"] = edited["Section"].strip()
                     if edited["Admission no."].strip() != (original.get("admission_no") or ""):
