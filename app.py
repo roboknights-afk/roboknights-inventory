@@ -647,88 +647,46 @@ def show_login_signup(client):
             st.error(st.session_state.pop("google_login_error"))
 
         with st.container(border=True):
-            # st.link_button, not a hand-rendered <a> — reverted after
-            # confirming live (real Playwright frame inspection) that
-            # st.html() renders its content inside a SANDBOXED IFRAME, not
-            # the top-level page. Clicking a link inside that iframe tries
-            # to navigate the IFRAME to Google's consent screen - and
-            # Google refuses to render its own sign-in page inside anyone
-            # else's iframe (standard anti-clickjacking protection, same
-            # family of defense this app itself doesn't have a reason to
-            # disable). Net effect: nothing visibly happens on click - "the
-            # button doesn't work" - worse than the new-tab problem this
-            # was meant to fix. st.link_button's anchor, by contrast, lives
-            # in the REAL top-level page DOM (confirmed earlier via direct
-            # DOM inspection: stElementContainer/stVerticalBlock, no
-            # iframe involved) - it's the right home for a real navigation,
-            # the only problem was its hardcoded target="_blank".
+            # Opens in a NEW TAB, and that is not a bug to fix - it is the
+            # only thing Streamlit Cloud actually permits. Confirmed by
+            # reading the real deployed page: Streamlit Cloud serves the
+            # whole app inside an iframe whose sandbox attribute is
+            #   allow-forms allow-modals allow-popups
+            #   allow-popups-to-escape-sandbox allow-same-origin
+            #   allow-scripts allow-downloads
+            # Note what is ABSENT: allow-top-navigation. So all three
+            # options were tried against the live site, and only one works:
+            #   no target  -> navigates the IFRAME to Google; Google
+            #                 refuses to render its sign-in page in anyone
+            #                 else's iframe -> click appears to do nothing
+            #   _top       -> silently blocked by the sandbox (verified:
+            #                 clicking changed nothing, opened nothing)
+            #   _blank     -> allowed by allow-popups, and
+            #                 allow-popups-to-escape-sandbox means the new
+            #                 tab is NOT sandboxed, so the full OAuth
+            #                 redirect chain works there
+            # localhost has no such wrapper, which is why earlier
+            # local-only verification of the first two passed while
+            # production stayed broken - this had to be checked against
+            # the deployed app.
             #
-            # Fixed a different way: keep st.link_button for correct DOM
-            # placement and styling, then patch out its target/rel
-            # attributes via the SAME window.parent.document technique
-            # this app already uses successfully elsewhere
-            # (_set_remember_cookie, the feedback pill) - reaching from a
-            # sandboxed components.html() iframe into the REAL page to
-            # mutate an element that's already there, rather than trying
-            # to render the clickable element itself inside a sandbox.
-            # Runs UNCONDITIONALLY on every script run, not gated behind a
-            # "create once" check - the earlier feedback-pill saga in this
-            # app already learned that lesson the hard way: the anchor
-            # persists across Streamlit reruns via its own diffing, so a
-            # guard here would mean this fix only ever applies once and
-            # silently stops working the moment Streamlit re-renders it
-            # with target="_blank" again.
+            # The login genuinely COMPLETES in that new tab: the PKCE
+            # verifier lives in a domain-scoped cookie (see
+            # GOOGLE_VERIFIER_COOKIE), so the new tab reads the same one
+            # this tab wrote, and handle_google_oauth_callback also sets
+            # the "remember me" cookie - so this original tab logs itself
+            # in on its next load too.
+            #
+            # target is therefore left at st.link_button's default
+            # (_blank). If this app ever moves to a deployment that does
+            # NOT iframe it (a custom domain fronted by a normal reverse
+            # proxy, or self-hosting), a same-tab flow becomes possible
+            # and this can be revisited.
             authorize_url = _google_authorize_url()
             st.link_button(
                 "Continue with Google", authorize_url,
                 width="stretch", key="rk_google_login_btn",
             )
-            components.html("""
-                <script>
-                (function() {
-                    // Polls instead of a single one-shot query - confirmed
-                    // live that a one-shot attempt runs BEFORE
-                    // st.link_button's real anchor has actually mounted
-                    // into the top-level page (this components.html
-                    // iframe can finish loading and execute before that
-                    // element exists), so it silently found nothing and
-                    // never got a second chance. A MutationObserver would
-                    // also work, but a short poll is simpler and this
-                    // only needs to succeed once, within a couple seconds
-                    // of page load.
-                    const SELECTOR = '.st-key-rk_google_login_btn a[data-testid="stBaseLinkButton-secondary"]';
-                    let attempts = 0;
-                    const timer = setInterval(function() {
-                        attempts++;
-                        const a = window.parent.document.querySelector(SELECTOR);
-                        if (a) {
-                            // "_top", NOT removed. Streamlit Cloud serves
-                            // the whole app inside an iframe (confirmed
-                            // live: the app's real DOM lives in a
-                            // ".../~/+/" frame, NOT the top-level
-                            // document - localhost has no such wrapper,
-                            // which is exactly why every local test of
-                            // this passed while production stayed
-                            // broken). With no target, the click
-                            // navigates that IFRAME to Google, and
-                            // Google refuses to render its sign-in page
-                            // inside anyone's iframe -> nothing visibly
-                            // happens. With "_blank" it opens a new tab,
-                            // completes the login THERE, and leaves the
-                            // tab the member is actually looking at
-                            // untouched. "_top" is the one that's right:
-                            // navigates the top-level page, same tab,
-                            // escaping the iframe.
-                            a.setAttribute('target', '_top');
-                            a.removeAttribute('rel');
-                            clearInterval(timer);
-                        } else if (attempts > 100) {  // ~10s at 100ms
-                            clearInterval(timer);
-                        }
-                    }, 100);
-                })();
-                </script>
-            """, height=0)
             st.html("""
                 <style>
                 .st-key-rk_google_login_btn a[data-testid="stBaseLinkButton-secondary"] {
@@ -765,7 +723,7 @@ def show_login_signup(client):
                 </style>
             """)
             st.caption(
-                "Only @dpsrkp.net Google accounts can sign in this way.",
+                "Opens in a new tab. Only @dpsrkp.net Google accounts can sign in this way.",
                 text_alignment="center",
             )
             st.divider()
