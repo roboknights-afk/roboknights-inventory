@@ -647,53 +647,93 @@ def show_login_signup(client):
             st.error(st.session_state.pop("google_login_error"))
 
         with st.container(border=True):
-            # A hand-rendered <a href>, NOT st.link_button — confirmed live
-            # (a real, reported "it doesn't work") that st.link_button
-            # hardcodes target="_blank" rel="noreferrer" with no parameter
-            # to turn it off (checked its signature - no target option
-            # exists at all). That opens Google's consent screen in a NEW
-            # TAB: the OAuth flow completes there and Supabase redirects
-            # THAT tab back logged-in, while the person is still looking
-            # at the ORIGINAL tab, which never changes - "back on the
-            # plain login screen, no error, not logged in" was that
-            # original tab, not a real failure. st.html() renders a real
-            # anchor with no target attribute, so the browser navigates in
-            # the SAME tab, the way this flow actually needs to work.
+            # st.link_button, not a hand-rendered <a> — reverted after
+            # confirming live (real Playwright frame inspection) that
+            # st.html() renders its content inside a SANDBOXED IFRAME, not
+            # the top-level page. Clicking a link inside that iframe tries
+            # to navigate the IFRAME to Google's consent screen - and
+            # Google refuses to render its own sign-in page inside anyone
+            # else's iframe (standard anti-clickjacking protection, same
+            # family of defense this app itself doesn't have a reason to
+            # disable). Net effect: nothing visibly happens on click - "the
+            # button doesn't work" - worse than the new-tab problem this
+            # was meant to fix. st.link_button's anchor, by contrast, lives
+            # in the REAL top-level page DOM (confirmed earlier via direct
+            # DOM inspection: stElementContainer/stVerticalBlock, no
+            # iframe involved) - it's the right home for a real navigation,
+            # the only problem was its hardcoded target="_blank".
             #
-            # Styled to match Google's own "Sign in with Google" branding
-            # (white pill, the real 4-color G mark, Google's button font) —
-            # the plain default button looked out of place next to it. Not
-            # an inline <svg> element (which st.html silently strips per
-            # this project's own hard-won gotcha) - the G mark is a CSS
-            # background-image data URI instead, unaffected by that.
+            # Fixed a different way: keep st.link_button for correct DOM
+            # placement and styling, then patch out its target/rel
+            # attributes via the SAME window.parent.document technique
+            # this app already uses successfully elsewhere
+            # (_set_remember_cookie, the feedback pill) - reaching from a
+            # sandboxed components.html() iframe into the REAL page to
+            # mutate an element that's already there, rather than trying
+            # to render the clickable element itself inside a sandbox.
+            # Runs UNCONDITIONALLY on every script run, not gated behind a
+            # "create once" check - the earlier feedback-pill saga in this
+            # app already learned that lesson the hard way: the anchor
+            # persists across Streamlit reruns via its own diffing, so a
+            # guard here would mean this fix only ever applies once and
+            # silently stops working the moment Streamlit re-renders it
+            # with target="_blank" again.
             authorize_url = _google_authorize_url()
-            st.html(f"""
-                <a href="{authorize_url}" id="rk-google-login-btn">Continue with Google</a>
+            st.link_button(
+                "Continue with Google", authorize_url,
+                width="stretch", key="rk_google_login_btn",
+            )
+            components.html("""
+                <script>
+                (function() {
+                    // Polls instead of a single one-shot query - confirmed
+                    // live that a one-shot attempt runs BEFORE
+                    // st.link_button's real anchor has actually mounted
+                    // into the top-level page (this components.html
+                    // iframe can finish loading and execute before that
+                    // element exists), so it silently found nothing and
+                    // never got a second chance. A MutationObserver would
+                    // also work, but a short poll is simpler and this
+                    // only needs to succeed once, within a couple seconds
+                    // of page load.
+                    const SELECTOR = '.st-key-rk_google_login_btn a[data-testid="stBaseLinkButton-secondary"]';
+                    let attempts = 0;
+                    const timer = setInterval(function() {
+                        attempts++;
+                        const a = window.parent.document.querySelector(SELECTOR);
+                        if (a) {
+                            a.removeAttribute('target');
+                            a.removeAttribute('rel');
+                            clearInterval(timer);
+                        } else if (attempts > 100) {  // ~10s at 100ms
+                            clearInterval(timer);
+                        }
+                    }, 100);
+                })();
+                </script>
+            """, height=0)
+            st.html("""
                 <style>
-                #rk-google-login-btn {{
-                    display: flex;
-                    align-items: center;
-                    justify-content: center;
-                    width: 100%;
-                    box-sizing: border-box;
-                    background: #ffffff;
-                    color: #3c4043;
-                    border: 1px solid #dadce0;
-                    border-radius: 4px;
-                    font-family: 'Roboto', Arial, sans-serif;
-                    font-weight: 500;
-                    font-size: 0.95rem;
-                    text-decoration: none;
-                    padding: 10px 16px 10px 42px;
+                .st-key-rk_google_login_btn a[data-testid="stBaseLinkButton-secondary"] {
+                    background: #ffffff !important;
+                    color: #3c4043 !important;
+                    border: 1px solid #dadce0 !important;
+                    border-radius: 4px !important;
+                    font-family: 'Roboto', Arial, sans-serif !important;
+                    font-weight: 500 !important;
+                    font-size: 0.95rem !important;
+                    box-shadow: none !important;
                     position: relative;
-                    box-shadow: none;
+                    padding-left: 42px !important;
                     transition: box-shadow .15s ease, background-color .15s ease;
-                }}
-                #rk-google-login-btn:hover {{
-                    background: #f8f9fa;
-                    box-shadow: 0 1px 2px rgba(60,64,67,.30), 0 1px 3px 1px rgba(60,64,67,.15);
-                }}
-                #rk-google-login-btn::before {{
+                }
+                .st-key-rk_google_login_btn a[data-testid="stBaseLinkButton-secondary"]:hover {
+                    background: #f8f9fa !important;
+                    box-shadow: 0 1px 2px rgba(60,64,67,.30), 0 1px 3px 1px rgba(60,64,67,.15) !important;
+                }
+                /* The real 4-color G mark, inline — no external request,
+                   consistent with how this app handles every other icon. */
+                .st-key-rk_google_login_btn a[data-testid="stBaseLinkButton-secondary"]::before {
                     content: "";
                     position: absolute;
                     left: 14px;
@@ -704,7 +744,7 @@ def show_login_signup(client):
                     background-repeat: no-repeat;
                     background-size: contain;
                     background-image: url("data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 48 48' width='18' height='18'%3E%3Cpath fill='%234285F4' d='M45.12 24.5c0-1.56-.14-3.06-.4-4.5H24v8.51h11.84c-.51 2.75-2.06 5.08-4.39 6.64v5.52h7.11c4.16-3.83 6.56-9.47 6.56-16.17z'/%3E%3Cpath fill='%2334A853' d='M24 46c5.94 0 10.92-1.97 14.56-5.33l-7.11-5.52c-1.97 1.32-4.49 2.1-7.45 2.1-5.73 0-10.58-3.87-12.31-9.07H4.34v5.7C7.96 41.07 15.4 46 24 46z'/%3E%3Cpath fill='%23FBBC05' d='M11.69 28.18C11.25 26.86 11 25.45 11 24s.25-2.86.69-4.18v-5.7H4.34C2.85 17.09 2 20.45 2 24s.85 6.91 2.34 9.88l7.35-5.7z'/%3E%3Cpath fill='%23EA4335' d='M24 10.75c3.23 0 6.13 1.11 8.41 3.29l6.31-6.31C34.91 4.18 29.93 2 24 2 15.4 2 7.96 6.93 4.34 14.12l7.35 5.7c1.73-5.2 6.58-9.07 12.31-9.07z'/%3E%3C/svg%3E");
-                }}
+                }
                 </style>
             """)
             st.caption(
