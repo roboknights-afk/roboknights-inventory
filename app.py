@@ -419,12 +419,46 @@ def admission_no_input(key_prefix):
 # client's own storage — and get_client() is @st.cache_resource, one
 # client object shared by the whole app process, not one per visitor. Two
 # people starting a Google login around the same time would silently
-# overwrite each other's verifier under that default. Generating and
-# keeping the verifier in st.session_state instead — genuinely scoped to
-# one browser session — avoids that race entirely.
+# overwrite each other's verifier under that default.
+#
+# The verifier is kept in a short-lived COOKIE, not st.session_state —
+# confirmed live (the first real test of this feature) that session_state
+# does NOT survive the round trip: clicking the button is a genuine
+# top-level browser navigation away to Google, and when Supabase redirects
+# back, that's a brand-new page load with a brand-new, empty Streamlit
+# session. The verifier was already gone by the time the callback ran,
+# which silently no-opped instead of logging anyone in. A cookie survives
+# that navigation (SameSite=Lax explicitly allows it on a top-level GET
+# redirect like this), same technique this file already uses for the
+# "remember me" login token below.
+GOOGLE_VERIFIER_COOKIE = "rk_google_pkce_verifier"
+
+
+def _set_google_verifier_cookie(verifier):
+    # 10 minutes is generous for "leave the page, sign into Google, come
+    # back" — long enough for a slow sign-in, short enough that a verifier
+    # left over from an abandoned attempt doesn't linger.
+    components.html(
+        f"""<script>
+        window.parent.document.cookie =
+            "{GOOGLE_VERIFIER_COOKIE}={verifier}; max-age=600; path=/; SameSite=Lax";
+        </script>""",
+        height=0,
+    )
+
+
+def _clear_google_verifier_cookie():
+    components.html(
+        f"""<script>
+        window.parent.document.cookie = "{GOOGLE_VERIFIER_COOKIE}=; max-age=0; path=/; SameSite=Lax";
+        </script>""",
+        height=0,
+    )
+
+
 def _google_authorize_url():
     verifier = generate_pkce_verifier()
-    st.session_state.google_pkce_verifier = verifier
+    _set_google_verifier_cookie(verifier)
     challenge = generate_pkce_challenge(verifier)
     params = {
         "provider": "google",
@@ -456,13 +490,18 @@ def handle_google_oauth_callback(client):
     if not code:
         return
     st.query_params.clear()
-    verifier = st.session_state.pop("google_pkce_verifier", None)
+    # Cookie, not st.session_state — see GOOGLE_VERIFIER_COOKIE comment
+    # above for why: this callback runs in a BRAND NEW Streamlit session
+    # (the click was a real top-level navigation away and back), so
+    # session_state from before the click is already gone.
+    verifier = st.context.cookies.get(GOOGLE_VERIFIER_COOKIE)
+    _clear_google_verifier_cookie()
     if not verifier:
-        # A stale/bookmarked callback URL, or it landed in a different
-        # browser session than the one that started the login — nothing to
-        # recover from; just fall through to a clean login screen instead
-        # of showing a confusing exchange error for something the person
-        # never actually did in this session.
+        # A stale/bookmarked callback URL, an expired 10-minute window, or
+        # cookies blocked in the browser — nothing to recover from; just
+        # fall through to a clean login screen instead of showing a
+        # confusing exchange error for something that can't be retried
+        # with this same code anyway.
         return
     try:
         result = client.auth.exchange_code_for_session(
