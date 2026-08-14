@@ -11,8 +11,9 @@ import os
 import streamlit as st
 
 from shared import (
-    DISCORD_CHANNELS, build_vacant_events_message, cached_table, delete_discord_message,
-    discord_message_suffix, edit_discord_message, format_ist, invalidate_cache, send_discord_message,
+    CUSTOM_DISCORD_MESSAGE_HOURLY_LIMIT, DISCORD_CHANNELS, build_vacant_events_message, cached_table,
+    custom_discord_send_allowed, delete_discord_message, discord_message_suffix, edit_discord_message,
+    format_ist, invalidate_cache, send_discord_message,
 )
 
 is_host = st.session_state.is_host
@@ -164,12 +165,19 @@ def render_custom_message_section(channel):
             if send_col.button(
                 "Send to Discord", icon=":material/send:", type="primary", key=f"send_custom_discord_btn_{channel}",
             ):
-                send_discord_message(preview, channel=channel)
-                invalidate_cache()
-                st.session_state[preview_key] = None
-                st.toast("Sent to Discord!", icon=":material/check_circle:")
-                del st.session_state[f"custom_discord_message_{channel}"]
-                st.rerun()
+                if not custom_discord_send_allowed():
+                    st.error(
+                        f"Rate limit reached — max {CUSTOM_DISCORD_MESSAGE_HOURLY_LIMIT} custom "
+                        "messages per hour (shared across every channel/host), to stop accidental "
+                        "spam. Try again in a bit."
+                    )
+                else:
+                    send_discord_message(preview, channel=channel)
+                    invalidate_cache()
+                    st.session_state[preview_key] = None
+                    st.toast("Sent to Discord!", icon=":material/check_circle:")
+                    del st.session_state[f"custom_discord_message_{channel}"]
+                    st.rerun()
 
     st.divider()
     render_recent_messages(channel)

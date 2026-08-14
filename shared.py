@@ -6,6 +6,7 @@
 import os
 import re
 import smtplib
+import time
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
 from email.mime.text import MIMEText
@@ -605,6 +606,35 @@ DISCORD_CHANNELS = {
 # bot-authored message.
 DISCORD_BOT_USERNAME = "roboknightsbot"
 DISCORD_BOT_AVATAR_URL = "https://cdn.discordapp.com/avatars/1536836032329416724/5ebc6d79217e395322b1faf5107e095f.png"
+
+# Rate limit on the Discord Messages page's free-text custom-message tool
+# specifically (host-requested, 2026-08-15, after a burst of ad-hoc
+# messages got sent in quick succession) — NOT applied to
+# send_discord_message() itself, since that would also throttle the
+# automated notifications (new competition event, roster-complete, vacant
+# events reminder, dashboard-update changelog) that have nothing to do
+# with someone spamming the free-text box. Shared across every host/every
+# session in this process (an @st.cache_resource list, same "one shared
+# mutable object per process" pattern as get_sheets_write_client above),
+# not per-host, since the actual risk is the channel getting flooded
+# regardless of which host's session did it.
+CUSTOM_DISCORD_MESSAGE_HOURLY_LIMIT = 15
+
+
+@st.cache_resource
+def _custom_discord_send_log():
+    return []
+
+
+def custom_discord_send_allowed():
+    now = time.time()
+    log = _custom_discord_send_log()
+    while log and now - log[0] > 3600:
+        log.pop(0)
+    if len(log) >= CUSTOM_DISCORD_MESSAGE_HOURLY_LIMIT:
+        return False
+    log.append(now)
+    return True
 
 
 def send_discord_message(content, channel="competitions"):
