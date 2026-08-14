@@ -432,3 +432,32 @@ create table if not exists meeting_invitees (
     created_at timestamptz not null default now(),
     unique (meeting_id, user_id)
 );
+
+-- Google sign-in (2026-08-14): holds the PKCE code_verifier for a Google
+-- login that's currently in progress, keyed by a random one-time token
+-- (not the user's identity — nobody is logged in yet at this point).
+-- Replaces an earlier cookie-based approach that worked in every
+-- automated test but not in a real member's browser (see the
+-- GOOGLE_LOGIN_TOKEN_PARAM comment in app.py). Rows are short-lived —
+-- deleted the moment they're used, and swept out after 10 minutes
+-- unused — so this table should normally have close to zero rows in it.
+create table if not exists google_pkce_state (
+    token      text primary key,
+    verifier   text not null,
+    created_at timestamptz not null default now()
+);
+
+-- Verify-your-details popup (2026-08-14): tracks whether a student has
+-- confirmed/corrected their own name, admission no., grade, and section
+-- at least once. False for everyone until they see the popup and save it
+-- once — see render_verify_details_dialog in app.py. Not reset
+-- automatically; a host would need to flip it back to false by hand to
+-- make it show again for someone.
+alter table users add column if not exists details_verified boolean not null default false;
+
+-- The Clio roster tracks TWO phone numbers and a personal email per
+-- student (columns E/F/G on its per-year tabs) on top of the single
+-- phone_no this app already had — added so the verify popup can collect
+-- and sync the same fields the real roster expects.
+alter table users add column if not exists phone_no_2 text;
+alter table users add column if not exists personal_email text;

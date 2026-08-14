@@ -3,3 +3,5 @@ supabase
 python-dotenv
 requests
 groq
+gspread
+google-auth

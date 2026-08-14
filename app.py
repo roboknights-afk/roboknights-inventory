@@ -1,5 +1,7 @@
 import base64
+import datetime
 import os
+import secrets
 import time
 from pathlib import Path
 from urllib.parse import urlencode
@@ -12,6 +14,7 @@ from supabase_auth.helpers import generate_pkce_challenge, generate_pkce_verifie
 from shared import (
     APP_URL, EXUN_CHANNEL_MEMBERS, EXUN_EMAILS, HOST_EMAILS, HOST_ROLES, cached_table,
     get_client, has_unread_exun_channel, has_unread_queries, invalidate_cache, safe_write, send_email,
+    sync_member_to_clio_sheet,
 )
 
 # Secrets (the Supabase URL and key) live in a local .env file, not in this
@@ -396,14 +399,22 @@ def _clear_remember_cookie():
 ADMISSION_NO_PREFIXES = ["R", "E", "V"]
 
 
-def admission_no_input(key_prefix):
+def admission_no_input(key_prefix, default=""):
     # Every real admission number seen so far starts with R, E, or V
     # (e.g. R22639) — a dropdown for the letter plus a plain number field
     # for the digits, instead of one free-text box prone to typos.
+    # `default` (an existing admission_no like "R22639") pre-fills both
+    # parts when editing an already-saved value, instead of always
+    # starting blank — needed for the verify-your-details popup.
+    default_prefix = default[:1] if default[:1] in ADMISSION_NO_PREFIXES else ADMISSION_NO_PREFIXES[0]
+    default_digits = default[1:] if default[:1] in ADMISSION_NO_PREFIXES else default
     col1, col2 = st.columns([1, 2], vertical_alignment="bottom")
-    prefix = col1.selectbox("Admission no.", ADMISSION_NO_PREFIXES, key=f"{key_prefix}_prefix")
+    prefix = col1.selectbox(
+        "Admission no.", ADMISSION_NO_PREFIXES,
+        index=ADMISSION_NO_PREFIXES.index(default_prefix), key=f"{key_prefix}_prefix",
+    )
     digits = col2.text_input(
-        "Admission no. digits", key=f"{key_prefix}_digits",
+        "Admission no. digits", value=default_digits, key=f"{key_prefix}_digits",
         label_visibility="collapsed", placeholder="12345",
     )
     return f"{prefix}{digits.strip()}"
@@ -421,48 +432,77 @@ def admission_no_input(key_prefix):
 # people starting a Google login around the same time would silently
 # overwrite each other's verifier under that default.
 #
-# The verifier is kept in a short-lived COOKIE, not st.session_state —
-# confirmed live (the first real test of this feature) that session_state
-# does NOT survive the round trip: clicking the button is a genuine
-# top-level browser navigation away to Google, and when Supabase redirects
-# back, that's a brand-new page load with a brand-new, empty Streamlit
-# session. The verifier was already gone by the time the callback ran,
-# which silently no-opped instead of logging anyone in. A cookie survives
-# that navigation (SameSite=Lax explicitly allows it on a top-level GET
-# redirect like this), same technique this file already uses for the
-# "remember me" login token below.
-GOOGLE_VERIFIER_COOKIE = "rk_google_pkce_verifier"
+# The verifier used to be kept in a short-lived COOKIE (written via
+# window.parent.document.cookie from a components.html script, same trick
+# as the "remember me" cookie below). That was needed because
+# st.session_state does NOT survive the round trip — clicking the button
+# is a genuine top-level browser navigation away to Google, and when
+# Supabase redirects back, that's a brand-new page load with a brand-new,
+# empty Streamlit session.
+#
+# Dropped the cookie after a real member hit "the browser didn't return
+# the one-time security cookie" — it worked in every automated test but
+# not in a real browser. The suspect isn't the cookie mechanism in
+# general (the "remember me" cookie below uses the identical technique
+# and works fine) — it's specifically that THIS cookie has to survive
+# being read back in a brand-new TAB (the Google button opens in
+# target="_blank"), not just a reload of the same tab. Real browsers'
+# privacy/tracking protections treat that differently than a plain
+# automated test does, in ways that are hard to pin down exactly.
+#
+# New approach: the verifier is stored as a row in Supabase (same place
+# every other piece of data in this app lives) instead of the browser,
+# keyed by a random one-time token. That token rides along INSIDE the
+# redirect_to URL itself as a normal ?rk=... query parameter — no cookie,
+# no iframe, nothing that depends on browser storage at all. Query params
+# on redirect_to are confirmed (tested live earlier) to survive the whole
+# Google -> Supabase -> back-to-us redirect chain intact.
+GOOGLE_LOGIN_TOKEN_PARAM = "rk"
 
 
-def _set_google_verifier_cookie(verifier):
-    # 10 minutes is generous for "leave the page, sign into Google, come
-    # back" — long enough for a slow sign-in, short enough that a verifier
-    # left over from an abandoned attempt doesn't linger.
-    components.html(
-        f"""<script>
-        window.parent.document.cookie =
-            "{GOOGLE_VERIFIER_COOKIE}={verifier}; max-age=600; path=/; SameSite=Lax";
-        </script>""",
-        height=0,
+def _store_google_verifier(verifier):
+    token = secrets.token_urlsafe(24)
+    get_client().table("google_pkce_state").insert(
+        {"token": token, "verifier": verifier}
+    ).execute()
+    return token
+
+
+def _take_google_verifier(token):
+    # "Take" = read it and immediately delete it, so the same link can't be
+    # replayed twice. Also sweeps out anything older than 10 minutes every
+    # time this runs, so an abandoned login attempt doesn't leave a row
+    # behind forever — good enough for this app's traffic without needing
+    # a separate cleanup job.
+    client = get_client()
+    client.table("google_pkce_state").delete().lt(
+        "created_at", _minutes_ago_iso(10)
+    ).execute()
+    row = (
+        client.table("google_pkce_state")
+        .select("verifier")
+        .eq("token", token)
+        .execute()
+        .data
     )
+    client.table("google_pkce_state").delete().eq("token", token).execute()
+    return row[0]["verifier"] if row else None
 
 
-def _clear_google_verifier_cookie():
-    components.html(
-        f"""<script>
-        window.parent.document.cookie = "{GOOGLE_VERIFIER_COOKIE}=; max-age=0; path=/; SameSite=Lax";
-        </script>""",
-        height=0,
-    )
+def _minutes_ago_iso(minutes):
+    return (
+        datetime.datetime.now(datetime.timezone.utc)
+        - datetime.timedelta(minutes=minutes)
+    ).isoformat()
 
 
 def _google_authorize_url():
     verifier = generate_pkce_verifier()
-    _set_google_verifier_cookie(verifier)
+    token = _store_google_verifier(verifier)
     challenge = generate_pkce_challenge(verifier)
     params = {
         "provider": "google",
-        "redirect_to": APP_URL,
+        "redirect_to": f"{APP_URL}?{GOOGLE_LOGIN_TOKEN_PARAM}={token}",
         "code_challenge": challenge,
         "code_challenge_method": "s256" if challenge != verifier else "plain",
         # Narrows Google's OWN account picker to the school domain — purely
@@ -494,24 +534,26 @@ def handle_google_oauth_callback(client):
     # NOT cleared where the button is rendered: that runs on every rerun,
     # which would wipe the message before anyone could read it.
     st.session_state.pop("google_login_error", None)
+    # Read BEFORE clear() wipes every query param, not just "code".
+    token = st.query_params.get(GOOGLE_LOGIN_TOKEN_PARAM)
     st.query_params.clear()
-    # Cookie, not st.session_state — see GOOGLE_VERIFIER_COOKIE comment
-    # above for why: this callback runs in a BRAND NEW Streamlit session
-    # (the click was a real top-level navigation away and back), so
-    # session_state from before the click is already gone.
-    verifier = st.context.cookies.get(GOOGLE_VERIFIER_COOKIE)
-    _clear_google_verifier_cookie()
+    # Looked up from Supabase, not a cookie or st.session_state — see the
+    # GOOGLE_LOGIN_TOKEN_PARAM comment above for why: this callback runs in
+    # a BRAND NEW Streamlit session (the click was a real top-level
+    # navigation away and back), so session_state from before the click is
+    # already gone, and a cookie proved unreliable in real browsers.
+    verifier = _take_google_verifier(token) if token else None
     if not verifier:
         # Was a silent `return`, which produced the worst possible
         # outcome: the member lands back on a plain login screen with no
-        # explanation at all. Say what happened instead - a browser
-        # blocking cookies, an expired 10-minute window, or a stale
-        # bookmarked callback URL are all real and all actionable.
+        # explanation at all. Say what happened instead - the sign-in
+        # taking longer than 10 minutes, or a stale/reused link, are both
+        # real and both actionable.
         st.session_state.google_login_error = (
-            "Google sign-in couldn't be completed: the browser didn't return the "
-            "one-time security cookie this login needs. That usually means cookies "
-            "are blocked for this site, or the sign-in took longer than 10 minutes. "
-            "Allow cookies for this site and try again."
+            "Google sign-in couldn't be completed: this sign-in link is no longer "
+            "valid. That usually means it took longer than 10 minutes, or the link "
+            "was already used once. Click \"Continue with Google\" again to get a "
+            "fresh one."
         )
         return
     try:
@@ -691,10 +733,11 @@ def show_login_signup(client):
             # the deployed app.
             #
             # The login genuinely COMPLETES in that new tab: the PKCE
-            # verifier lives in a domain-scoped cookie (see
-            # GOOGLE_VERIFIER_COOKIE), so the new tab reads the same one
-            # this tab wrote, and handle_google_oauth_callback also sets
-            # the "remember me" cookie - so this original tab logs itself
+            # verifier lives in Supabase (see GOOGLE_LOGIN_TOKEN_PARAM),
+            # looked up by a one-time token carried in the URL itself, so
+            # the new tab doesn't need to share anything with this one.
+            # handle_google_oauth_callback does set the "remember me"
+            # cookie on success though - so this original tab logs itself
             # in on its next load too.
             #
             # target is therefore left at st.link_button's default
@@ -1094,6 +1137,96 @@ st.session_state.is_host = st.session_state.auth_user["email"] in HOST_EMAILS
 # log an achievement, or touch anything host-only. Checked separately
 # from is_host — the two are mutually exclusive in practice.
 st.session_state.is_exun = st.session_state.auth_user["email"] in EXUN_EMAILS
+
+# --- Verify your details (once per student) -------------------------------
+# "Every student" confirms/corrects their own admission no., name, grade,
+# and section once — students are the ones whose grade/section/admission_no
+# actually matter (Competitions eligibility, the Clio roster below), so
+# staff/host/Exun accounts are skipped entirely rather than asked to
+# confirm fields that don't apply to them. Gated on users.details_verified,
+# not st.session_state, so it genuinely only shows once ever (a fresh
+# browser session won't bring it back) — a host can reset an individual
+# member's flag by hand in Supabase if it's ever needed again.
+current_user_row = next((u for u in users if u["user_id"] == st.session_state.current_user_id), None)
+needs_verification = bool(
+    current_user_row
+    and not current_user_row.get("is_staff")
+    and not st.session_state.is_host
+    and not st.session_state.is_exun
+    and not current_user_row.get("details_verified")
+)
+
+
+@st.dialog("Verify your details", dismissible=False)
+def render_verify_details_dialog(user_row):
+    st.caption(
+        "Quick one-time check — make sure these are right, and fix anything "
+        "that's changed (new section, corrected admission no., etc.)."
+    )
+    name = st.text_input("Your name", value=user_row.get("name", ""), key="verify_name")
+    grade = st.selectbox(
+        "Your grade", [7, 8, 9, 10, 11, 12],
+        index=[7, 8, 9, 10, 11, 12].index(user_row["grade"]) if user_row.get("grade") in range(7, 13) else 3,
+        key="verify_grade",
+    )
+    section = st.text_input("Section", value=user_row.get("section", ""), key="verify_section")
+    admission_no = admission_no_input("verify_admission_no", default=user_row.get("admission_no", "") or "")
+    # Read-only: this IS the email used to log in (Supabase Auth owns it),
+    # so editing it here would silently drift our own record away from
+    # the account that actually exists — same trap flagged on the Members
+    # page for the same reason. Shown so it's still visible/confirmable,
+    # just not editable from this popup.
+    st.text_input(
+        "Institutional email", value=st.session_state.auth_user["email"],
+        disabled=True, key="verify_institutional_email",
+    )
+    phone_no = st.text_input("Phone no. 1", value=user_row.get("phone_no", "") or "", key="verify_phone_no")
+    phone_no_2 = st.text_input("Phone no. 2", value=user_row.get("phone_no_2", "") or "", key="verify_phone_no_2")
+    personal_email = st.text_input(
+        "Personal email", value=user_row.get("personal_email", "") or "", key="verify_personal_email",
+    )
+    if st.button("Confirm", icon=":material/check:", type="primary", width="stretch"):
+        if not name.strip():
+            st.error("Name can't be empty.")
+        else:
+            with safe_write("save your details"):
+                client.table("users").update({
+                    "name": name.strip(),
+                    "grade": grade,
+                    "section": section.strip(),
+                    "admission_no": admission_no.strip(),
+                    "phone_no": phone_no.strip(),
+                    "phone_no_2": phone_no_2.strip(),
+                    "personal_email": personal_email.strip(),
+                    "details_verified": True,
+                }).eq("user_id", user_row["user_id"]).execute()
+                invalidate_cache()
+
+                # Best-effort: the Clio roster stays in sync when it can,
+                # but a Sheets hiccup must never block saving to our own
+                # database above (already done by this point).
+                try:
+                    sync_member_to_clio_sheet(
+                        admission_no.strip(), name.strip(),
+                        f"{grade} {section.strip()}",
+                        st.session_state.auth_user["email"],
+                        phone_no.strip(), phone_no_2.strip(), personal_email.strip(),
+                        is_adhoc=user_row.get("role") == "adhoc",
+                    )
+                except Exception:
+                    pass
+            st.toast("Details saved", icon=":material/check_circle:")
+            st.rerun()
+
+
+if needs_verification:
+    render_verify_details_dialog(current_user_row)
+    # Nothing past this point runs while the dialog is up — not just
+    # dismissible=False (no backdrop-click/Escape close), but the sidebar
+    # nav, "Report an issue" pill, and every page's actual content are
+    # also skipped entirely this run, so there's truly nothing else to
+    # scroll to or click on until Confirm is pressed.
+    st.stop()
 
 # --- Report an issue (floating, global) --------------------------------------
 # A single low-friction way to flag anything that feels off, available on

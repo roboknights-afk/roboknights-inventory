@@ -82,6 +82,31 @@ EXUN_CHANNEL_STUDENT_EMAILS = EXUN_CHANNEL_MEMBERS - HOST_EMAILS - EXUN_EMAILS
 # so the host scans it directly instead of pasting a link every time.
 E2C_SHEET_ID = "1RLSXcAJ4t44M_wQ_hKlZqaTVmWjwAXrI8FInjHIZRTw"
 
+# The school's own admission roster, "RoboKnights Clio" (2026-08-14) — one
+# tab per school year, plus an Alumni tab. Unlike E2C above (read-only, a
+# plain API key is enough), this needs WRITE access, so it uses a Google
+# service account instead (see get_sheets_write_client below) — an API key
+# alone can never write to a sheet, only read one that's shared publicly.
+CLIO_SHEET_ID = "18M5VLCmC0tczG61m9Zx2OWQXP9jOa_oAfpPBo_BhAi8"
+# Which tab the verify-details popup writes into. Pointed at a separate
+# test tab for now (2026-08-14, student's explicit call) instead of the
+# real "2026-2027" roster tab, so this can be tried out live without
+# touching the school's actual admission records. Same column layout
+# (Admission No / Name / Class / Institutional Email / Contact Info /
+# blank / Personal Email) as the real per-year tabs, so switching this
+# constant to "2026-2027" later is the only change needed to go live.
+CLIO_CURRENT_TAB = "RK Verify (Test)"
+
+# Adhoc members get their own labeled block, below everyone else, in the
+# SAME tab (student's explicit call — not a separate tab like Alumni).
+# Reserved at a FIXED row rather than dynamically inserted, so adding a
+# new main-section member never has to shift the adhoc block down (which
+# would risk corrupting it, or any real data the sheet might have further
+# right in columns beyond G) — same reasoning as picking an explicit
+# target row over gspread's append_row earlier. 500 leaves room for ~490
+# main members, comfortably more than this club has ever had.
+CLIO_ADHOC_MARKER_ROW = 500
+
 # A fast, live alternative to the Queries page for something urgent — a
 # plain wa.me link needs no API, unlike automated WhatsApp notifications
 # (which stay out of scope; see CLAUDE.md).
@@ -94,6 +119,105 @@ def get_client():
     # @st.cache_resource means this only actually runs once per app
     # process, not once per page load — Streamlit reuses the same client.
     return create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
+
+
+@st.cache_resource
+def get_sheets_write_client():
+    # Returns None (never raises) when the credential isn't set up yet, so
+    # a missing/not-yet-configured service account degrades to "the sync
+    # silently doesn't happen" instead of crashing the whole app — same
+    # best-effort spirit as send_email/send_discord_message elsewhere here.
+    b64 = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON_B64")
+    if not b64:
+        return None
+    import base64
+    import json
+
+    import gspread
+    from google.oauth2.service_account import Credentials
+
+    info = json.loads(base64.b64decode(b64))
+    creds = Credentials.from_service_account_info(
+        info, scopes=["https://www.googleapis.com/auth/spreadsheets"]
+    )
+    return gspread.authorize(creds)
+
+
+def _find_or_next_row(ws, admission_no, start_row, end_row):
+    # Searches column A within [start_row, end_row] for a matching
+    # admission number; returns that row if found, otherwise the first
+    # EMPTY row in that range.
+    #
+    # Bug fixed here after it corrupted a real member's row (2026-08-14):
+    # ws.get() only trims TRAILING empty rows, not gaps in the middle —
+    # a range with an empty row followed by a filled one still comes back
+    # as e.g. [[], ['R22639']], not just [['R22639']]. The first version
+    # of this function assumed "how many rows came back" meant "how far
+    # the data goes", so it computed start_row + len(values) and skipped
+    # right past a genuinely empty row into the next member's row
+    # instead. Now it scans every returned row explicitly and only falls
+    # back to "one past the last row" when it finds no gap at all.
+    values = ws.get(f"A{start_row}:A{end_row}")
+    first_empty = None
+    for i, row_vals in enumerate(values):
+        val = row_vals[0] if row_vals else ""
+        if val == admission_no:
+            return start_row + i
+        if not val and first_empty is None:
+            first_empty = start_row + i
+    return first_empty if first_empty is not None else start_row + len(values)
+
+
+def sync_member_to_clio_sheet(
+    admission_no, name, class_str, email, phone_no, phone_no_2="", personal_email="", is_adhoc=False,
+):
+    # Keeps the school's own Clio roster in sync with what a member just
+    # confirmed in the app (see render_verify_details_dialog in app.py).
+    # Matches an existing row by admission number and updates it in
+    # place; a member not already listed gets a new row appended instead,
+    # so this never accidentally creates a duplicate.
+    #
+    # Adhoc members (users.role == 'adhoc') go in their own labeled block
+    # BELOW everyone else in this same tab, starting right after
+    # CLIO_ADHOC_MARKER_ROW — a fixed row, not one that moves as the main
+    # section grows, so a new main-section member can never shift the
+    # adhoc block (or anything below it) down.
+    #
+    # Best-effort like every other outside-this-app write here — wrapped
+    # by the caller in the same try/except spirit as send_email, so a
+    # Google Sheets hiccup never blocks saving the member's own details in
+    # our own database.
+    gc = get_sheets_write_client()
+    if gc is None or not admission_no:
+        return
+    ws = gc.open_by_key(CLIO_SHEET_ID).worksheet(CLIO_CURRENT_TAB)
+
+    # Cheap to re-set every time (one small write) rather than reading
+    # first to check if it's already there — keeps this function simple,
+    # and a label that's already correct just gets overwritten with the
+    # same text.
+    ws.update(f"A{CLIO_ADHOC_MARKER_ROW}", [["ADHOC MEMBERS"]])
+    ws.format(f"A{CLIO_ADHOC_MARKER_ROW}:G{CLIO_ADHOC_MARKER_ROW}", {
+        "textFormat": {"bold": True, "fontFamily": "Nunito", "fontSize": 11},
+    })
+
+    if is_adhoc:
+        start_row, end_row = CLIO_ADHOC_MARKER_ROW + 1, ws.row_count
+    else:
+        start_row, end_row = 2, CLIO_ADHOC_MARKER_ROW - 1
+    target_row = _find_or_next_row(ws, admission_no, start_row, end_row)
+
+    # Column layout matches the real per-year tabs exactly: A=Admission
+    # No, B=Name, C=Class, D=Institutional Email, E=Phone 1, F=Phone 2,
+    # G=Personal Email — confirmed by reading the real "2025-2026" tab's
+    # data directly, not just its header row (the header on F is blank).
+    row = [admission_no, name, class_str, email, phone_no, phone_no_2, personal_email]
+    # Writing to an explicit "A{row}:G{row}" range rather than gspread's
+    # append_row — append_row tries to auto-detect where the sheet's
+    # "table" already starts, and on this sheet that guess landed 6
+    # columns off (wrote into G:M instead of A:G), confirmed live.
+    # Computing the row number ourselves sidesteps that guesswork.
+    ws.update(f"A{target_row}:G{target_row}", [row])
 
 
 # Every page was re-fetching whole tables from Supabase on every single

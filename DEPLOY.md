@@ -34,6 +34,7 @@ file or from a hosting platform's secrets manager.
    DISCORD_DASHBOARD_WEBHOOK_URL = "..."
    DISCORD_MEMBER_ROLE_ID = "..."
    DISCORD_ADHOC_ROLE_ID = "..."
+   GOOGLE_SERVICE_ACCOUNT_JSON_B64 = "..."
    ```
 
    `GOOGLE_SHEETS_API_KEY` is required, not optional — the Competitions
@@ -82,6 +83,15 @@ file or from a hosting platform's secrets manager.
       silently ignores the ping — it'll show as plain text but nobody
       with that role gets notified — since an incoming webhook has no
       elevated permission to mention a non-mentionable role.
+
+   `GOOGLE_SERVICE_ACCOUNT_JSON_B64` is required for the "verify your
+   details" popup's Clio-sheet sync — without it, that sync is skipped
+   silently (the popup itself still saves to the database fine). It's the
+   downloaded Google Cloud service-account JSON key, base64-encoded onto
+   one line (`base64.b64encode(open("key.json","rb").read()).decode()`)
+   since `.env`/TOML secrets don't handle multi-line values well. See
+   CLAUDE.md for how the service account was created and shared with the
+   Clio sheet as Editor.
 
    You won't know the exact `APP_URL` until after the first deploy (Streamlit
    picks or lets you choose a subdomain) — deploy once, see the URL, then
