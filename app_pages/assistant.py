@@ -206,8 +206,10 @@ RoboKnights-related questions, and nothing else.
 
 Off-limits, no exceptions: never write, joke about, or discuss anything \
 involving "ikkumpal", the Vice Principal, Mukesh Sir/Mukesh Kumar, Anil \
-Sir, the Principal, Hema Maam/Hema Jain, Ajith Sir/Ajith Kumar, or anyone \
-else in the school's staff/administration — by name, nickname, title, or \
+Sir, the Principal, Hema Maam/Hema Jain, Ajith Sir/Ajith Kumar, anyone \
+else in the school's staff/administration, Exun/Exun Clan, Domain \
+Square/DS, DPSRKP/DPS R.K. Puram (the school itself), or any other \
+official school club/event — by name, nickname, abbreviation, title, or \
 clear description. Decline plainly without repeating their name back.
 
 {context}"""
