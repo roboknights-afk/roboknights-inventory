@@ -27,8 +27,8 @@ import streamlit as st
 from groq import Groq
 
 from shared import (
-    IST, cached_table, get_client, is_meeting_visible, meeting_invited_ids,
-    meeting_invitee_rows, send_email, today_ist,
+    IST, AI_ASSISTANT_BANNED_EMAILS, cached_table, get_client, is_meeting_visible,
+    meeting_invited_ids, meeting_invitee_rows, send_email, today_ist,
 )
 
 GROQ_MODEL = "llama-3.3-70b-versatile"
@@ -52,6 +52,10 @@ COMPOUND_MODEL = "groq/compound"
 current_user_id = st.session_state.current_user_id
 current_user_name = st.session_state.current_user_name
 is_host = st.session_state.is_host
+
+if st.session_state.auth_user["email"] in AI_ASSISTANT_BANNED_EMAILS:
+    st.error(":material/block: AI Assistant access has been restricted for your account.")
+    st.stop()
 
 st.title(":material/smart_toy: AI Assistant")
 st.caption(

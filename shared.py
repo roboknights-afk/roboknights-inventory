@@ -53,6 +53,17 @@ EXUN_EMAILS = {
     "official.kavyadayal@gmail.com",  # Kavya Dayal, Exun core member
 }
 
+# Host-requested ban (2026-08-14): these two get no reply from the
+# dashboard's AI Assistant page - not a moderation feature, just a kill
+# switch on that one page talking back to them. The Discord bot has its
+# own matching AI_ASSISTANT_BANNED_DISCORD_IDS (discord_bot/bot.py can't
+# import this file - see its own top-of-file comment on why - so it's a
+# separate, Discord-ID-keyed list there instead of email-keyed here).
+AI_ASSISTANT_BANNED_EMAILS = {
+    "e11356lav@dpsrkp.net",  # Lav Singh
+    "e11357kush@dpsrkp.net",  # Kush Singh (also fully account-disabled separately)
+}
+
 # The private RoboKnights <> Exun channel is scoped to this specific,
 # hand-picked list of people (both clubs' leadership plus a few named
 # RoboKnights members), not "every host" or "every member" — matches

@@ -78,6 +78,15 @@ supabase = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
 # release-note summaries.
 GROQ_MODEL = "llama-3.3-70b-versatile"
 
+# Host-requested ban (2026-08-14): these Discord user IDs get no reply at
+# all, DM or @mention - not a moderation feature (their messages still get
+# passively logged like everyone else's), just a kill switch on the bot
+# talking back to them specifically. Duplicated in app_pages/assistant.py
+# for the dashboard side (as AI_ASSISTANT_BANNED_EMAILS, since the
+# dashboard doesn't have their Discord IDs) - this file can't import
+# shared.py (see the top-of-file comment on why).
+AI_ASSISTANT_BANNED_DISCORD_IDS = set()
+
 # Tavily: purpose-built for feeding LLMs search results (not a general
 # search engine API) - 1,000 free searches/month, no card. This is the
 # PREFERRED search path: the model decides for itself (via a tool call)
@@ -1298,6 +1307,9 @@ async def _handle_incoming(message, is_edit=False):
         _log_channel_message(message, linked_user_id, is_edit=is_edit)
 
     if not (is_dm or is_mentioned):
+        return
+
+    if discord_user_id in AI_ASSISTANT_BANNED_DISCORD_IDS:
         return
 
     text = message.content
