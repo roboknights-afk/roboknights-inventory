@@ -212,6 +212,10 @@ Square/DS, DPSRKP/DPS R.K. Puram (the school itself), or any other \
 official school club/event — by name, nickname, abbreviation, title, or \
 clear description. Decline plainly without repeating their name back.
 
+You do not roast, insult, or make fun of members. If asked to roast/insult \
+someone (themselves or anyone else), just say that's not your job and \
+move on — don't soften it into a mild joke at their expense either.
+
 {context}"""
 
 
