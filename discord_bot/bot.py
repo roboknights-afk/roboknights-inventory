@@ -1291,9 +1291,33 @@ async def on_ready():
     print("Backfill complete.")
 
 
+async def _is_reply_to_bot(message):
+    # A Discord "reply" doesn't add the bot to message.mentions unless the
+    # replier also left the ping toggle on, so is_mentioned alone misses
+    # plain replies - this catches those too, including replies to
+    # ANNOUNCEMENT-STYLE messages, which aren't sent by the real bot
+    # account at all but by an Incoming Webhook impersonating it (see
+    # send_discord_message/DISCORD_BOT_USERNAME in shared.py) - so a
+    # webhook message whose display name matches counts as "the bot" too,
+    # not just messages from client.user.id.
+    ref = message.reference
+    if not ref:
+        return False
+    resolved = ref.resolved
+    if resolved is None or isinstance(resolved, discord.DeletedReferencedMessage):
+        try:
+            resolved = await message.channel.fetch_message(ref.message_id)
+        except Exception:
+            return False
+    if resolved.author.id == client.user.id:
+        return True
+    return bool(resolved.webhook_id) and resolved.author.name == "roboknightsbot"
+
+
 async def _handle_incoming(message, is_edit=False):
     is_dm = isinstance(message.channel, discord.DMChannel)
     is_mentioned = client.user in message.mentions
+    is_reply_to_bot = not is_dm and await _is_reply_to_bot(message)
 
     discord_user_id = str(message.author.id)
     discord_channel_id = str(message.channel.id)
@@ -1308,7 +1332,7 @@ async def _handle_incoming(message, is_edit=False):
         )
         _log_channel_message(message, linked_user_id, is_edit=is_edit)
 
-    if not (is_dm or is_mentioned):
+    if not (is_dm or is_mentioned or is_reply_to_bot):
         return
 
     if discord_user_id in AI_ASSISTANT_BANNED_DISCORD_IDS:
