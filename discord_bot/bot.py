@@ -85,7 +85,9 @@ GROQ_MODEL = "llama-3.3-70b-versatile"
 # for the dashboard side (as AI_ASSISTANT_BANNED_EMAILS, since the
 # dashboard doesn't have their Discord IDs) - this file can't import
 # shared.py (see the top-of-file comment on why).
-AI_ASSISTANT_BANNED_DISCORD_IDS = set()
+AI_ASSISTANT_BANNED_DISCORD_IDS = {
+    "1289252405812400169",  # Lav Singh and Kush Singh share this Discord account
+}
 
 # Tavily: purpose-built for feeding LLMs search results (not a general
 # search engine API) - 1,000 free searches/month, no card. This is the
