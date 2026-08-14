@@ -385,12 +385,25 @@ if prompt:
                             + (response.choices[0].message.content or "I didn't get a response — try asking again.")
                         )
                     except Exception as e2:
-                        reply = f"Sorry, I couldn't get a response right now ({e2})."
+                        # Members get a short, human sentence - NOT the raw
+                        # provider error. Dumping that here (what this did
+                        # before) pasted the org id and a billing URL
+                        # straight into the chat - same problem the Discord
+                        # bot already fixed for its own errors. The full
+                        # detail still goes to the server logs (Streamlit
+                        # Cloud's "Manage app" logs), where it's actually
+                        # useful for debugging.
+                        print(f"AI Assistant error (web search retry): {e2!r}", flush=True)
+                        reply = (
+                            "I'm maxed out on my daily AI usage limit right now, so I can't "
+                            "answer this one. It resets on its own - try again a bit later."
+                        )
                 else:
-                    # Same best-effort spirit as the rest of this app: a
-                    # free-tier rate limit or network hiccup shouldn't crash
-                    # the page, just show up as a plain inline message.
-                    reply = f"Sorry, I couldn't get a response right now ({e})."
+                    print(f"AI Assistant error: {e!r}", flush=True)
+                    reply = (
+                        "I'm maxed out on my daily AI usage limit right now, so I can't "
+                        "answer this one. It resets on its own - try again a bit later."
+                    )
             st.markdown(reply)
             _render_sources(sources)
     st.session_state.assistant_messages.append({"role": "assistant", "content": reply, "sources": sources})
