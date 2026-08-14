@@ -27,8 +27,8 @@ import streamlit as st
 from groq import Groq
 
 from shared import (
-    IST, AI_ASSISTANT_BANNED_EMAILS, cached_table, get_client, is_meeting_visible,
-    meeting_invited_ids, meeting_invitee_rows, send_email, today_ist,
+    IST, AI_ASSISTANT_BANNED_EMAILS, ROAST_REFUSAL, _roast_request, cached_table, get_client,
+    is_meeting_visible, meeting_invited_ids, meeting_invitee_rows, send_email, today_ist,
 )
 
 GROQ_MODEL = "llama-3.3-70b-versatile"
@@ -354,6 +354,19 @@ if prompt:
     web_search_enabled = st.session_state.assistant_web_search
     with st.chat_message("assistant"):
         sources = []
+        # Hard block, before any model call — the same check the Discord
+        # bot uses, for the same reason: a system-prompt rule is an
+        # instruction a model can ignore, and one running on a weak
+        # fallback provider demonstrably did. See ROAST_REQUEST_PATTERNS
+        # in discord_bot/bot.py for why these specific words (and why
+        # ambiguous ones like "burn"/"flame" are left out).
+        if _roast_request(prompt):
+            st.markdown(ROAST_REFUSAL)
+            st.session_state.assistant_messages.append(
+                {"role": "assistant", "content": ROAST_REFUSAL, "sources": []}
+            )
+            _log_chat("assistant", ROAST_REFUSAL)
+            st.stop()
         with st.spinner("Searching and thinking…" if web_search_enabled else "Thinking…"):
             recent_messages = st.session_state.assistant_messages[-MAX_HISTORY_MESSAGES:]
             messages = [

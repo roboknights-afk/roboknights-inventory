@@ -65,6 +65,50 @@ AI_ASSISTANT_BANNED_EMAILS = {
     "e11357kush@dpsrkp.net",  # Kush Singh (also fully account-disabled separately)
 }
 
+# Hard, code-level block on roast/insult requests, checked before any
+# model call. The no-roasting rule also lives in both system prompts, but
+# a prompt rule is only an instruction a model can choose to ignore -
+# confirmed live 2026-08-15 that members got real roasts anyway by
+# framing it as "for testing purposes", because replies that day were
+# falling through to the weakest fallback provider. This check can't be
+# talked around, and costs nothing to run.
+#
+# Duplicated in discord_bot/bot.py (which can't import this module - see
+# its top-of-file comment, same reason send_due_reminders.py duplicates
+# send_email). Keep the two lists in sync. That file's
+# ROAST_REQUEST_PATTERNS comment explains why deliberately ambiguous
+# words ("burn" as in a bootloader, "flame" as in the sensor) are left
+# out rather than risking a false refusal on a real build question.
+ROAST_REQUEST_PATTERNS = (
+    r"\broast(s|ed|ing|er)?\b",
+    r"\binsult(s|ed|ing)?\b",
+    r"\bdiss(ing)?\b",
+    r"\bbully(ing)?\b",
+    r"\bclown\b",
+    r"\bhumiliat(e|es|ing)\b",
+    r"\bridicul(e|es|ing)\b",
+    r"\bbelittl(e|es|ing)\b",
+    r"\bdemean(ing)?\b",
+    r"\bgaali\b",
+    r"\bbe[iy]?zzat[iy]\b",
+    r"make fun of",
+    r"poke fun",
+    r"trash talk",
+    r"talk (shit|trash)",
+    r"say something (mean|nasty|rude|bad)",
+    r"be (mean|brutal|savage|harsh|rude) (to|about)",
+    r"who('s| is) the (worst|most useless|laziest)",
+)
+ROAST_REFUSAL = (
+    "That's not my job — I don't roast or take shots at anyone here. "
+    "Happy to help with club stuff or any actual question though."
+)
+
+
+def _roast_request(text):
+    lowered = text.lower()
+    return any(re.search(p, lowered) for p in ROAST_REQUEST_PATTERNS)
+
 # The private RoboKnights <> Exun channel is scoped to this specific,
 # hand-picked list of people (both clubs' leadership plus a few named
 # RoboKnights members), not "every host" or "every member" — matches

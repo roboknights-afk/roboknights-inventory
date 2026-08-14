@@ -41,6 +41,7 @@
 
 import json
 import os
+import re
 import time
 from collections import defaultdict, deque
 from datetime import datetime, timedelta, timezone
@@ -357,6 +358,54 @@ def _instant_reply(text):
     if cleaned in THANKS:
         return THANKS_REPLY
     return None
+
+
+# Hard, code-level block on roast/insult requests - deliberately NOT left
+# to the system prompt alone. Confirmed live (2026-08-15): with the
+# no-roasting rule already in the prompt, members still got real roasts
+# out of the bot by framing it as "for testing purposes" / "we want to
+# test", because that day's replies were coming from the weakest
+# fallback model (OpenRouter's free gemma, after Groq's daily budget ran
+# out), which follows system instructions far less reliably than the
+# primary one. A prompt rule is an instruction a model can choose to
+# ignore; this check runs BEFORE any provider is called, so it behaves
+# identically no matter which one would have answered and no amount of
+# prompt framing gets past it. Costs zero tokens, same as GREETINGS.
+#
+# Substring matching, not the whole-message exact match GREETINGS uses -
+# "roast X" is a request no matter what surrounds it. Words that are
+# genuinely ambiguous in a robotics club are deliberately left OUT
+# ("burn" as in burning a bootloader, "flame" as in a flame sensor,
+# "cooked", "destroy"), so a real build question can never trip this.
+ROAST_REQUEST_PATTERNS = (
+    r"\broast(s|ed|ing|er)?\b",
+    r"\binsult(s|ed|ing)?\b",
+    r"\bdiss(ing)?\b",
+    r"\bbully(ing)?\b",
+    r"\bclown\b",
+    r"\bhumiliat(e|es|ing)\b",
+    r"\bridicul(e|es|ing)\b",
+    r"\bbelittl(e|es|ing)\b",
+    r"\bdemean(ing)?\b",
+    r"\bgaali\b",
+    r"\bbe[iy]?zzat[iy]\b",
+    r"make fun of",
+    r"poke fun",
+    r"trash talk",
+    r"talk (shit|trash)",
+    r"say something (mean|nasty|rude|bad)",
+    r"be (mean|brutal|savage|harsh|rude) (to|about)",
+    r"who('s| is) the (worst|most useless|laziest)",
+)
+ROAST_REFUSAL = (
+    "That's not my job - I don't roast or take shots at anyone here. "
+    "Happy to help with club stuff or any actual question though."
+)
+
+
+def _roast_request(text):
+    lowered = text.lower()
+    return any(re.search(p, lowered) for p in ROAST_REQUEST_PATTERNS)
 
 
 # Stops one person burning the shared budget in a burst. The same log
@@ -1382,13 +1431,23 @@ async def _handle_incoming(message, is_edit=False):
 
     _log_chat("user", text, discord_user_id, discord_channel_id, linked_user_id)
 
-    # Both checks run BEFORE any API call, so neither costs a token.
+    # All three checks run BEFORE any API call, so none costs a token.
     canned = _instant_reply(text)
     if canned:
         history[conversation_key].append({"role": "user", "content": text})
         history[conversation_key].append({"role": "assistant", "content": canned})
         _log_chat("assistant", canned, discord_user_id, discord_channel_id, linked_user_id)
         await _send(message.channel, canned)
+        return
+
+    # Deliberately BEFORE the rate-limit check: refusing costs nothing, so
+    # a roast request shouldn't eat someone's hourly allowance. The turn
+    # is kept out of `history` entirely too - leaving a rejected request
+    # in the conversation gives the next reply something to build on
+    # ("about that roast..."), which is exactly what we don't want.
+    if _roast_request(text):
+        _log_chat("assistant", ROAST_REFUSAL, discord_user_id, discord_channel_id, linked_user_id)
+        await _send(message.channel, ROAST_REFUSAL)
         return
 
     if _rate_limited(discord_user_id):
