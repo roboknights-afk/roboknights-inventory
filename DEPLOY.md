@@ -32,6 +32,7 @@ file or from a hosting platform's secrets manager.
    DISCORD_COMPETITIONS_WEBHOOK_URL = "..."
    DISCORD_EXUN_WEBHOOK_URL = "..."
    DISCORD_DASHBOARD_WEBHOOK_URL = "..."
+   DISCORD_GENERAL_WEBHOOK_URL = "..."
    DISCORD_MEMBER_ROLE_ID = "..."
    DISCORD_ADHOC_ROLE_ID = "..."
    GOOGLE_SERVICE_ACCOUNT_JSON_B64 = "..."
@@ -65,6 +66,13 @@ file or from a hosting platform's secrets manager.
    repo secret (Settings → Secrets and variables → Actions), not only in
    Streamlit Cloud. Adding it to Streamlit Cloud is still worth doing — that's
    what lets a host edit or delete those posts from the Discord Messages page.
+
+   `DISCORD_GENERAL_WEBHOOK_URL` is a FOURTH channel (2026-08-14, added for
+   an ad-hoc host message to #general) — same setup as the others, its own
+   Incoming Webhook from #general's Settings → Integrations → Webhooks. Not
+   currently wired into the Discord Messages page's tabs (only
+   competitions/exun_rk/dashboard have a UI tab there); it's usable via
+   `send_discord_message(..., channel="general")` directly.
    See "Dashboard update notices" below.
 
    `DISCORD_MEMBER_ROLE_ID` and `DISCORD_ADHOC_ROLE_ID` are also optional —
