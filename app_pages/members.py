@@ -44,7 +44,7 @@ GRADE_OPTIONS = [7, 8, 9, 10, 11, 12]
 # and set them by hand — not something to force a choice on immediately.
 STANDING_LABELS = {"core_member": "Core member", "member": "Member", "adhoc": "Ad hoc", None: ""}
 STANDING_VALUES = {v: k for k, v in STANDING_LABELS.items()}
-m1, m2, m3 = st.columns(3)
+m1, m2, m3, m4 = st.columns(4)
 m1.metric("Members", len(users), border=True)
 m2.metric(
     "Grades represented", len({u.get("grade") for u in users if u.get("grade")}), border=True
@@ -58,6 +58,12 @@ m3.metric(
     ),
     border=True,
     help="Students with at least one blank field (staff accounts aren't expected to have grade/section/admission no.)",
+)
+m4.metric(
+    "Verified",
+    sum(1 for u in users if u.get("details_verified")),
+    border=True,
+    help="Students who've confirmed their details in the mandatory \"Verify your details\" popup.",
 )
 
 with st.expander(":material/info: About this page"):
@@ -128,6 +134,7 @@ else:
             "Admission no.": u.get("admission_no") or "",
             "Phone no.": u.get("phone_no") or "",
             "Discord ID": u.get("discord_user_id") or "",
+            "Verified": bool(u.get("details_verified")),
         }
         for u in visible_users
     ]
@@ -162,6 +169,12 @@ else:
                     "Discord ID", width="small",
                     help="Their numeric Discord User ID — normally self-linked on the Home page.",
                 ),
+                "Verified": st.column_config.CheckboxColumn(
+                    "Verified", width="small",
+                    help="Whether they've confirmed their details in the mandatory popup. "
+                         "Uncheck to make the popup reappear for them next login (e.g. so "
+                         "they can add something they missed).",
+                ),
             },
             key="members_editor",
         )
@@ -192,6 +205,8 @@ else:
                         updates["phone_no"] = edited["Phone no."].strip()
                     if edited["Discord ID"].strip() != (original.get("discord_user_id") or ""):
                         updates["discord_user_id"] = edited["Discord ID"].strip() or None
+                    if edited["Verified"] != bool(original.get("details_verified")):
+                        updates["details_verified"] = edited["Verified"]
 
                     if updates:
                         client.table("users").update(updates).eq("user_id", original["user_id"]).execute()

@@ -103,9 +103,13 @@ CLIO_CURRENT_TAB = "RK Verify (Test)"
 # new main-section member never has to shift the adhoc block down (which
 # would risk corrupting it, or any real data the sheet might have further
 # right in columns beyond G) — same reasoning as picking an explicit
-# target row over gspread's append_row earlier. 500 leaves room for ~490
-# main members, comfortably more than this club has ever had.
-CLIO_ADHOC_MARKER_ROW = 500
+# target row over gspread's append_row earlier. Moved from 500 to 50
+# (2026-08-14, student's explicit call) — leaves room for ~47 main
+# members (rows 2-49); the roster was 30 non-adhoc members at the time
+# of this change, so there's headroom for now but nowhere near the ~490
+# the old row 500 gave. Revisit this number if the main section ever
+# gets close to filling it.
+CLIO_ADHOC_MARKER_ROW = 50
 
 # A fast, live alternative to the Queries page for something urgent — a
 # plain wa.me link needs no API, unlike automated WhatsApp notifications
