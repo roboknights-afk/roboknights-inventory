@@ -82,6 +82,13 @@ with st.expander(":material/info: About this page"):
 if not users:
     st.caption("No members yet.")
 else:
+    disabled_users = [u for u in users if u.get("is_disabled")]
+    if disabled_users:
+        st.warning(
+            "**Account(s) disabled:** " + ", ".join(u["name"] for u in disabled_users)
+            + " — blocked from logging in until re-enabled below."
+        )
+
     # Search + grade + standing filters above the table.
     search_col, grade_col, standing_col = st.columns([2, 1, 1], vertical_alignment="center")
     member_search = search_col.text_input(
@@ -135,6 +142,8 @@ else:
             "Phone no.": u.get("phone_no") or "",
             "Discord ID": u.get("discord_user_id") or "",
             "Verified": bool(u.get("details_verified")),
+            "Note": "⚠️ Account disabled" if u.get("is_disabled") else "",
+            "Disabled": bool(u.get("is_disabled")),
         }
         for u in visible_users
     ]
@@ -175,6 +184,13 @@ else:
                          "Uncheck to make the popup reappear for them next login (e.g. so "
                          "they can add something they missed).",
                 ),
+                "Note": st.column_config.TextColumn("Note", width="medium", disabled=True),
+                "Disabled": st.column_config.CheckboxColumn(
+                    "Disabled", width="small",
+                    help="Blocks them from logging in entirely (they see \"account disabled, "
+                         "contact the admin\"). Doesn't touch their data — check again to "
+                         "re-enable.",
+                ),
             },
             key="members_editor",
         )
@@ -207,6 +223,8 @@ else:
                         updates["discord_user_id"] = edited["Discord ID"].strip() or None
                     if edited["Verified"] != bool(original.get("details_verified")):
                         updates["details_verified"] = edited["Verified"]
+                    if edited["Disabled"] != bool(original.get("is_disabled")):
+                        updates["is_disabled"] = edited["Disabled"]
 
                     if updates:
                         client.table("users").update(updates).eq("user_id", original["user_id"]).execute()

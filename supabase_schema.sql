@@ -461,3 +461,10 @@ alter table users add column if not exists details_verified boolean not null def
 -- and sync the same fields the real roster expects.
 alter table users add column if not exists phone_no_2 text;
 alter table users add column if not exists personal_email text;
+
+-- Account disable (2026-08-14): a host-flippable kill switch, separate
+-- from deleting a member's profile entirely. A disabled account is
+-- blocked at the login gate in app.py (checked on every page load, not
+-- just at sign-in, so an already-open session gets kicked out on its
+-- next rerun too) and flagged with a note on the Members page.
+alter table users add column if not exists is_disabled boolean not null default false;

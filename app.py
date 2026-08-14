@@ -1095,6 +1095,21 @@ if st.session_state.auth_user is None:
         show_login_signup(client)
     st.stop()
 
+# --- Disabled account gate -------------------------------------------------
+# Checked on every page load (not just at sign-in), so a host flipping
+# "Disabled" on someone already mid-session kicks them out on their very
+# next click, not just their next fresh login. Deliberately separate from
+# deleting a member's profile (Members page) — this is reversible and
+# doesn't touch their data.
+_disabled_row = next(
+    (u for u in cached_table("users") if u["user_id"] == st.session_state.auth_user["id"]), None
+)
+if _disabled_row and _disabled_row.get("is_disabled"):
+    st.session_state.auth_user = None
+    _clear_remember_cookie()
+    st.error("This account has been disabled. Please contact the admin.")
+    st.stop()
+
 # --- Gear splash ---------------------------------------------------------
 # Plays exactly once per login: the gear spins up in the center, then the
 # overlay fades away to reveal the app. pointer-events: none, so even while
