@@ -1381,7 +1381,7 @@ components.html("""
             pill.id = 'rk-feedback-fab';
             pill.textContent = '🐞 Report an issue';
             pill.style.cssText = `
-                position: fixed; right: 24px; bottom: 96px; z-index: 9998;
+                position: fixed; right: 24px; bottom: 24px; z-index: 9998;
                 border: none; border-radius: 999px; cursor: pointer;
                 padding: 12px 22px; font-weight: 700; font-size: 0.92rem;
                 font-family: inherit;
