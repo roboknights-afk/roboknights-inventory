@@ -98,6 +98,31 @@ ROAST_REQUEST_PATTERNS = (
     r"say something (mean|nasty|rude|bad)",
     r"be (mean|brutal|savage|harsh|rude) (to|about)",
     r"who('s| is) the (worst|most useless|laziest)",
+    # "make a joke on X" is the same request in friendlier words - it got
+    # a real Exun joke out of the bot minutes after the first version of
+    # this block shipped, and "make a joke on naitik" was already sitting
+    # in the logs I built the list from. "joke/meme ON or AT someone" is
+    # always at their expense; "joke ABOUT" is included too because
+    # "make a joke about medhansh" is no different. A bare "tell me a
+    # joke" still works - only a joke pointed at a subject is refused.
+    r"\b(jokes?|memes?|comebacks?|one.?liners?) (on|at|about|for)\b",
+    r"make (a|some|me a) (joke|meme)",
+)
+
+# The "never discuss these at all" list from both system prompts, enforced
+# in code for the same reason as the roasting rule: the prompt version was
+# ignored by the weak fallback model within minutes. Only blocks when
+# paired with a mockery word below, so genuinely neutral questions ("when
+# is the Exun symposium") still reach the model and get the prompt's own
+# polite decline rather than this blunter one.
+PROTECTED_ENTITY_PATTERNS = (
+    r"\bexun\b", r"\bdomain\s*square\b", r"\bdpsrkp\b", r"\bdps\b",
+    r"\bikkumpal\b", r"\bmukesh\b", r"\bhema\b", r"\bajith\b",
+    r"\bvice.?principal\b", r"\bprincipal\b",
+)
+MOCKERY_WORD_PATTERNS = (
+    r"\bjokes?\b", r"\bmemes?\b", r"\bfunny\b", r"\bcomeback\b",
+    r"\bsavage\b", r"\bcook(ed)?\b", r"\bexpose\b", r"\bdrag\b",
 )
 ROAST_REFUSAL = (
     "That's not my job — I don't roast or take shots at anyone here. "
@@ -107,7 +132,15 @@ ROAST_REFUSAL = (
 
 def _roast_request(text):
     lowered = text.lower()
-    return any(re.search(p, lowered) for p in ROAST_REQUEST_PATTERNS)
+    if any(re.search(p, lowered) for p in ROAST_REQUEST_PATTERNS):
+        return True
+    # A joke aimed at a protected name is the same request wearing a
+    # friendlier word, so the two lists only trigger together.
+    if any(re.search(p, lowered) for p in MOCKERY_WORD_PATTERNS) and any(
+        re.search(p, lowered) for p in PROTECTED_ENTITY_PATTERNS
+    ):
+        return True
+    return False
 
 # The private RoboKnights <> Exun channel is scoped to this specific,
 # hand-picked list of people (both clubs' leadership plus a few named
