@@ -8,6 +8,48 @@ Members track who owns which parts and borrow parts from each other with an
 approval step. Example: Aryamman needs Naitik's P219 motor → requests it →
 Naitik gets notified → approves → Aryamman is told where to collect it.
 
+## Scale and effort so far (measured 2026-08-16)
+
+Recorded because it's asked for periodically and is easy to get wrong from
+memory. All of it is derived from the real commit history, not estimated
+from recollection.
+
+| Measure | Value |
+| --- | --- |
+| First commit | 2026-07-12, 19:33 |
+| Most recent at time of measuring | 2026-08-16, 02:47 |
+| Calendar span | 34 days |
+| Days with any commit | 24 |
+| Distinct work sessions | 40 |
+| Commits | 185 |
+| Commits between 11pm and 4am | 86 (46%) |
+
+**Hands-on time: ~68 hours by commit windows, realistically 90-120 hours
+in total.** The 68 comes from summing each session's first-to-last commit
+span plus 25 minutes lead-in, where a session is any run of commits less
+than 90 minutes apart. Treat it as a floor, because it structurally cannot
+see:
+
+- third-party console work, which leaves no commits at all — the Supabase
+  project, Brevo sender verification and the SPF/DKIM chase, the Google
+  Cloud service account, four separate secret stores, Discord webhooks and
+  the bot application, Railway, Streamlit Cloud, GitHub Actions secrets,
+  the Meta/WhatsApp research
+- live testing and verification, which house rule 4 requires for every
+  chunk and which never commits
+- waiting on deploys, email delivery, and quota resets
+- sessions that ended without committing anything
+
+It also doesn't count club-side work with no git trace at all (building
+the Clio sheet, chasing members for their details, the E2C spreadsheet
+itself).
+
+To recompute later: `git log --date=format:'%Y-%m-%d %H:%M' --pretty="%ad"`,
+sort ascending, group with a 90-minute gap threshold, sum the spans. State
+it as "over 100 hours across 24 days" rather than a precise figure — the
+precision isn't really there, and the two numbers worth quoting are the
+ones git can actually prove: **185 commits across 24 active days**.
+
 ## Stack (don't add to this without asking first)
 
 Python 3, Streamlit for the UI, Supabase (hosted Postgres + Auth) for storage
