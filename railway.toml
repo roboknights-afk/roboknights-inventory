@@ -1,0 +1,23 @@
+# Railway config for the Discord bot service (roboknights-discord-bot).
+#
+# Why this file exists: `railway up` uploads the whole repo, not just the
+# directory you run it from — so Railway saw the repo root, found app.py,
+# and started the STREAMLIT DASHBOARD instead of the bot, which then
+# crash-looped (app.py expects a logged-in session). The service also has
+# no Root Directory set, so nothing else pointed it at discord_bot/.
+#
+# Pinning the commands here makes the deploy independent of which folder
+# `railway up` was run from, which is the part that actually kept going
+# wrong. discord_bot/Procfile still exists for running the bot locally.
+#
+# NOTE: this file only affects Railway. Streamlit Cloud (which serves
+# app.py from this same repo) ignores it completely.
+
+[build]
+builder = "RAILPACK"
+buildCommand = "pip install -r discord_bot/requirements.txt"
+
+[deploy]
+startCommand = "python discord_bot/bot.py"
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 10
