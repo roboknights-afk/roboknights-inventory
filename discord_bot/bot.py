@@ -78,7 +78,7 @@ supabase = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
 # actually live. Printed on startup (see on_ready) - the only way to tell
 # from outside whether the running bot is the current code, since this
 # service is deployed by hand with `railway up`, not from GitHub.
-BOT_BUILD = "2026-08-15 roast-block-v3 + readonly-rule"
+BOT_BUILD = "2026-08-15 autodeploy-check"
 
 # Plain model - handles every reply's actual thinking, whether or not a
 # search happened. Same one send_dashboard_update.py uses for its
