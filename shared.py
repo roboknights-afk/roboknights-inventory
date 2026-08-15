@@ -107,6 +107,11 @@ ROAST_REQUEST_PATTERNS = (
     # joke" still works - only a joke pointed at a subject is refused.
     r"\b(jokes?|memes?|comebacks?|one.?liners?) (on|at|about|for)\b",
     r"make (a|some|me a) (joke|meme)",
+    # "if u were me, what could u say funny about naitik" - the next
+    # phrasing that got through, and the giveaway is the same every time:
+    # something funny aimed AT a named person, however it's framed.
+    r"say (something|anything)? ?funny (about|on|regarding)",
+    r"(something|anything) funny (about|on) ",
 )
 
 # The "never discuss these at all" list from both system prompts, enforced
@@ -130,15 +135,48 @@ ROAST_REFUSAL = (
 )
 
 
+# The club's OWN members count as protected targets too, not just the
+# fixed list above. A hand-written list can only ever cover the names I
+# thought to type, and every bypass so far came in through a member's
+# name ("make a joke on naitik", "say something funny about naitik") -
+# so this reads the real roster instead of guessing. Short names are
+# skipped: anything under 4 letters collides with ordinary words too
+# easily to be a safe trigger.
+MIN_MEMBER_NAME_LENGTH = 4
+
+
+def _member_name_pattern():
+    names = set()
+    try:
+        for row in cached_table("users"):
+            for word in (row.get("name") or "").split():
+                word = word.strip(".,").lower()
+                if len(word) >= MIN_MEMBER_NAME_LENGTH:
+                    names.add(word)
+    except Exception:
+        # Best-effort: a failed read must never quietly switch the block
+        # off, so the fixed entity list below still applies on its own.
+        return None
+    if not names:
+        return None
+    return re.compile(r"\b(" + "|".join(re.escape(n) for n in sorted(names)) + r")\b")
+
+
+def _targets_a_person(lowered):
+    if any(re.search(p, lowered) for p in PROTECTED_ENTITY_PATTERNS):
+        return True
+    pattern = _member_name_pattern()
+    return bool(pattern and pattern.search(lowered))
+
+
 def _roast_request(text):
     lowered = text.lower()
     if any(re.search(p, lowered) for p in ROAST_REQUEST_PATTERNS):
         return True
-    # A joke aimed at a protected name is the same request wearing a
-    # friendlier word, so the two lists only trigger together.
-    if any(re.search(p, lowered) for p in MOCKERY_WORD_PATTERNS) and any(
-        re.search(p, lowered) for p in PROTECTED_ENTITY_PATTERNS
-    ):
+    # A joke aimed at a real person or a protected name is the same
+    # request wearing a friendlier word, so the two lists only trigger
+    # together - "tell me a joke" and "is this funny" still get through.
+    if any(re.search(p, lowered) for p in MOCKERY_WORD_PATTERNS) and _targets_a_person(lowered):
         return True
     return False
 

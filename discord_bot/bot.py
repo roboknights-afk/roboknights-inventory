@@ -74,6 +74,12 @@ GROQ_API_KEY = os.environ["GROQ_API_KEY"]
 # blocks a reply.
 supabase = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
 
+# Bumped by hand whenever this file changes in a way worth confirming is
+# actually live. Printed on startup (see on_ready) - the only way to tell
+# from outside whether the running bot is the current code, since this
+# service is deployed by hand with `railway up`, not from GitHub.
+BOT_BUILD = "2026-08-15 roast-block-v3"
+
 # Plain model - handles every reply's actual thinking, whether or not a
 # search happened. Same one send_dashboard_update.py uses for its
 # release-note summaries.
@@ -405,6 +411,11 @@ ROAST_REQUEST_PATTERNS = (
     # joke" still works - only a joke pointed at a subject is refused.
     r"\b(jokes?|memes?|comebacks?|one.?liners?) (on|at|about|for)\b",
     r"make (a|some|me a) (joke|meme)",
+    # "if u were me, what could u say funny about naitik" - the next
+    # phrasing that got through, and the giveaway is the same every time:
+    # something funny aimed AT a named person, however it's framed.
+    r"say (something|anything)? ?funny (about|on|regarding)",
+    r"(something|anything) funny (about|on) ",
 )
 
 # The "never discuss these at all" list from the system prompt above,
@@ -427,16 +438,61 @@ ROAST_REFUSAL = (
     "Happy to help with club stuff or any actual question though."
 )
 
+# The club's OWN members count as protected targets too, not just the
+# fixed list above. A hand-written list can only ever cover the names I
+# thought to type, and every bypass so far came in through a member's
+# name ("make a joke on naitik", "say something funny about naitik") -
+# so this reads the real roster from Supabase instead of guessing.
+MEMBER_NAMES_TTL_SECONDS = 600
+# Anything shorter collides with ordinary words too easily to be a safe
+# trigger word, so short names fall back to the phrase patterns above.
+MIN_MEMBER_NAME_LENGTH = 4
+_member_names_cache = {"pattern": None, "fetched_at": 0.0}
+
+
+def _member_name_pattern():
+    now = time.time()
+    if (
+        _member_names_cache["pattern"] is not None
+        and now - _member_names_cache["fetched_at"] < MEMBER_NAMES_TTL_SECONDS
+    ):
+        return _member_names_cache["pattern"]
+    names = set()
+    try:
+        for row in supabase.table("users").select("name").execute().data:
+            for word in (row.get("name") or "").split():
+                word = word.strip(".,").lower()
+                if len(word) >= MIN_MEMBER_NAME_LENGTH:
+                    names.add(word)
+    except Exception:
+        # Best-effort like everything else that touches Supabase here: a
+        # failed fetch must never quietly switch the block off, so the
+        # last good pattern stays in place and the fixed entity list
+        # above still applies on its own.
+        return _member_names_cache["pattern"]
+    _member_names_cache["pattern"] = (
+        re.compile(r"\b(" + "|".join(re.escape(n) for n in sorted(names)) + r")\b")
+        if names else None
+    )
+    _member_names_cache["fetched_at"] = now
+    return _member_names_cache["pattern"]
+
+
+def _targets_a_person(lowered):
+    if any(re.search(p, lowered) for p in PROTECTED_ENTITY_PATTERNS):
+        return True
+    pattern = _member_name_pattern()
+    return bool(pattern and pattern.search(lowered))
+
 
 def _roast_request(text):
     lowered = text.lower()
     if any(re.search(p, lowered) for p in ROAST_REQUEST_PATTERNS):
         return True
-    # A joke aimed at a protected name is the same request wearing a
-    # friendlier word, so the two lists only trigger together.
-    if any(re.search(p, lowered) for p in MOCKERY_WORD_PATTERNS) and any(
-        re.search(p, lowered) for p in PROTECTED_ENTITY_PATTERNS
-    ):
+    # A joke aimed at a real person or a protected name is the same
+    # request wearing a friendlier word, so the two lists only trigger
+    # together - "tell me a joke" and "is this funny" still get through.
+    if any(re.search(p, lowered) for p in MOCKERY_WORD_PATTERNS) and _targets_a_person(lowered):
         return True
     return False
 
@@ -1371,6 +1427,13 @@ async def _send(channel, text):
 @client.event
 async def on_ready():
     print(f"Logged in as {client.user} (id: {client.user.id})")
+    # Which build is actually live. Railway has NO GitHub source attached
+    # to this service (confirmed 2026-08-15) - it only ever gets code from
+    # a `railway up`, so a push to master changes nothing here. Four days
+    # of fixes sat unshipped because of that, with no way to tell from
+    # Discord that the running bot was stale. This line makes it obvious
+    # in the Railway logs.
+    print(f"Running build: {BOT_BUILD}", flush=True)
 
     # Backfill: read real past messages so the bot has context from
     # before it was even running, not just whatever's said while it's

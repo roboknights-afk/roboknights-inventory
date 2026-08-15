@@ -244,8 +244,28 @@ summaries already use — no new AI account needed.
      the Keys page. Which models are free rotates over time — if the one
      in `bot.py` (`OPENROUTER_MODEL`) starts 404ing, check
      `curl https://openrouter.ai/api/v1/models` for current `:free` ids.
-5. Railway auto-deploys on every push to `master`, same as Streamlit Cloud
-   — no separate redeploy step needed after this.
+5. **The bot does NOT auto-deploy on push.** This used to say it did, and
+   that was wrong — confirmed 2026-08-15 by reading the service's own
+   config, which has no GitHub source attached at all (`source: null`).
+   The running deployment was four days behind `master`, which is why a
+   whole run of fixes appeared to do nothing in Discord. Unlike Streamlit
+   Cloud (which really does redeploy on every push), this service only
+   gets new code when someone runs:
+
+   ```
+   cd discord_bot
+   railway up
+   ```
+
+   Confirm it worked by opening the service's **Deploy Logs** in Railway
+   and looking for the `Running build: ...` line — that value comes from
+   `BOT_BUILD` at the top of `bot.py`, so if it doesn't match what's in
+   the file, the old code is still live.
+
+   To make it auto-deploy properly (recommended, needs the Railway
+   dashboard): service → **Settings** → **Source** → **Connect Repo** →
+   `roboknights-afk/roboknights-inventory`, branch `master`, and set
+   **Root Directory** to `discord_bot`.
 
 To test on your own laptop first: put all the variables above in a
 `.env` file inside `discord_bot/` (or run from the repo root, which
