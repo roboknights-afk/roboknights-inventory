@@ -25,6 +25,7 @@ current_user_name = st.session_state.current_user_name
 user_name_by_id = st.session_state.user_name_by_id
 user_email_by_id = st.session_state.user_email_by_id
 is_host = st.session_state.is_host
+is_read_only = st.session_state.is_read_only
 
 # --- One-time messages ---------------------------------------------------
 # Streamlit re-runs the whole script on every click, so a normal st.success()
@@ -60,6 +61,12 @@ if "show_add_part" not in st.session_state:
     st.session_state.show_add_part = False
 
 st.title("RoboKnights Parts Inventory")
+
+if is_read_only:
+    st.info(
+        ":material/visibility: Read-only account — you can browse everything "
+        "here, but requesting, adding and editing parts are turned off."
+    )
 
 # --- Data --------------------------------------------------------------------
 
@@ -534,7 +541,7 @@ def _render_serialised_card(group_name, group_owner_id, units):
                     icon=":material/schedule:", color="orange",
                 )
 
-        if available_units and not is_mine and my_pending_count < MAX_PENDING_REQUESTS:
+        if available_units and not is_mine and not is_read_only and my_pending_count < MAX_PENDING_REQUESTS:
             # How many, and for how long, are asked in the dialog — they
             # used to be two number inputs sitting in this row on every
             # requestable part.
@@ -662,7 +669,7 @@ def _render_bulk_card(part):
             if out_qty:
                 st.badge(f"{out_qty} on loan", icon=":material/schedule:", color="orange")
 
-        if free_qty > 0 and not is_mine and my_pending_count < MAX_PENDING_REQUESTS:
+        if free_qty > 0 and not is_mine and not is_read_only and my_pending_count < MAX_PENDING_REQUESTS:
             col4.button(
                 "Request", key=f"bulkrequest_{part['part_id']}", icon=":material/send:",
                 width="stretch", on_click=_open_request,
@@ -1041,7 +1048,7 @@ with tab_manage:
     st.caption("Everything you own goes in here so other members can borrow it.")
     st.button(
         "Add a part", icon=":material/add:", type="primary", key="open_add_part",
-        on_click=_open_add_part,
+        on_click=_open_add_part, disabled=is_read_only,
     )
     if st.session_state.show_add_part:
         render_add_part_dialog()

@@ -16,6 +16,7 @@ from shared import cached_table, get_client, invalidate_cache, safe_write
 client = get_client()
 is_host = st.session_state.is_host
 is_exun = st.session_state.is_exun
+is_read_only = st.session_state.is_read_only
 current_user_id = st.session_state.current_user_id
 user_name_by_id = st.session_state.user_name_by_id
 
@@ -242,7 +243,7 @@ def render_log_achievement():
 
 # Exun can browse, but never logs a result themselves — so they don't get the
 # button at all, rather than one that refuses to do anything.
-if not is_exun:
+if not is_read_only:
     st.button(
         "Log a result", icon=":material/add_box:", type="primary",
         key="open_log_achievement", on_click=_open_log_achievement,

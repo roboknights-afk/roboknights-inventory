@@ -11,10 +11,20 @@ from shared import cached_table, get_client, invalidate_cache, safe_write
 
 is_host = st.session_state.is_host
 is_exun = st.session_state.is_exun
+is_viewer = st.session_state.is_viewer
+is_read_only = st.session_state.is_read_only
 
-if not is_host and not is_exun:
-    st.error("Access only for hosts and Exun.")
+if not is_host and not is_exun and not is_viewer:
+    st.error("Access only for hosts, Exun, and viewer accounts.")
     st.stop()
+
+# Section, admission no. and phone no. are private to each member
+# everywhere else in the app; this directory is the one place they're
+# shown together. The read-only VIEWER account is a look-around account,
+# not a host, so it doesn't get them - it sees the same roster with those
+# three columns dropped entirely (not blanked, so it's obvious they're
+# not being withheld per-row).
+PRIVATE_COLUMNS = ("Section", "Admission no.", "Phone no.")
 
 client = get_client()
 
@@ -72,7 +82,12 @@ with st.expander(":material/info: About this page"):
         "everywhere else in the app — this directory (visible to hosts and Exun) "
         "is the one place they're shown together."
     )
-    if not is_exun:
+    if is_viewer:
+        st.info(
+            "You're on a read-only viewer account: section, admission no. and "
+            "phone no. are hidden here, and nothing on this page is editable."
+        )
+    if not is_read_only:
         st.warning(
             "Editing **Institutional email** here only updates this profile record. "
             "It does **not** change their actual login email in Supabase Auth, which "
@@ -148,8 +163,15 @@ else:
         for u in visible_users
     ]
 
-    if is_exun:
-        # Read-only for Exun — same data a host sees, but no editing.
+    if is_viewer:
+        table_rows = [
+            {k: v for k, v in row.items() if k not in PRIVATE_COLUMNS}
+            for row in table_rows
+        ]
+
+    if is_read_only:
+        # View-only tiers: the same roster a host sees (minus the private
+        # columns for viewers, per above), with no editing at all.
         st.dataframe(table_rows, hide_index=True, width="stretch")
     else:
         # Editable straight in the table. num_rows="fixed" so hosts can't

@@ -22,6 +22,7 @@ from shared import (
 client = get_client()
 is_host = st.session_state.is_host
 is_exun = st.session_state.is_exun
+is_read_only = st.session_state.is_read_only
 current_user_id = st.session_state.current_user_id
 user_name_by_id = st.session_state.user_name_by_id
 user_email_by_id = st.session_state.user_email_by_id
@@ -392,7 +393,7 @@ def render_meeting_card(m):
 
             # Exun can see everything above (details, join link, who's
             # going) but never RSVPs or checks in themselves — view only.
-            if not is_exun:
+            if not is_read_only:
                 rcol1, rcol2 = st.columns(2)
                 if already_rsvpd:
                     if rcol1.button(

@@ -54,6 +54,19 @@ EXUN_EMAILS = {
     "official.kavyadayal@gmail.com",  # Kavya Dayal, Exun core member
 }
 
+# A read-only account for looking around the whole dashboard without being
+# able to change anything (2026-08-16). Broader than EXUN_EMAILS above —
+# these accounts also see Inventory, Announcements and Feedback — but
+# still strictly view-only, and still SHORT of what a host sees: the
+# private student<>host Queries threads, the AI chat logs, and the Discord
+# messaging tools are all excluded, as are members' phone numbers and
+# admission numbers on the Members page. Those belong to real students
+# (most of them minors) who never agreed to a visitor account reading
+# them, and none of it is needed to evaluate how the dashboard works.
+VIEWER_EMAILS = {
+    "r24334kiara@dpsrkp.net",  # Kiara Kapoor, test/demo account
+}
+
 # Host-requested ban (2026-08-14): these two get no reply from the
 # dashboard's AI Assistant page - not a moderation feature, just a kill
 # switch on that one page talking back to them. The Discord bot has its
@@ -589,6 +602,21 @@ def safe_write(action_description):
     # this request…") rather than a generic "Loading..." — instead of
     # writes (Supabase round trip + often an outgoing email) looking like
     # a dead click on a slow connection.
+    #
+    # Read-only tiers are stopped HERE rather than only at each button
+    # (2026-08-16). Inventory alone has 21 write controls; gating every
+    # one by hand is how a view-only account eventually writes real data
+    # through the one that got missed. Individual controls are still
+    # hidden or disabled where it matters for clarity — this is the
+    # backstop that makes "view-only" actually true, not the only guard.
+    # st.stop(), not `return`: a bare return before the yield would make
+    # @contextmanager raise "generator didn't yield". st.stop() raises a
+    # BaseException Streamlit handles by ending this run cleanly, which
+    # also means the caller's `with` body — the actual writes — never
+    # executes at all.
+    if st.session_state.get("is_read_only"):
+        st.error("This is a read-only account — it can't make changes.")
+        st.stop()
     try:
         with st.spinner(_progressive(action_description)):
             yield

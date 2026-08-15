@@ -30,6 +30,8 @@ is_host = st.session_state.is_host
 # in the nav at all (see app.py's st.navigation list) — st.page_link to any
 # of those crashes the whole page for them if not guarded the same way here.
 is_exun = st.session_state.is_exun
+is_viewer = st.session_state.is_viewer
+is_read_only = st.session_state.is_read_only
 
 # IST "today", not the UTC server's — otherwise everything date-sensitive
 # here (overdue warnings, "meeting is today" check-ins) runs up to 5.5
@@ -198,7 +200,7 @@ with feed_col:
                 st.markdown(f":material/schedule: :orange[Due in {days_left} day(s)] — {label}")
             st.caption(f"Return it to its owner • was due {due}")
 
-    if pending_for_me and not is_exun:
+    if pending_for_me and not is_read_only:
         nothing_pending = False
         with st.container(border=True, key="rkcard_home_approvals"):
             st.markdown(
@@ -209,7 +211,7 @@ with feed_col:
                 st.caption(f"{part.get('part_number', '?')} — {part.get('name', 'Unknown')}")
             st.page_link("app_pages/inventory.py", label="Review requests", icon=":material/arrow_forward:")
 
-    if queries_waiting and not is_exun:
+    if queries_waiting and not is_read_only:
         nothing_pending = False
         with st.container(border=True, key="rkcard_home_queries"):
             if is_host:
@@ -304,9 +306,9 @@ with side_col:
         st.page_link("app_pages/competitions.py", label="Competitions", icon=":material/emoji_events:")
         st.page_link("app_pages/meetings.py", label="Meetings", icon=":material/groups:")
         st.page_link("app_pages/achievements.py", label="Achievements", icon=":material/military_tech:")
-        if not is_exun:
+        if not is_read_only:
             st.page_link("app_pages/queries.py", label="Queries", icon=":material/quiz:")
-        if is_host or is_exun:
+        if is_host or is_exun or is_viewer:
             st.page_link("app_pages/members.py", label="Members", icon=":material/badge:")
 
     # Automatic notifications now ping the @member / @adhoc server roles
@@ -314,7 +316,7 @@ with side_col:
     # automatic tagging — it's stored purely so a host can look it up on
     # the Members page and @mention you directly in a one-off custom
     # Discord message, without having to ask you for it each time.
-    if not is_exun:
+    if not is_read_only:
         st.subheader(":material/forum: Discord")
         with st.container(border=True, key="rkcard_home_discord"):
             st.caption(

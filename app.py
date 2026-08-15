@@ -12,7 +12,7 @@ from dotenv import load_dotenv
 from supabase_auth.helpers import generate_pkce_challenge, generate_pkce_verifier
 
 from shared import (
-    APP_URL, EXUN_CHANNEL_MEMBERS, EXUN_EMAILS, HOST_EMAILS, HOST_ROLES, cached_table,
+    APP_URL, EXUN_CHANNEL_MEMBERS, EXUN_EMAILS, HOST_EMAILS, HOST_ROLES, VIEWER_EMAILS, cached_table,
     get_client, has_unread_exun_channel, has_unread_queries, invalidate_cache, safe_write, send_email,
     sync_member_to_clio_sheet,
 )
@@ -593,7 +593,7 @@ def handle_google_oauth_callback(client):
     has_profile = bool(
         client.table("users").select("user_id").eq("user_id", result.user.id).execute().data
     )
-    if not has_profile and email not in HOST_EMAILS and email not in EXUN_EMAILS:
+    if not has_profile and email not in HOST_EMAILS and email not in EXUN_EMAILS and email not in VIEWER_EMAILS:
         st.session_state.needs_google_profile = {"user_id": result.user.id, "email": email}
     st.rerun()
 
@@ -1153,6 +1153,16 @@ st.session_state.is_host = st.session_state.auth_user["email"] in HOST_EMAILS
 # from is_host — the two are mutually exclusive in practice.
 st.session_state.is_exun = st.session_state.auth_user["email"] in EXUN_EMAILS
 
+# A read-only account for looking around the whole dashboard (see
+# VIEWER_EMAILS in shared.py). Wider page access than Exun, same total
+# lack of write access.
+st.session_state.is_viewer = st.session_state.auth_user["email"] in VIEWER_EMAILS
+# One flag for "this account can look but not touch", so a page gating a
+# write control only has to ask that one question. Both tiers are
+# view-only; they differ in WHICH pages they can reach (the nav below),
+# not in what they're allowed to do once they're on one.
+st.session_state.is_read_only = st.session_state.is_exun or st.session_state.is_viewer
+
 # --- Verify your details (once per student) -------------------------------
 # "Every student" confirms/corrects their own admission no., name, grade,
 # and section once — students are the ones whose grade/section/admission_no
@@ -1168,6 +1178,7 @@ needs_verification = bool(
     and not current_user_row.get("is_staff")
     and not st.session_state.is_host
     and not st.session_state.is_exun
+    and not st.session_state.is_viewer
     and not current_user_row.get("details_verified")
 )
 
@@ -1336,6 +1347,8 @@ with st.sidebar:
             )
         elif st.session_state.is_exun:
             st.badge("Exun (Sister Club)", color="blue", icon=":material/handshake:")
+        elif st.session_state.is_viewer:
+            st.badge("Viewer (read-only)", color="green", icon=":material/visibility:")
         elif st.session_state.current_user_is_staff:
             st.badge("Staff", color="grey", icon=":material/badge:")
         else:
@@ -1374,6 +1387,11 @@ with st.container(key="rk_feedback_fab"):
     st.button(
         "Report an issue", icon=":material/bug_report:",
         key="open_report_feedback_fab", on_click=_open_report_feedback,
+        # Submitting a report writes a row and emails every host, so the
+        # read-only tiers get the pill disabled rather than hidden — it
+        # stays visible so the page looks the same to them, which is the
+        # point of a look-around account.
+        disabled=st.session_state.is_read_only,
     )
 components.html("""
     <script>
@@ -1481,15 +1499,20 @@ if not st.session_state.is_exun:
             queries_title += " 🔵"
     except Exception:
         pass
-    pages.append(st.Page("app_pages/queries.py", title=queries_title, icon=":material/quiz:"))
+    # Queries are private student<>host threads, so the read-only viewer
+    # account is kept out of them the same way Exun is.
+    if not st.session_state.is_viewer:
+        pages.append(st.Page("app_pages/queries.py", title=queries_title, icon=":material/quiz:"))
 pages.append(st.Page("app_pages/meetings.py", title="Meetings", icon=":material/groups:"))
 pages.append(st.Page("app_pages/achievements.py", title="Achievements", icon=":material/military_tech:"))
 pages.append(st.Page("app_pages/assistant.py", title="AI Assistant", icon=":material/smart_toy:"))
 pages.append(st.Page("app_pages/feedback.py", title="Feedback", icon=":material/feedback:"))
 
 # Host-only elsewhere, but Members is also opened up to Exun (full
-# details, per an explicit call — Exun just can't edit it, unlike a host).
-if st.session_state.is_host or st.session_state.is_exun:
+# details, per an explicit call — Exun just can't edit it, unlike a host)
+# and to the read-only viewer account (which additionally has the
+# private phone/admission columns hidden — see members.py).
+if st.session_state.is_host or st.session_state.is_exun or st.session_state.is_viewer:
     pages.append(st.Page("app_pages/members.py", title="Members", icon=":material/badge:"))
 
 # Host-only: everything this app sends to Discord, across both the
