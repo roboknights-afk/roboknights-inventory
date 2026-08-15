@@ -20,9 +20,11 @@
 # failure never blocks the chat itself, same spirit as email sends
 # elsewhere in this app.
 
+import json
 import os
 from datetime import datetime
 
+import requests
 import streamlit as st
 from groq import Groq
 
@@ -48,6 +50,40 @@ MAX_HISTORY_MESSAGES = 16
 # questions here are about the member's OWN data, which never needs the
 # open internet.
 COMPOUND_MODEL = "groq/compound"
+
+# Tavily is the PREFERRED search path, exactly as in discord_bot/bot.py —
+# this page was the one AI surface that never got that migration, which is
+# why members here still see "Groq's search hit its own size limit" while
+# the Discord bot doesn't. The difference is where the searching happens:
+# groq/compound runs the whole decide-search-read loop server-side with no
+# size control on our end, so a query pulling in a big page 413s and
+# there's no parameter to cap it. With Tavily the model still decides
+# WHETHER to search, but this app runs the search and caps how much text
+# comes back — which is the part that actually fixes it.
+#
+# Falls back to groq/compound when TAVILY_API_KEY isn't set, so this
+# changes nothing until the key is added to Streamlit Cloud's Secrets
+# (they're a separate store from the bot's Railway variables — see
+# DEPLOY.md).
+TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY")
+WEB_SEARCH_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "web_search",
+        "description": "Search the web for current information - prices, "
+                        "recent events, specific products/parts, anything "
+                        "that needs up-to-date or specific facts beyond "
+                        "general knowledge.",
+        "parameters": {
+            "type": "object",
+            "properties": {"query": {"type": "string", "description": "The search query"}},
+            "required": ["query"],
+        },
+    },
+}
+# How much text one search result may contribute. This single number is
+# the whole fix — it's the control groq/compound doesn't expose.
+MAX_SEARCH_RESULT_CHARS = 600
 
 current_user_id = st.session_state.current_user_id
 current_user_name = st.session_state.current_user_name
@@ -299,6 +335,77 @@ def _extract_sources(response):
     return sources
 
 
+def _tavily_search(query):
+    try:
+        r = requests.post(
+            "https://api.tavily.com/search",
+            json={"api_key": TAVILY_API_KEY, "query": query, "max_results": 4},
+            timeout=15,
+        )
+        r.raise_for_status()
+        results = r.json().get("results", [])
+        text = "\n\n".join(
+            f"{res.get('title', '')} ({res.get('url', '')})\n"
+            f"{(res.get('content') or '')[:MAX_SEARCH_RESULT_CHARS]}"
+            for res in results
+        ) or "(no results found)"
+        sources = [(res.get("title") or res.get("url"), res.get("url")) for res in results if res.get("url")]
+        return text, sources
+    except Exception as e:
+        # Terse for the model (which may quote it back at the member), full
+        # detail to the server logs. Same pattern as everything else here.
+        print(f"Tavily search failed: {e!r}", flush=True)
+        return "(the web search didn't work this time)", []
+
+
+def _ask_with_tavily(base_messages):
+    # One round of tool calling: ask, run any searches it requested, ask
+    # again with the results. Copied rather than mutated so a failure part
+    # way through leaves the caller's own message list untouched for the
+    # no-search retry.
+    messages = list(base_messages)
+    response = groq_client.chat.completions.create(
+        model=GROQ_MODEL, messages=messages, tools=[WEB_SEARCH_TOOL], tool_choice="auto",
+    )
+    msg = response.choices[0].message
+    if not msg.tool_calls:
+        # It decided the question didn't need searching — a normal answer,
+        # not a failure. Only a genuinely empty reply counts as one.
+        if msg.content:
+            return msg.content, []
+        raise ValueError("empty response, no tool call")
+
+    messages.append({
+        "role": "assistant",
+        "content": msg.content or "",
+        "tool_calls": [tc.model_dump() for tc in msg.tool_calls],
+    })
+    sources = []
+    for tc in msg.tool_calls:
+        try:
+            args = json.loads(tc.function.arguments)
+        except Exception:
+            args = {}
+        result_text, result_sources = _tavily_search(args.get("query") or "")
+        sources.extend(result_sources)
+        messages.append({"role": "tool", "tool_call_id": tc.id, "content": result_text})
+
+    final = groq_client.chat.completions.create(model=GROQ_MODEL, messages=messages)
+    reply = final.choices[0].message.content
+    if not reply:
+        raise ValueError("empty final response after tool call")
+    return reply, sources
+
+
+def _is_request_too_large(exc):
+    # Only the size failure gets the "Groq's search hit its own size limit"
+    # wording. Before this, ANY failure on the search path claimed that as
+    # the cause — so an ordinary rate limit told the member something
+    # confidently wrong about why their answer wasn't searched.
+    text = str(exc).lower()
+    return "413" in text or "too large" in text
+
+
 def _render_sources(sources):
     if sources:
         with st.expander(f":material/travel_explore: {len(sources)} web source(s)"):
@@ -387,7 +494,9 @@ if prompt:
                 *({"role": m["role"], "content": m["content"]} for m in recent_messages),
             ]
             try:
-                if web_search_enabled:
+                if web_search_enabled and TAVILY_API_KEY:
+                    reply, sources = _ask_with_tavily(messages)
+                elif web_search_enabled:
                     response = groq_client.chat.completions.create(
                         model=COMPOUND_MODEL, messages=messages,
                         # Scoped to search/browsing only — code_interpreter and
@@ -396,9 +505,10 @@ if prompt:
                         compound_custom={"tools": {"enabled_tools": ["web_search", "visit_website"]}},
                     )
                     sources = _extract_sources(response)
+                    reply = response.choices[0].message.content or "I didn't get a response — try asking again."
                 else:
                     response = groq_client.chat.completions.create(model=GROQ_MODEL, messages=messages)
-                reply = response.choices[0].message.content or "I didn't get a response — try asking again."
+                    reply = response.choices[0].message.content or "I didn't get a response — try asking again."
             except Exception as e:
                 if web_search_enabled:
                     # Confirmed directly against Groq's API (outside this
@@ -418,9 +528,14 @@ if prompt:
                     # question still gets a real answer either way.
                     try:
                         response = groq_client.chat.completions.create(model=GROQ_MODEL, messages=messages)
+                        note = (
+                            "Groq's search hit its own size limit on this question"
+                            if _is_request_too_large(e)
+                            else "the web search step didn't work this time"
+                        )
                         reply = (
-                            "*(Couldn't search the web for this one — Groq's search hit its own "
-                            "size limit on this question. Answered from what I already know instead.)*\n\n"
+                            f"*(Couldn't search the web for this one — {note}. "
+                            "Answered from what I already know instead.)*\n\n"
                             + (response.choices[0].message.content or "I didn't get a response — try asking again.")
                         )
                     except Exception as e2:
