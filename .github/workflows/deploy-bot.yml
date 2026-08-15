@@ -1,0 +1,42 @@
+name: Deploy Discord bot
+
+# Why this exists: Railway's own GitHub integration would normally handle
+# this, but it refused to work on this service — the repo and branch are
+# connected in Railway's UI, yet it still reports "Auto deploy unavailable"
+# and no build fires on a push (tested twice, 2026-08-15). Before that, the
+# service had no repo attached at all, so four days of fixes sat unshipped
+# while DEPLOY.md claimed pushes auto-deployed.
+#
+# This does the same job from our side instead of theirs: on a push that
+# touches the bot, run the exact `railway up` that already works by hand.
+# One less thing depending on a third party's permission plumbing.
+#
+# Needs a RAILWAY_TOKEN repo secret — see DEPLOY.md for how to create it.
+
+on:
+  push:
+    branches: [master]
+    # Only the bot's own files. A dashboard-only change (app_pages/, etc.)
+    # doesn't need the bot restarted, and a restart drops its in-memory
+    # channel context and re-runs the startup backfill.
+    paths:
+      - "discord_bot/**"
+      - "railway.toml"
+      - ".github/workflows/deploy-bot.yml"
+  workflow_dispatch: # manual trigger from the Actions tab, for testing
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the Railway CLI
+        run: npm install -g @railway/cli
+      # Uploads the repo root, NOT discord_bot/ — railway.toml at the root
+      # is what points Railway at the bot. Running this from inside
+      # discord_bot/ is what once made Railway start the Streamlit app by
+      # mistake, so don't "helpfully" add a working-directory here.
+      - name: Deploy to Railway
+        run: railway up --service roboknights-discord-bot --detach
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
