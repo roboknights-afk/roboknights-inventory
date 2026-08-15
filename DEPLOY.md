@@ -33,6 +33,7 @@ file or from a hosting platform's secrets manager.
    DISCORD_EXUN_WEBHOOK_URL = "..."
    DISCORD_DASHBOARD_WEBHOOK_URL = "..."
    DISCORD_GENERAL_WEBHOOK_URL = "..."
+   DISCORD_ANNOUNCEMENTS_WEBHOOK_URL = "..."
    DISCORD_MEMBER_ROLE_ID = "..."
    DISCORD_ADHOC_ROLE_ID = "..."
    GOOGLE_SERVICE_ACCOUNT_JSON_B64 = "..."
@@ -70,10 +71,16 @@ file or from a hosting platform's secrets manager.
    `DISCORD_GENERAL_WEBHOOK_URL` is a FOURTH channel (2026-08-14, added for
    an ad-hoc host message to #general) — same setup as the others, its own
    Incoming Webhook from #general's Settings → Integrations → Webhooks. Not
-   currently wired into the Discord Messages page's tabs (only
-   competitions/exun_rk/dashboard have a UI tab there); it's usable via
+   wired into the Discord Messages page's tabs; usable via
    `send_discord_message(..., channel="general")` directly.
    See "Dashboard update notices" below.
+
+   `DISCORD_ANNOUNCEMENTS_WEBHOOK_URL` is a FIFTH channel (2026-08-16), for
+   the club's #announcements channel. Same setup — its own Incoming Webhook
+   from that channel's Settings → Integrations → Webhooks. Unlike #general,
+   this one DOES have its own tab on the Discord Messages page, so a host
+   can write, preview, edit and delete announcements without touching code.
+   Nothing posts here automatically.
 
    `DISCORD_MEMBER_ROLE_ID` and `DISCORD_ADHOC_ROLE_ID` are also optional —
    every Discord notification (new event, vacant-events reminder) pings

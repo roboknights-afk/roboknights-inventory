@@ -756,6 +756,7 @@ DISCORD_CHANNELS = {
     "exun_rk": "DISCORD_EXUN_WEBHOOK_URL",
     "dashboard": "DISCORD_DASHBOARD_WEBHOOK_URL",
     "general": "DISCORD_GENERAL_WEBHOOK_URL",
+    "announcements": "DISCORD_ANNOUNCEMENTS_WEBHOOK_URL",
 }
 
 # A webhook lets Discord's `username`/`avatar_url` fields on the POST body

@@ -35,6 +35,7 @@ CHANNEL_LABELS = {
     "competitions": "Competitions channel",
     "exun_rk": "Exun RK channel",
     "dashboard": "Dashboard updates",
+    "announcements": "Announcements channel",
 }
 
 for _channel in DISCORD_CHANNELS:
@@ -246,8 +247,9 @@ def render_vacant_events_reminder():
                     st.rerun()
 
 
-tab_competitions, tab_exun_rk, tab_dashboard = st.tabs(
-    [CHANNEL_LABELS["competitions"], CHANNEL_LABELS["exun_rk"], CHANNEL_LABELS["dashboard"]]
+tab_competitions, tab_exun_rk, tab_dashboard, tab_announcements = st.tabs(
+    [CHANNEL_LABELS["competitions"], CHANNEL_LABELS["exun_rk"],
+     CHANNEL_LABELS["dashboard"], CHANNEL_LABELS["announcements"]]
 )
 
 with tab_competitions:
@@ -275,3 +277,10 @@ with tab_dashboard:
         "the list under it can edit or delete anything already posted."
     )
     render_custom_message_section("dashboard")
+
+with tab_announcements:
+    st.caption(
+        "Nothing posts here automatically — this is the club's #announcements "
+        "channel, for one-off messages a host writes by hand."
+    )
+    render_custom_message_section("announcements")
