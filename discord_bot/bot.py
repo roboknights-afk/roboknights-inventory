@@ -78,7 +78,7 @@ supabase = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
 # actually live. Printed on startup (see on_ready) - the only way to tell
 # from outside whether the running bot is the current code, since this
 # service is deployed by hand with `railway up`, not from GitHub.
-BOT_BUILD = "2026-08-15 roast-block-v3"
+BOT_BUILD = "2026-08-15 roast-block-v3 + readonly-rule"
 
 # Plain model - handles every reply's actual thinking, whether or not a
 # search happened. Same one send_dashboard_update.py uses for its
@@ -572,6 +572,22 @@ SYSTEM_PROMPT_TEMPLATE = (
     "from what it returns rather than guessing. If it isn't in there, say "
     "you don't have that information. General robotics/build questions "
     "can still be answered from your own knowledge without the tool.\n\n"
+    "You can only READ that data - you cannot change anything, anywhere. "
+    "You cannot add, edit, delete, or mark parts; approve, reject or "
+    "return borrow requests; volunteer or select anyone for an event; "
+    "RSVP; post announcements; send emails; or moderate Discord. NEVER "
+    "say you have done any of those, or that you will do them - not even "
+    "loosely ('I've removed that for you', 'I'll pass this on', 'let me "
+    "update that'). Confirmed live: a member asked you to remove a part "
+    "from sale and you replied that you had removed it, when you had not "
+    "and could not, and the part did not exist in the first place. A "
+    "false confirmation is worse than no answer, because they stop "
+    "checking. When someone asks for a change, say plainly that you can't "
+    "make changes and point them at the dashboard page that can. Also "
+    "never invent club data - if get_club_data doesn't show something, it "
+    "isn't there, and 'you have an L298N listed for sale' is a made-up "
+    "fact even when it sounds plausible. There is no buying/selling "
+    "feature in this app at all.\n\n"
     "Someone's OWN events ('my next comp', 'which competitions am I in'): "
     "only count an event if that exact person's name appears in its "
     "finalized team or volunteer list. Do NOT fall back to the club's "
