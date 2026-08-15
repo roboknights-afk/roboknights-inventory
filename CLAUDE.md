@@ -347,8 +347,11 @@ Host member directory — done, same day: new `app_pages/members.py` page,
 titled "Members" in the sidebar nav, showing every member's name,
 institutional email, grade, section, admission no., and phone no. The
 intentional exception to the privacy rule above, since only hosts should
-see everyone's details at once. Gated two ways: `app.py` only adds this
-page to the `st.navigation` pages list at all when
+see everyone's details at once. (**Since superseded:** Exun and read-only
+viewer accounts reach this page too now — see "Access tiers" near the end
+of this file. Exun sees the full table read-only; viewers additionally
+have section/admission no./phone no. dropped.) Gated two ways: `app.py`
+only adds this page to the `st.navigation` pages list at all when
 `st.session_state.is_host` is true (so non-hosts never see it in the
 sidebar), AND the page itself re-checks `is_host` and `st.stop()`s if
 false, in case someone hits its URL directly — `st.navigation`'s page list
@@ -653,25 +656,43 @@ scripts don't both fire on both schedules (manual workflow_dispatch runs
 both, for easy testing — `github.event.schedule` is empty then, so
 neither `!=` condition excludes it).
 
-Discussed and NOT yet built: importing competitions from the club's real
-Google Sheet (student called it "E2C") — the sheet marks which rows are
-robotics competitions using actual Google Sheets **notes** (the
-hover-to-reveal corner-triangle annotation, confirmed via a screenshot —
-NOT a plain text column), which don't survive a CSV/Excel export, so this
-needs the Google Sheets API directly (a free API key, sheet shared as
-"anyone with the link can view") rather than a simple file upload. Blocked
-on: seeing the real sheet structure (only one competition block seen so
-far, "EDEN 6.0 THE NEXUS" — venue/date/links in one area, events + a
-team-format code like `1x6` + grade range in another; unclear whether
-`1x6` means team_size×max_teams or the reverse, and unclear how multiple
-competitions repeat across the sheet — separate blocks per tab, or
-stacked/side-by-side in one tab). Planned shape once unblocked: host
-pastes the sheet link → "Scan for robotics competitions" button → preview
-list with checkboxes for which ones to actually import → "Import
-selected" writes to `competitions`/`competition_events`/
-`competition_links`. Do not build the parser until the real structure is
-confirmed — a wrong guess here means either missed competitions or
-garbage rows getting imported.
+### E2C sheet import — BUILT (2026-08-07), `e2c_import.py`
+
+Importing competitions from the club's real Google Sheet (the student
+calls it "E2C"). This was scoped on 2026-07-14 as "discussed, not built,
+blocked on seeing the real sheet structure" — that block cleared and it
+shipped on 2026-08-07. Kept as its own module with **no Streamlit import
+at all**, so the messy parsing stays separate from the Competitions page
+that displays it.
+
+The sheet's real shape, confirmed by reading the live sheet rather than
+guessing (which is exactly what the earlier note said to wait for): one
+tab per year ("Events and Reg 2026-27"), every competition stacked
+vertically in the SAME tab. Column A holds a competition's details spread
+over several rows with no fixed row count (name, venue, date, links,
+deadline, in-charge); column B is the event name; column C is
+`"<max teams>x<team size>, <grade range>"` — so the earlier open question
+about whether `1x6` meant team_size×max_teams or the reverse is answered:
+**max_teams first**. Columns D onward are registered participants, one row
+per registered TEAM (verified live: a "3x2" event really does have 3 rows
+of 2 names).
+
+The only reliable "is this event robotics?" signal is the real Google
+Sheets **note** on the event-name cell — the hover-to-reveal corner
+triangle, which doesn't survive a CSV/Excel export, and is why this needs
+the Sheets API directly rather than a file upload. Its first line is a
+category ("Robotics", "Gaming", "Quiz", …). **"Has a note" is NOT the
+signal** — plenty of non-robotics events have notes too; the category text
+is, matched as a substring since some are compound ("Robotics and STEM").
+A few genuine robotics events don't say "robotics" in their note at all
+(one just repeats its own event name) — **a known, accepted gap the
+student chose to live with** rather than guess around. Don't "fix" it by
+loosening the match without asking.
+
+Participant auto-add only matches names against real rows in our own
+`users` table (ignoring tags like `[Ad-Hoc]`); green cell shading means
+the sheet shows them as confirmed. `_insert_matched_participants` is what
+`notify_if_roster_complete()` hooks into (see the Discord section below).
 
 ## AI Assistant (2026-08-08/09)
 
@@ -1220,6 +1241,29 @@ plus a 30-second timeout on the Gemini call so a hung request degrades to
 the honest "I'm maxed out" instead of silence. **Any blocking call added
 to this bot must go through a thread.**
 
+## Read-only viewer tier (2026-08-16)
+
+`VIEWER_EMAILS` in `shared.py` — a look-around account, first used for
+Kiara Kapoor (`r24334kiara@dpsrkp.net`). Full details in "Access tiers"
+below; the short version is that it sees the club side of the app and
+none of the private side, and cannot write anything.
+
+The scope was narrowed deliberately when the request came in as "view
+only but permission to see everything". "Everything a host sees" would
+have included 53 members' phone numbers and admission numbers, the
+private student<>host query threads, and every AI conversation anyone has
+had — real data belonging to students, most of them minors, none of whom
+agreed to a visitor account reading it, and none of it needed to evaluate
+how the dashboard works. Asked, and the student chose club content only.
+**Apply the same test to any future tier: what does this account actually
+need to see, not what is it technically allowed to see.**
+
+Account creation still has to be done by the person themselves — Supabase
+Auth owns signup and this project has only the anon key. Google sign-in is
+the smoother path for a new tier account, since viewers skip the profile
+screen entirely (see "Access tiers") and it avoids depending on the
+confirmation email, historically the flakier half of this app.
+
 **Open item: `TAVILY_API_KEY` is set nowhere** — not Railway, not `.env`.
 Both AI surfaces have been silently falling back to `groq/compound`, the
 search path recorded above as unreliable, which is why members see "Groq's
@@ -1227,6 +1271,127 @@ search hit its own size limit". The Tavily code path exists and works on
 both surfaces; it just has no key. Adding one to **both** Railway and
 Streamlit Cloud Secrets (separate stores — this gap has now caused three
 outages) is the fix.
+
+## Pages and infrastructure that were never written up
+
+Added 2026-08-16 after an audit found these missing from this file
+entirely, despite being real, shipped, load-bearing parts of the app.
+If you're changing any of them, this is the only documentation there is.
+
+### `app_pages/home.py` — the Home page
+
+The landing page after login: "what's relevant to you right now", so
+nobody has to click through every other page checking for anything new. A
+metrics strip across the top, then a wide left column for things needing
+action and a narrow right column for announcements plus navigation. Any
+section with nothing to show is skipped entirely, so it stays a summary
+rather than becoming a copy of every other page.
+
+**It writes nothing and tracks nothing new** — every section reads data
+the other pages already maintain (a query thread's "new reply" uses the
+real `host_read_at`/`student_read_at` columns `queries.py` keeps). Keep it
+that way; the moment Home needs its own state, it stops being a view.
+
+Gotcha already hit: `st.page_link` to a page that isn't in the current
+user's nav **crashes the whole page** for them. Exun and viewer accounts
+don't get Inventory/Announcements/Queries, so every `page_link` here is
+tier-guarded. Adding a new link means adding the matching guard.
+
+### `app_pages/exun_channel.py` — the private RoboKnights <> Exun channel
+
+One shared thread between the two clubs' leadership, visible only to the
+hand-picked addresses in `EXUN_CHANNEL_MEMBERS` — **not every host and not
+every member**. `app.py` only adds the page to the nav for those people,
+and the page re-checks on load, since `st.navigation`'s page list alone
+doesn't stop a direct URL hit (same two-layer pattern as the Members
+page). Messages live in `exun_channel_messages`; read receipts are one row
+per member, since this is a single flat channel everyone reads
+independently rather than a per-thread conversation.
+
+`EXUN_CHANNEL_STUDENT_EMAILS` is **derived** (`EXUN_CHANNEL_MEMBERS -
+HOST_EMAILS - EXUN_EMAILS`), not hand-maintained, so it can't drift out of
+sync. It scopes the "unread message" nudge to students only — per the
+student's explicit instruction that **staff never get nagged** about
+unread messages.
+
+### Access tiers, all of them
+
+Five, and they are not a hierarchy — each is a separate email set in
+`shared.py`, checked independently:
+
+- `HOST_EMAILS` — full access, every host-only page and control.
+- `HOST_ROLES` — display titles for specific host accounts (Vice
+  Principal, HOD Computer Science, Robotics In-Charge), shown as the badge
+  on the account card instead of a generic "Host".
+- `EXUN_EMAILS` — sister club. Views Competitions, Meetings, Achievements,
+  Members; never volunteers, RSVPs, logs an achievement, or touches
+  anything host-only.
+- `VIEWER_EMAILS` — read-only look-around account (2026-08-16, added for
+  Kiara Kapoor's test account). Wider page access than Exun — also
+  Inventory, Announcements, Feedback — but excluded from the private
+  Queries threads, the AI chat logs, the Discord messaging tools, and
+  members' section/admission no./phone no., which are dropped from the
+  Members table for viewers specifically.
+- `EXUN_CHANNEL_MEMBERS` — the private channel above, orthogonal to the
+  rest.
+
+`is_read_only = is_exun or is_viewer` is the single flag a page should ask
+before showing a write control.
+
+**The enforcement that actually matters is in `safe_write()`, not on the
+buttons.** Inventory alone has 21 write controls; gating each by hand is
+how a view-only account eventually writes real data through the one that
+got missed. A read-only session hits `st.stop()` inside `safe_write`, so
+the caller's `with` body never executes — verified with Streamlit's
+`AppTest`, not assumed. Every page is covered by that automatically,
+including pages added later. Button-level hiding/disabling is for clarity
+on top of it, never instead of it. **If you add a new write path, route it
+through `safe_write`** or it bypasses this entirely.
+
+Note `st.stop()` and not `return`: a bare return before the `yield` makes
+`@contextmanager` raise "generator didn't yield".
+
+An account in `HOST_EMAILS`, `EXUN_EMAILS` or `VIEWER_EMAILS` **works with
+no `users` row at all** — `current_user_id` comes from the auth user, and
+the display name falls back to the email. That's why those tiers skip both
+the Google profile-completion screen and the verify-your-details popup.
+Consequence: they don't appear in the Members directory, which is correct
+for a visitor account but surprising if you don't expect it.
+
+### `cached_table()` — the 8-second cache every page depends on
+
+Pages were making a fresh Supabase round trip per lookup, which is what
+made the app feel slow (not Streamlit). `cached_table(name)` fetches a
+whole table once per 8-second window (`CACHE_TTL`) and everything filters
+it in Python. `invalidate_cache()` runs right after any insert/update/
+delete so your own change shows up on the very next rerun rather than
+waiting out the TTL — and it clears every table, not just the one written,
+since most actions touch several.
+
+The short TTL is deliberate: if a write ever forgets to invalidate, the
+page self-corrects within seconds instead of staying wrong indefinitely.
+Don't raise it to "forever".
+
+### Private meetings (`meeting_invitees`)
+
+A meeting with no rows in `meeting_invitees` is open to the whole club;
+one with rows is visible only to those users (plus hosts). "Absent means
+open to everyone" is what `meeting_invited_ids()` relies on, so an empty
+invitee list must never be written as a "nobody" marker.
+
+`meeting_invitee_rows()` swallows its own exception and returns `[]` — the
+table was added after the pages that read it, and an unrun migration must
+degrade to the old behaviour (every meeting club-wide) rather than crash
+the Home page for everyone. Same defensive reasoning as the Queries nav
+badge.
+
+### Staff accounts (`users.is_staff`)
+
+Self-declared at signup ("I'm a staff member (not a student)"). Staff skip
+grade/section/admission no. entirely rather than being asked for
+placeholder values that don't describe them, are skipped by the
+verify-your-details popup, and show a "Staff" badge. Anything that filters
+by grade must tolerate `None`.
 
 ## Explicitly NOT in v1
 
