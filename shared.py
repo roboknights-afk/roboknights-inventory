@@ -112,6 +112,23 @@ ROAST_REQUEST_PATTERNS = (
     # something funny aimed AT a named person, however it's framed.
     r"say (something|anything)? ?funny (about|on|regarding)",
     r"(something|anything) funny (about|on) ",
+    # "a small script on ayush goyal in carryminati's humorous parody
+    # style" - asked live, and it's a roast wearing a YouTube format.
+    # Roast-comedy styles and diss formats ARE mockery by definition, so
+    # they're refused whoever the target is - including, as here, the
+    # person asking. "Do it to myself" has never been an exception.
+    # Needs a target ("parody about naitik", "rap battle between X and
+    # Y") - a bare "what is a rap battle" is a real question and must
+    # still get a real answer.
+    r"\b(parod(y|ies)|diss track|rap battle|impression) (of|on|about|for|between)\b",
+    # The FORMAT is the giveaway, in either word order - "a script in
+    # carryminati's humorous parody style" names no roster member (the
+    # person asking wasn't signed up on the dashboard at all, so the
+    # member-name check below couldn't see him) but is unmistakably a
+    # roast. A plain "write a python script for line following" has none
+    # of these words and still goes straight through.
+    r"\b(parody|roast|diss|humorous|comedic|savage)\b.{0,30}\b(style|script|video|sketch|bit)\b",
+    r"\b(script|video|sketch|bit)\b.{0,40}\b(parody|roast|diss)\b",
 )
 
 # The "never discuss these at all" list from both system prompts, enforced
@@ -128,6 +145,8 @@ PROTECTED_ENTITY_PATTERNS = (
 MOCKERY_WORD_PATTERNS = (
     r"\bjokes?\b", r"\bmemes?\b", r"\bfunny\b", r"\bcomeback\b",
     r"\bsavage\b", r"\bcook(ed)?\b", r"\bexpose\b", r"\bdrag\b",
+    r"\bparod(y|ies)\b", r"\bhumorous\b", r"\bmock(ing|ery)?\b",
+    r"\bsarcas(m|tic)\b", r"\bcringe\b", r"\bcarry\s*minati\b",
 )
 ROAST_REFUSAL = (
     "That's not my job — I don't roast or take shots at anyone here. "

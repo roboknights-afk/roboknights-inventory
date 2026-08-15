@@ -39,6 +39,7 @@
 # GEMINI_API_KEY is optional - without it, a Groq failure just fails
 # openly like before, no fallback attempted.
 
+import asyncio
 import json
 import os
 import re
@@ -78,7 +79,7 @@ supabase = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
 # actually live. Printed on startup (see on_ready) - the only way to tell
 # from outside whether the running bot is the current code, since this
 # service is deployed by hand with `railway up`, not from GitHub.
-BOT_BUILD = "2026-08-15 actions-deploy"
+BOT_BUILD = "2026-08-15 no-freeze + parody-block"
 
 # Plain model - handles every reply's actual thinking, whether or not a
 # search happened. Same one send_dashboard_update.py uses for its
@@ -270,6 +271,9 @@ def _search_chat_history(channel_id, days_back):
 # separate consumer product from the API, a common mix-up.
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 GEMINI_MODEL = "gemini-flash-latest"
+# Milliseconds. 30s is generous for a chat reply and well short of the
+# 60+ seconds the runaway call was still hanging at.
+GEMINI_TIMEOUT_MS = 30_000
 gemini_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
 # Third and last fallback, because two turned out not to be enough: on a
@@ -416,6 +420,23 @@ ROAST_REQUEST_PATTERNS = (
     # something funny aimed AT a named person, however it's framed.
     r"say (something|anything)? ?funny (about|on|regarding)",
     r"(something|anything) funny (about|on) ",
+    # "a small script on ayush goyal in carryminati's humorous parody
+    # style" - asked live, and it's a roast wearing a YouTube format.
+    # Roast-comedy styles and diss formats ARE mockery by definition, so
+    # they're refused whoever the target is - including, as here, the
+    # person asking. "Do it to myself" has never been an exception.
+    # Needs a target ("parody about naitik", "rap battle between X and
+    # Y") - a bare "what is a rap battle" is a real question and must
+    # still get a real answer.
+    r"\b(parod(y|ies)|diss track|rap battle|impression) (of|on|about|for|between)\b",
+    # The FORMAT is the giveaway, in either word order - "a script in
+    # carryminati's humorous parody style" names no roster member (the
+    # person asking wasn't signed up on the dashboard at all, so the
+    # member-name check below couldn't see him) but is unmistakably a
+    # roast. A plain "write a python script for line following" has none
+    # of these words and still goes straight through.
+    r"\b(parody|roast|diss|humorous|comedic|savage)\b.{0,30}\b(style|script|video|sketch|bit)\b",
+    r"\b(script|video|sketch|bit)\b.{0,40}\b(parody|roast|diss)\b",
 )
 
 # The "never discuss these at all" list from the system prompt above,
@@ -432,6 +453,8 @@ PROTECTED_ENTITY_PATTERNS = (
 MOCKERY_WORD_PATTERNS = (
     r"\bjokes?\b", r"\bmemes?\b", r"\bfunny\b", r"\bcomeback\b",
     r"\bsavage\b", r"\bcook(ed)?\b", r"\bexpose\b", r"\bdrag\b",
+    r"\bparod(y|ies)\b", r"\bhumorous\b", r"\bmock(ing|ery)?\b",
+    r"\bsarcas(m|tic)\b", r"\bcringe\b", r"\bcarry\s*minati\b",
 )
 ROAST_REFUSAL = (
     "That's not my job - I don't roast or take shots at anyone here. "
@@ -1043,6 +1066,12 @@ def _ask_with_gemini(messages, channel_id=None):
             config=genai_types.GenerateContentConfig(
                 system_instruction=system_instruction, tools=tools or None,
                 max_output_tokens=MAX_REPLY_TOKENS,
+                # Without this the SDK waits indefinitely - the call that
+                # froze the bot on 2026-08-15 was still hanging a minute
+                # later. Milliseconds, and it's the LAST fallback, so
+                # giving up here just means the member gets the honest
+                # "I'm maxed out" instead of silence.
+                http_options=genai_types.HttpOptions(timeout=GEMINI_TIMEOUT_MS),
             ),
         )
         # None, not a placeholder string - an empty answer here should let
@@ -1571,8 +1600,17 @@ async def _handle_incoming(message, is_edit=False):
         await _send(message.channel, busy)
         return
 
+    # asyncio.to_thread, NOT a plain call: _ask_llm and everything under it
+    # (Groq, Gemini, Tavily, Supabase) is ordinary blocking HTTP. Called
+    # directly it runs ON the event loop, so one slow provider freezes the
+    # whole bot - confirmed live 2026-08-15, a Gemini fallback blocked the
+    # gateway heartbeat for over 60 seconds and the member who asked never
+    # got any reply at all. Off-thread, the loop keeps answering heartbeats
+    # and other members' messages while this one waits.
     async with message.channel.typing():
-        reply = _ask_llm(conversation_key, message.channel.id, text, linked_name)
+        reply = await asyncio.to_thread(
+            _ask_llm, conversation_key, message.channel.id, text, linked_name
+        )
     _log_chat("assistant", reply, discord_user_id, discord_channel_id, linked_user_id)
 
     await _send(message.channel, reply)
