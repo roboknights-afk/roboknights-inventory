@@ -1241,6 +1241,55 @@ plus a 30-second timeout on the Gemini call so a hung request degrades to
 the honest "I'm maxed out" instead of silence. **Any blocking call added
 to this bot must go through a thread.**
 
+## Smaller failures worth remembering (2026-08-14/15)
+
+Not big enough for their own sections, all real, all cost time. Added
+2026-08-16 when an audit found them missing.
+
+**The whole login screen crashed with `JWT expired` (PGRST303).** Nobody
+could log in at all. Cause: `SUPABASE_KEY` on **Streamlit Cloud** was a
+stale key, while the local `.env` one was fine (it decodes to an `exp` in
+2036). This is the **third** outage in this project from the same root
+cause — Streamlit Cloud's Secrets are a completely separate store from
+`.env`, and nothing syncs them. The other two were `GOOGLE_SERVICE_ACCOUNT_JSON_B64`
+(Clio sync silently doing nothing for days) and `GROQ_API_KEY` when the AI
+Assistant first deployed. **When something works locally and not in
+production, check the secret store before reading any code.** There are
+now four separate places a secret may need to exist: `.env`, Streamlit
+Cloud Secrets, GitHub Actions secrets, and Railway variables.
+
+**A Discord message posted under the wrong identity.** A host-authored
+update went out as "rk bot" with a default avatar instead of
+`roboknightsbot`, because it was sent by a hand-rolled `requests.post` to
+the webhook rather than through `send_discord_message()` — which sets
+`username` and `avatar_url`. Discord **ignores both fields on an edit**;
+the identity is fixed when the message is created, so the only fix was
+delete and repost. **Always send through `send_discord_message()`**; it
+exists precisely so no call site has to remember the footer, the identity,
+or the `discord_messages` bookkeeping.
+
+**The bot couldn't delete its own messages: `403 Missing Access`.** It
+lacks *Read Message History* on that channel, so it can't fetch the
+message IDs it would need. A bot editing/deleting its own posts needs that
+permission, not just Send Messages. Still outstanding at time of writing.
+
+**Leftover test data reached the real Clio sheet** — a row for "R77777
+Adhoc Test Student" from an earlier trial was sitting in the ad-hoc block.
+Cleared, but only after asserting the target row actually contained the
+test row first, rather than blind-deleting a range in a sheet that mirrors
+the school's admission records. **Any destructive sheet write should check
+what it's about to overwrite.**
+
+**A member's verified personal email never reached the sheet.** Medhansh
+had entered it, the app had it, Clio didn't — a casualty of the silent
+service-account failure above. Fixed by resetting his `details_verified`
+flag so the popup ran again and rewrote the row. Worth knowing that flag
+is the intended lever for re-running verification for one person.
+
+**`git add -A` committed two scratch diagnostic scripts** into the repo.
+No secrets in them, but they don't belong. Stage deliberately when the
+working tree has throwaway files in it.
+
 ## Read-only viewer tier (2026-08-16)
 
 `VIEWER_EMAILS` in `shared.py` — a look-around account, first used for
