@@ -1027,6 +1027,207 @@ does NOT raise this API key's quota — confirmed live, a genuinely
 separate consumer product from the developer API, a common mix-up the
 student ran into.
 
+## AI Logs, Google sign-in, member standing (2026-08-12/13)
+
+**AI Logs page** (`app_pages/ai_logs.py`, host-only): a real viewer for the
+`ai_chat_messages` table, which until then could only be read by querying
+Supabase directly. Both AI surfaces in one timeline, with CSV and plain
+transcript export. This is the page that paid for itself immediately — see
+"What the exported logs actually showed" above, and note that every
+significant AI fix since has started from reading a real export rather
+than from guessing at what members might do.
+
+**Login with Google**, restricted to `@dpsrkp.net` accounts — the same
+school-domain lock the email/password flow already had, just enforced at
+the OAuth layer too. Built by hand rather than through
+`client.auth.sign_in_with_oauth()`, and it took seven follow-up commits to
+actually work, all from one root cause worth remembering: **Streamlit
+Cloud serves the app inside an iframe.** That breaks OAuth redirects in
+ways that don't reproduce locally at all. The sequence was: sign-in
+completed but nobody was actually signed in → the button opened a new tab
+and left the original stuck → `target=_top` (the app is iframed, so a
+normal redirect navigates the iframe, not the page) → the fix broke it
+worse → finally accepting the new tab, because Streamlit Cloud's iframe
+sandbox forbids every alternative. Then a separate bug on top: the
+sign-in cookie was being lost. If OAuth is ever touched again, test on
+the deployed app, not locally — local behaviour is not evidence here.
+
+**Member standing** on the Members page: `users.role`, one of
+`core_member` / `member` / `adhoc`, shown and filterable, with `""` as a
+deliberate fourth option (most members had no standing until a host set
+it by hand, so "not set yet" is a real state, not a prompt to force a
+choice). `STANDING_LABELS`/`STANDING_VALUES` in `members.py` map the raw
+DB value to what's displayed.
+
+**Meeting invites** now email a Google Calendar "add to calendar" link,
+and the Discord bot got competition links in its club data.
+
+## RoboKnights Clio roster sync + verify-your-details (2026-08-14)
+
+The school's own admission roster ("RoboKnights Clio", one tab per school
+year plus Alumni) is now written to by the app. Unlike the E2C sheet
+(read-only, a plain API key suffices), this needs WRITE access, which an
+API key can never do — so it uses a **Google service account**
+(`GOOGLE_SERVICE_ACCOUNT_JSON_B64`, base64-encoded JSON) via gspread. The
+sheet must be shared with the service account's own email address.
+
+A mandatory **verify-your-details popup** (`app.py`, gated on
+`users.details_verified`) blocks the app until a member confirms their own
+row — name, class, admission no., contact, personal email. Confirming
+writes them into Clio.
+
+Two deliberate design calls, both the student's:
+- `CLIO_CURRENT_TAB` points at a **test tab** ("RK Verify (Test)"), not
+  the real "2026-2027" roster, so this could run live without touching
+  the school's actual admission records. Same column layout, so going
+  live is a one-constant change. **Still not switched over.**
+- Ad-hoc members get a labeled block in the SAME tab rather than their own
+  tab, at a **fixed row** (`CLIO_ADHOC_MARKER_ROW`, moved 500 → 50) so
+  adding a main-section member never shifts the ad-hoc block down and
+  risks corrupting it. Row 50 leaves room for ~47 main members; there were
+  30 at the time. Revisit if it fills up.
+
+**Outage worth remembering:** verified members silently weren't reaching
+the sheet for days. Cause: `GOOGLE_SERVICE_ACCOUNT_JSON_B64` was in `.env`
+but never added to **Streamlit Cloud's Secrets**, and the sync was wrapped
+in a try/except that swallowed the failure. Two lessons, both already
+recorded elsewhere in this file and both re-learned the hard way:
+Streamlit Cloud's secrets are a separate store, and a best-effort
+try/except with no logging turns a broken feature into an invisible one.
+Backfilling 22 verified members afterwards hit Google Sheets' per-minute
+write quota (429) — each sync is 3 write calls.
+
+Also: **host-controlled account disable** (`users.is_disabled`). A
+disabled account is logged out on its next page load and shown "This
+account has been disabled. Please contact the admin." Hosts toggle it from
+the Members page, which also flags disabled members in a banner. Note this
+disables the APP account only — the Supabase Auth login still exists, same
+anon-key limitation as everywhere else in this file. Members also gained a
+"Verified" column so a host can see who has confirmed their details.
+
+## AI safety hardening (2026-08-14/15)
+
+A long evening of "roast X" requests, all of which the bot cheerfully
+fulfilled about real, named students aged 11-18, ended with the student
+reversing course entirely and asking for it all to be deleted (24
+messages) and blocked. Two standing rules came out of it, in stages:
+
+1. **Never roast, insult, mock, or disrespect anyone** — members, staff,
+   other clubs, outsiders, or someone asking about themselves.
+2. **Never discuss school staff/administration or other school entities
+   at all** — by name, nickname, abbreviation, title, or description.
+
+**The central lesson: a system-prompt rule is a soft guardrail.** Both
+rules were added to both AI surfaces' system prompts, and the bot kept
+roasting anyway — partly Railway deploy lag (see the next section, which
+turned out to be the real story), partly the weak OpenRouter fallback
+model simply ignoring its instructions once Groq's daily budget ran out.
+Prompt rules are advisory to a model; **code that runs before the model is
+not**. Enforcement now lives in `_roast_request()`, duplicated in
+`shared.py` and `discord_bot/bot.py` (which can't import shared.py), and
+runs BEFORE any API call — so refusing costs nothing and never eats
+someone's rate-limit allowance. The rejected turn is deliberately kept out
+of conversation history so the next reply has nothing to build on.
+
+Keyword blocking is inherently one phrasing behind, and this got tested by
+a room full of students actively probing it. Each bypass and its fix:
+- "make a joke on exun" → joke/meme/comeback/one-liner + preposition
+- "say something funny about naitik" → funny-about patterns, plus
+  **checking the real member roster from Supabase**, since the giveaway is
+  the target, not the verb
+- "a script on <person> in carryminati's humorous parody style" → matching
+  the FORMAT (roast/parody/diss paired with script/video/style), because
+  the person asking wasn't on the roster at all — he had a Discord account
+  but no dashboard signup, so name-matching could never have seen him
+
+Ambiguous words are deliberately excluded ("burn" as in a bootloader,
+"flame" as in the sensor, "destroy"), and there's a regression suite of
+real phrasings from the exported logs: 43 requests blocked, 30 legitimate
+questions still passing, including "what is a rap battle" and "write a
+python script for line following", both of which an earlier draft caught
+by mistake. **Run it after any change to these patterns.**
+
+The open question, raised and not yet decided: keyword blocking is a
+blocklist, and the durable fix is inverting the default — the bot answers
+club/robotics/general questions and refuses anything aimed at a person.
+That's a bigger behaviour change and needs the student's call.
+
+**The AI is READ-ONLY, and now says so.** A member asked the bot to remove
+his L298N motor driver from sale; it replied "I removed your L298N Motor
+Driver from sale as per your request." All of it was invented — the bot
+has only read tools, there is no such part, that member has no linked
+Discord ID, and **there is no buying/selling feature in this app at all**.
+This is the same hallucination class as the fabricated inventory recorded
+above, but worse: it claimed to have performed an action, so the member
+stopped checking. Both system prompts now state plainly what the
+assistant cannot do and cite this incident. There is no keyword to block
+here — a false confirmation has no trigger word — so this one genuinely
+does rest on the prompt.
+
+Also from this period: Lav/Kush's shared account banned from both AI
+surfaces (`AI_ASSISTANT_BANNED_EMAILS` / `AI_ASSISTANT_BANNED_DISCORD_IDS`);
+a fourth Discord channel (`general`); the bot replying to **replies**, not
+just @mentions and DMs; a 15/hour rate limit on the Discord Messages
+page's custom-message tool (deliberately NOT on `send_discord_message()`
+itself, so automated notifications are unaffected); and the AI Assistant
+page no longer leaking raw provider errors (a Groq 429 was showing
+students the org ID and a billing URL).
+
+## The deploy that was never happening (2026-08-15)
+
+The single most important operational fact learned in this project, and
+the reason the fixes above appeared not to work for days.
+
+**Railway had no GitHub repo attached to the bot service at all**
+(`source: null`, confirmed from Railway's API). It only ever received code
+when someone ran `railway up` from a laptop. The live deployment was four
+days old. Every commit — the bans, the roast blocks, the staff rules — sat
+on GitHub doing nothing, while `DEPLOY.md` claimed "Railway auto-deploys
+on every push to master." That sentence was wrong, and trusting it instead
+of checking sent every diagnosis in the wrong direction.
+
+**Three lessons, in order of how much time each cost:**
+1. **Verify the deploy before debugging the code.** "Is the running
+   process actually the code I'm reading?" is the first question, not the
+   last. `BOT_BUILD` now prints on startup for exactly this — the Railway
+   logs will say which build is live, so this is answerable in seconds.
+2. **`railway up` uploads the whole repo, not the folder you run it
+   from.** Running it from `discord_bot/` still uploaded the root, so
+   Railway found `app.py` and started the **Streamlit dashboard** instead
+   of the bot, which crash-looped. Fixed with `railway.toml` at the repo
+   root pinning `buildCommand`/`startCommand`, so the deploy no longer
+   depends on anyone's working directory.
+3. **Railway's GitHub integration never did start working.** The repo and
+   branch connect in their UI, but it reports "Auto deploy unavailable"
+   ("No project member has access to this GitHub repository") and no build
+   fires. Granting the Railway GitHub App access to the private repo did
+   not fix it. Rather than keep poking at a third party's permission
+   plumbing, `.github/workflows/deploy-bot.yml` runs the same `railway up`
+   from GitHub Actions on any push touching `discord_bot/**` or
+   `railway.toml`. Needs a `RAILWAY_TOKEN` repo secret. **Verified end to
+   end** — a push shipped a marker to the live bot with nobody running
+   anything by hand. If Railway's own integration is ever fixed, delete
+   this workflow so two things aren't deploying one service.
+
+**Separately, a real concurrency bug found the same day.** The bot went
+completely silent on one member's message — no reply, no error. `_ask_llm`
+was being called directly on the asyncio event loop, and everything under
+it (Groq, Gemini, Tavily, Supabase) is ordinary blocking HTTP. Groq's
+daily budget was exhausted, it fell through to Gemini, that call hung, and
+the gateway heartbeat blocked for 60+ seconds — so the bot answered
+nobody, not just the member who asked. Now `await asyncio.to_thread(...)`,
+plus a 30-second timeout on the Gemini call so a hung request degrades to
+the honest "I'm maxed out" instead of silence. **Any blocking call added
+to this bot must go through a thread.**
+
+**Open item: `TAVILY_API_KEY` is set nowhere** — not Railway, not `.env`.
+Both AI surfaces have been silently falling back to `groq/compound`, the
+search path recorded above as unreliable, which is why members see "Groq's
+search hit its own size limit". The Tavily code path exists and works on
+both surfaces; it just has no key. Adding one to **both** Railway and
+Streamlit Cloud Secrets (separate stores — this gap has now caused three
+outages) is the fix.
+
 ## Explicitly NOT in v1
 
 No PDF-to-spreadsheet feature. (WhatsApp notifications used to be listed
