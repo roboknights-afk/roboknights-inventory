@@ -12,9 +12,9 @@ from dotenv import load_dotenv
 from supabase_auth.helpers import generate_pkce_challenge, generate_pkce_verifier
 
 from shared import (
-    APP_URL, EXUN_CHANNEL_MEMBERS, EXUN_EMAILS, HOST_EMAILS, HOST_ROLES, IST, VIEWER_EMAILS,
-    cached_table, get_client, has_unread_exun_channel, has_unread_queries, invalidate_cache,
-    safe_write, send_email, sync_member_to_clio_sheet,
+    APP_URL, EXUN_CHANNEL_MEMBERS, EXUN_EMAILS, HOST_EMAILS, HOST_ROLES, VIEWER_EMAILS, cached_table,
+    get_client, has_unread_exun_channel, has_unread_queries, invalidate_cache, safe_write, send_email,
+    sync_member_to_clio_sheet,
 )
 
 # Secrets (the Supabase URL and key) live in a local .env file, not in this
@@ -30,31 +30,6 @@ st.set_page_config(
     layout="wide",
 )
 st.logo("static/roboknights_logo.svg", size="large")
-
-# --- Maintenance gate (temporary, 2026-08-17) --------------------------------
-# Blocks EVERYONE - host, member, Exun, viewer, logged in or not - the moment
-# the clock passes MAINTENANCE_START, before any auth, Supabase call, or page
-# renders. Set MAINTENANCE_MODE = True and pick the time; nobody sees anything
-# past that point until it's turned back off.
-#
-# TO BRING THE DASHBOARD BACK: one command, from the repo root -
-#   git revert <this commit's hash> --no-edit && git push origin master
-# Streamlit Cloud redeploys on every push to master (confirmed in DEPLOY.md),
-# so that's the whole restore - no manual click needed on Streamlit Cloud's
-# side, unlike the bot on Railway.
-MAINTENANCE_MODE = True
-MAINTENANCE_START = datetime.datetime(2026, 8, 17, 0, 30, tzinfo=IST)
-
-if MAINTENANCE_MODE and datetime.datetime.now(IST) >= MAINTENANCE_START:
-    st.markdown(
-        "<div style='text-align:center; padding-top:15vh;'>"
-        "<h1>&#128295; Down for maintenance</h1>"
-        "<p style='opacity:0.7;'>The RoboKnights dashboard is briefly offline. "
-        "It'll be back — no action needed on your end.</p>"
-        "</div>",
-        unsafe_allow_html=True,
-    )
-    st.stop()
 
 # --- Animations (app-wide) ----------------------------------------------------
 # Streamlit has no animation system of its own, so this is the one other
