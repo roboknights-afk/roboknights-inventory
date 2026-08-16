@@ -1332,6 +1332,43 @@ is the intended lever for re-running verification for one person.
 No secrets in them, but they don't belong. Stage deliberately when the
 working tree has throwaway files in it.
 
+## The bot as a guest in the Exun server (2026-08-16)
+
+`roboknightsbot` was added to the Exun clan's own server, in their
+RoboKnights channel, so their side can ask it about competitions, rosters
+and members directly. Two things changed in `bot.py`, both because being a
+guest in a server we don't own is different from being at home:
+
+- **Where it talks.** A Discord invite grants a bot the whole server, not
+  one channel. `DISCORD_HOME_GUILD_ID` (our server, `607226177425506325`)
+  plus `DISCORD_GUEST_CHANNEL_IDS` (an allowlist) means it answers
+  anywhere it's @mentioned at home, and *only* in listed channels
+  elsewhere. Both unset = old behaviour, so a missing variable can never
+  mute it in our own server.
+- **What it stores.** The passive `discord_channel_log` (every message it
+  can see, for host review) is home-server only, and startup backfill
+  skips guest servers entirely. Their channel's chatter isn't ours to
+  keep. `ai_chat_messages` still records every question the bot is asked
+  in either server, which is what the AI Logs page actually reviews.
+
+**Member contact details are now in the bot's club data** — email, phone
+number and admission number, added at the same time on the student's
+explicit call, after being asked and choosing "everywhere, Exun channel
+included". This reverses the original rule (the old comment in
+`_build_club_context` said contact details are deliberately excluded
+because the bot answers where a whole server can read). What it means in
+practice: the bot will read a member's phone number out loud to whoever
+asks, in a channel that isn't access-controlled the way the dashboard's
+Members page is, for members who are mostly minors. The concern was
+stated plainly and the student chose it anyway — **a deliberate decision,
+not an oversight.** Reverting is one line: drop `email,phone_no,admission_no`
+from the `users` select in `_build_club_context`.
+
+Cost note: the roster block grows 1.8k → 5.4k characters (~+900 tokens),
+but the club snapshot is a **tool** (`get_club_data`), not part of every
+system prompt, so that only lands on messages that actually ask about club
+data. Check that's still true before adding more fields.
+
 ## Read-only viewer tier (2026-08-16)
 
 `VIEWER_EMAILS` in `shared.py` — a look-around account, first used for

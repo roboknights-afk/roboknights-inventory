@@ -79,7 +79,7 @@ supabase = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
 # actually live. Printed on startup (see on_ready) - the only way to tell
 # from outside whether the running bot is the current code, since this
 # service is deployed by hand with `railway up`, not from GitHub.
-BOT_BUILD = "2026-08-16 guest-channel scoping"
+BOT_BUILD = "2026-08-16 guest-channel scoping + member contact details"
 
 # The bot now lives in a SECOND server it doesn't own — the Exun clan's,
 # in their RoboKnights channel, so their side can ask it about
@@ -690,13 +690,25 @@ def _build_club_context():
     if _context_cache["text"] is not None and now - _context_cache["fetched_at"] < CONTEXT_TTL_SECONDS:
         return _context_cache["text"]
 
-    # grade/section/role are included; email, phone and admission number
-    # deliberately are NOT. This bot answers in a channel the whole
-    # server can read, so it only ever gets the same roster facts members
-    # already know about each other - never anyone's contact details.
+    # Contact details (email, phone, admission number) ARE included, as of
+    # 2026-08-16, on the host's explicit call when the bot was added to the
+    # Exun server - they asked for it to be able to give out full member
+    # and ad-hoc details there. This reverses the original rule, which held
+    # that a bot replying in a channel anyone can read should only ever
+    # know the roster facts members already know about each other.
+    #
+    # Worth being clear-eyed about what that means, since the reasoning
+    # that kept them out was sound: the bot will read a member's phone
+    # number or admission number out loud to whoever asks, in a channel
+    # that is not access-controlled the way the dashboard's Members page
+    # is, and the people whose numbers these are (mostly minors) never
+    # agreed to that specifically. The host was told this and chose it
+    # anyway; it is a deliberate decision, not an oversight, and this
+    # comment is here so nobody "fixes" it back by accident. Reverting is
+    # one line: drop the three fields from the select below.
     all_users = (
         supabase.table("users")
-        .select("user_id,name,discord_user_id,grade,section,role")
+        .select("user_id,name,discord_user_id,grade,section,role,email,phone_no,admission_no")
         .execute()
         .data
     )
@@ -726,6 +738,14 @@ def _build_club_context():
             bits.append(f"grade {u['grade']}{u.get('section') or ''}")
         if u.get("role"):
             bits.append(ROLE_LABELS.get(u["role"], u["role"]))
+        # Contact fields are frequently blank - most members signed up
+        # before some of them existed, and staff accounts never have an
+        # admission number at all. Only the ones actually on file are
+        # listed, so the model has no empty value to invent a plausible
+        # replacement for.
+        for label, key in (("email", "email"), ("phone", "phone_no"), ("admission no.", "admission_no")):
+            if u.get(key):
+                bits.append(f"{label} {u[key]}")
         member_lines.append(f"- {u['name']}" + (f" ({', '.join(bits)})" if bits else ""))
 
     parts = supabase.table("parts").select("part_number,name,status,owner_id").execute().data
