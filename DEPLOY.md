@@ -259,12 +259,13 @@ summaries already use — no new AI account needed.
      and every server counts as home — i.e. exactly the old behaviour, so a
      missing value can never mute the bot in our own server.
    - `DISCORD_GUEST_CHANNEL_IDS` — comma-separated channel IDs in OTHER
-     servers the bot is allowed to work in (currently the RoboKnights
-     channel in the Exun server). A Discord invite grants a bot access to
-     a whole server, not one channel; this is what actually keeps it to
-     the channel it was added for. Right-click the channel → **Copy
-     Channel ID** (needs Developer Mode on, under User Settings →
-     Advanced) to get it.
+     servers the bot is allowed to work in. Currently
+     `1482462237992947762`, the `#roboknights` channel in the Exun side's
+     server — the same channel `DISCORD_EXUN_WEBHOOK_URL` already posts
+     to. A Discord invite grants a bot access to a whole server, not one
+     channel; this is what actually keeps it to the channel it was added
+     for. Right-click the channel → **Copy Channel ID** (needs Developer
+     Mode on, under User Settings → Advanced) to get it.
 5. **The bot does NOT auto-deploy on push.** This used to say it did, and
    that was wrong — confirmed 2026-08-15 by reading the service's own
    config, which has no GitHub source attached at all (`source: null`).
