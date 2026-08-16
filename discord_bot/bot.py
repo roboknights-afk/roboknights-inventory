@@ -79,7 +79,7 @@ supabase = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
 # actually live. Printed on startup (see on_ready) - the only way to tell
 # from outside whether the running bot is the current code, since this
 # service is deployed by hand with `railway up`, not from GitHub.
-BOT_BUILD = "2026-08-17 small-model fallback tier"
+BOT_BUILD = "2026-08-17 bare-mention reply + small-model size fix"
 
 # The bot now lives in a SECOND server it doesn't own — the Exun clan's,
 # in their RoboKnights channel, so their side can ask it about
@@ -699,13 +699,23 @@ groq_client = Groq(api_key=GROQ_API_KEY)
 # at most every few minutes, not on every single message, since Discord
 # chat can be a lot chattier than the dashboard ever is.
 _context_cache = {"text": None, "fetched_at": 0}
+_context_cache_no_contact = {"text": None, "fetched_at": 0}
 CONTEXT_TTL_SECONDS = 180
 
 
-def _build_club_context():
+def _build_club_context(include_contact=True):
+    # include_contact=False builds a smaller variant with no email/phone/
+    # admission number - added 2026-08-16 after the small_groq fallback
+    # 413'd on a real question ("gimme details of aryamman ojha"): the
+    # roster with contact details is big enough (~5.4k chars) to push a
+    # question that also carries the rest of this context over
+    # llama-3.1-8b-instant's 6,000-token-per-MINUTE cap, a tighter budget
+    # than the main 70b model's 12,000 despite its much larger daily
+    # allowance. Cached separately per variant so both stay fast.
+    cache = _context_cache if include_contact else _context_cache_no_contact
     now = time.time()
-    if _context_cache["text"] is not None and now - _context_cache["fetched_at"] < CONTEXT_TTL_SECONDS:
-        return _context_cache["text"]
+    if cache["text"] is not None and now - cache["fetched_at"] < CONTEXT_TTL_SECONDS:
+        return cache["text"]
 
     # Contact details (email, phone, admission number) ARE included, as of
     # 2026-08-16, on the host's explicit call when the bot was added to the
@@ -760,9 +770,10 @@ def _build_club_context():
         # admission number at all. Only the ones actually on file are
         # listed, so the model has no empty value to invent a plausible
         # replacement for.
-        for label, key in (("email", "email"), ("phone", "phone_no"), ("admission no.", "admission_no")):
-            if u.get(key):
-                bits.append(f"{label} {u[key]}")
+        if include_contact:
+            for label, key in (("email", "email"), ("phone", "phone_no"), ("admission no.", "admission_no")):
+                if u.get(key):
+                    bits.append(f"{label} {u[key]}")
         member_lines.append(f"- {u['name']}" + (f" ({', '.join(bits)})" if bits else ""))
 
     parts = supabase.table("parts").select("part_number,name,status,owner_id").execute().data
@@ -915,8 +926,8 @@ def _build_club_context():
         + "\n\nMEMBERS WHO CAN BE @MENTIONED (linked their Discord ID):\n"
         + ("\n".join(linked_lines) or "(nobody has linked their Discord ID yet)")
     )
-    _context_cache["text"] = context
-    _context_cache["fetched_at"] = now
+    cache["text"] = context
+    cache["fetched_at"] = now
     return context
 
 
@@ -944,12 +955,12 @@ def _personal_events(asker_name):
     )
 
 
-def _safe_club_context():
+def _safe_club_context(include_contact=True):
     # A Supabase hiccup shouldn't turn into a failed reply - the model
     # gets told the data is unavailable and answers around it, same
     # best-effort spirit as everything else here.
     try:
-        return _build_club_context()
+        return _build_club_context(include_contact=include_contact)
     except Exception as e:
         print(f"Club data fetch failed: {e!r}", flush=True)
         return "(the club's data isn't reachable right now)"
@@ -1246,7 +1257,7 @@ def _needs_chat_history(messages):
     return any(k in _last_user_text(messages) for k in HISTORY_KEYWORDS)
 
 
-def _with_no_tools_note(messages, channel_id=None):
+def _with_no_tools_note(messages, channel_id=None, include_contact=True, include_history=True):
     # Inline whichever data the question actually needs, so these paths
     # can still answer it; otherwise just say the tools are off.
     # Club data goes in UNCONDITIONALLY on this path. It started
@@ -1257,8 +1268,19 @@ def _with_no_tools_note(messages, channel_id=None):
     # whack-a-mole as trying to block "counting" requests: there are
     # endless phrasings. ~1,200 tokens on a path that only runs when
     # Groq is already down is worth never wrongly claiming ignorance.
-    extras = ["The club's CURRENT data:\n\n" + _safe_club_context()]
-    if _needs_chat_history(messages) and channel_id is not None:
+    #
+    # include_contact/include_history let a size-constrained caller (the
+    # small_groq fallback, 6,000 tokens/MINUTE - a tighter window than the
+    # main model's 12,000 despite its bigger daily budget) drop the two
+    # biggest optional additions rather than 413 outright. Added
+    # 2026-08-16 after a real question ("gimme details of aryamman ojha")
+    # 413'd on small_groq specifically because the contact-detail roster
+    # (~5.4k chars since that data was added the same night) pushed this
+    # already-large payload over 6,000 tokens. Losing contact details or
+    # deep history on THIS ONE fallback attempt is a fair trade for
+    # answering at all instead of failing outright.
+    extras = ["The club's CURRENT data:\n\n" + _safe_club_context(include_contact=include_contact)]
+    if include_history and _needs_chat_history(messages) and channel_id is not None:
         extras.append(
             "THIS CHANNEL'S ACTUAL MESSAGE LOG for the last few days is below - "
             "these ARE the older messages, already retrieved for you. Answer "
@@ -1440,11 +1462,18 @@ def _ask_with_compound(messages, channel_id=None):
             # Gemini's free tier is small enough to 429 under any real
             # load, so the small Groq model - on its own, much larger
             # daily budget - is what actually keeps the bot answering
-            # once the 70b one is spent. Same no-tools messages, which
-            # already have the club data pasted in when the question
-            # needs it (see CLUB_KEYWORDS), so it can still answer club
-            # questions without tool support.
-            small_reply = _ask_with_small_groq(no_tools_messages)
+            # once the 70b one is spent. NOT the same no_tools_messages
+            # compound/plain got above - this model's per-minute token
+            # cap (6,000) is smaller than 70b's (12,000), and the full
+            # club context (with contact details) is big enough on its
+            # own to 413 here on a real question (confirmed live,
+            # 2026-08-16). Rebuilt without contact details or deep chat
+            # history so it actually fits.
+            small_reply = _ask_with_small_groq(
+                _with_no_tools_note(
+                    messages, channel_id, include_contact=False, include_history=False
+                )
+            )
             if small_reply is not None:
                 return small_reply, []
             openrouter_reply = _ask_with_openrouter(no_tools_messages)
@@ -1740,7 +1769,15 @@ async def _handle_incoming(message, is_edit=False):
         for form in (f"<@{mentioned.id}>", f"<@!{mentioned.id}>"):
             text = text.replace(form, mentioned.display_name)
     if not text:
-        return
+        # A bare @mention with nothing else typed used to just return here
+        # - no reply, no error, nothing. Confirmed live (2026-08-16): right
+        # after the bot came back up from being stopped, several real
+        # pings were exactly this ("@roboknightsbot" and nothing else),
+        # and each one looked exactly like the bot was still broken rather
+        # than like nothing had actually been asked. Treated the same as
+        # a plain "hi" below - same zero-cost instant reply, no API call,
+        # just an acknowledgment instead of silence.
+        text = "hi"
 
     # Keyed by (channel, author), not just channel — a DM is already
     # one-person-per-channel, but a server channel isn't: without the
