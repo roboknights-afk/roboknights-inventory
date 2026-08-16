@@ -79,7 +79,44 @@ supabase = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
 # actually live. Printed on startup (see on_ready) - the only way to tell
 # from outside whether the running bot is the current code, since this
 # service is deployed by hand with `railway up`, not from GitHub.
-BOT_BUILD = "2026-08-15 no-freeze + parody-block"
+BOT_BUILD = "2026-08-16 guest-channel scoping"
+
+# The bot now lives in a SECOND server it doesn't own — the Exun clan's,
+# in their RoboKnights channel, so their side can ask it about
+# competitions, rosters and members directly (2026-08-16). Being a guest
+# in someone else's server changes two things:
+#
+# 1. WHERE it may talk. In our own server it answers anywhere it's
+#    @mentioned. Elsewhere it answers ONLY in channels listed here — a
+#    Discord invite grants server-wide access by default, and "we added
+#    the bot for one channel" should not mean it can be pulled into any
+#    other channel of theirs and asked about our members.
+# 2. WHAT it writes down. The passive discord_channel_log (every message
+#    it can see, for host review) stays limited to our own server. Their
+#    channel's chatter is not ours to store, and the review log exists to
+#    audit OUR bot, which ai_chat_messages already covers everywhere —
+#    that keeps every question the bot is ASKED, in either server.
+#
+# Both default to today's behaviour when unset (no home guild configured
+# = treat everywhere as home), so a missing variable degrades to what
+# this bot did before, never to silently ignoring our own server.
+DISCORD_HOME_GUILD_ID = os.environ.get("DISCORD_HOME_GUILD_ID", "").strip()
+DISCORD_GUEST_CHANNEL_IDS = {
+    c.strip() for c in os.environ.get("DISCORD_GUEST_CHANNEL_IDS", "").split(",") if c.strip()
+}
+
+
+def _is_home_guild(channel):
+    # DMs have no guild at all and have always been allowed — they're
+    # one-to-one with the bot, not someone else's server.
+    guild = getattr(channel, "guild", None)
+    if guild is None or not DISCORD_HOME_GUILD_ID:
+        return True
+    return str(guild.id) == DISCORD_HOME_GUILD_ID
+
+
+def _channel_allowed(channel):
+    return _is_home_guild(channel) or str(channel.id) in DISCORD_GUEST_CHANNEL_IDS
 
 # Plain model - handles every reply's actual thinking, whether or not a
 # search happened. Same one send_dashboard_update.py uses for its
@@ -1487,6 +1524,12 @@ async def on_ready():
     # startup over one locked channel.
     for guild in client.guilds:
         for channel in guild.text_channels:
+            # Guest servers: only the channel(s) we were actually added
+            # for, and never their wider history. Reading a whole outside
+            # server's backlog into our memory is not what "add the bot to
+            # our RoboKnights channel" asked for.
+            if not _channel_allowed(channel):
+                continue
             perms = channel.permissions_for(guild.me)
             if not (perms.view_channel and perms.read_message_history):
                 continue
@@ -1532,6 +1575,12 @@ async def _handle_incoming(message, is_edit=False):
     discord_channel_id = str(message.channel.id)
     linked_user_id, linked_name = _linked_user(discord_user_id)
 
+    # A guest server's other channels: not ours to read, reply in, or log.
+    # Silent by design — an unanswered @mention in a channel we were never
+    # added for is the correct outcome, not an error message.
+    if not _channel_allowed(message.channel):
+        return
+
     # Passive read: every message updates the channel's rolling activity
     # log and the review log, whether or not it's actually a trigger for
     # a reply below.
@@ -1539,7 +1588,12 @@ async def _handle_incoming(message, is_edit=False):
         channel_log[message.channel.id].append(
             {"author": message.author.display_name, "content": message.content}
         )
-        _log_channel_message(message, linked_user_id, is_edit=is_edit)
+        # Persisted review log stays limited to our own server — see the
+        # DISCORD_HOME_GUILD_ID comment at the top. In a guest channel the
+        # rolling in-memory log above still gives the bot the conversation
+        # it's replying into; it just isn't written to our database.
+        if _is_home_guild(message.channel):
+            _log_channel_message(message, linked_user_id, is_edit=is_edit)
 
     if not (is_dm or is_mentioned or is_reply_to_bot):
         return

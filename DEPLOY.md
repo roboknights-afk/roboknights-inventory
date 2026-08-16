@@ -251,6 +251,20 @@ summaries already use — no new AI account needed.
      the Keys page. Which models are free rotates over time — if the one
      in `bot.py` (`OPENROUTER_MODEL`) starts 404ing, check
      `curl https://openrouter.ai/api/v1/models` for current `:free` ids.
+   - `DISCORD_HOME_GUILD_ID` — our own Discord server's ID
+     (`607226177425506325`). In this server the bot answers in any channel
+     it's @mentioned in, as it always has. In **any other** server it
+     answers only in the channels listed in the next variable, and it never
+     writes that server's messages to `discord_channel_log`. Leave it unset
+     and every server counts as home — i.e. exactly the old behaviour, so a
+     missing value can never mute the bot in our own server.
+   - `DISCORD_GUEST_CHANNEL_IDS` — comma-separated channel IDs in OTHER
+     servers the bot is allowed to work in (currently the RoboKnights
+     channel in the Exun server). A Discord invite grants a bot access to
+     a whole server, not one channel; this is what actually keeps it to
+     the channel it was added for. Right-click the channel → **Copy
+     Channel ID** (needs Developer Mode on, under User Settings →
+     Advanced) to get it.
 5. **The bot does NOT auto-deploy on push.** This used to say it did, and
    that was wrong — confirmed 2026-08-15 by reading the service's own
    config, which has no GitHub source attached at all (`source: null`).
@@ -278,6 +292,44 @@ To test on your own laptop first: put all the variables above in a
 `.env` file inside `discord_bot/` (or run from the repo root, which
 already has one), then `pip install -r discord_bot/requirements.txt` and
 `python discord_bot/bot.py`.
+
+### Adding the bot to another club's server
+
+Done once for the Exun clan's server (2026-08-16) so their side can ask it
+about competitions, rosters and members directly. Someone with **Manage
+Server** on *that* server has to do steps 1-2 — an invite can't be issued
+from our side alone.
+
+1. Send them this invite link (it grants exactly View Channels, Send
+   Messages, Read Message History and Embed Links — nothing moderation
+   related):
+
+   ```
+   https://discord.com/oauth2/authorize?client_id=1536836032329416724&permissions=84992&scope=bot
+   ```
+
+2. On their side: pick their server in the dropdown, authorize, then in
+   **that one channel** → Edit Channel → Permissions, make sure
+   `roboknightsbot` can view and send. If they want it kept out of every
+   other channel of theirs, denying View Channel at the category or server
+   level and allowing it on the one channel is the clean way.
+3. Get that channel's ID (right-click → **Copy Channel ID**, with
+   Developer Mode on) and add it to `DISCORD_GUEST_CHANNEL_IDS` in Railway,
+   comma-separated if there's more than one. **Until this is set the bot
+   stays silent there** — that's deliberate: joining a server should not
+   by itself let anyone in it start querying our club data.
+4. Redeploy the bot (`cd discord_bot && railway up`, or just push — the
+   `deploy-bot.yml` workflow covers `discord_bot/**`) and confirm the new
+   `Running build:` line in the Deploy Logs.
+
+What the bot will and won't tell them: it answers from the same club data
+it already has — every member's name, grade, section and standing
+(including ad hocs), all competitions with their venues, dates, deadlines
+and links, and who has volunteered or been finalized for each event. It
+does **not** have anyone's email, phone number or admission number —
+`_build_club_context` in `bot.py` deliberately never fetches those, and
+that predates this and is unrelated to which server it's in. The roast and
+staff-topic blocks apply there exactly as they do at home.
 
 ## What doesn't change
 
