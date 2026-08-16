@@ -614,6 +614,14 @@ def safe_write(action_description):
     # BaseException Streamlit handles by ending this run cleanly, which
     # also means the caller's `with` body — the actual writes — never
     # executes at all.
+    #
+    # TRAP, hit for real (Exun couldn't see a single competition): because
+    # this ENDS THE PAGE RUN, a safe_write that runs on page LOAD rather
+    # than on a click blanks the whole page for read-only tiers — every
+    # section below it simply never renders. Housekeeping writes the page
+    # does to itself (the past-competition auto-flip, the Exun channel read
+    # receipt) must therefore be guarded with `if not is_read_only:` at the
+    # call site. Only writes behind a button belong in a bare safe_write.
     if st.session_state.get("is_read_only"):
         st.error("This is a read-only account — it can't make changes.")
         st.stop()

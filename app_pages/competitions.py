@@ -1138,18 +1138,28 @@ if st.session_state.volunteer_message:
 # load by every user. Wrapped in _safe_write since this runs unconditionally
 # for anyone who opens the page — a transient failure here shouldn't take
 # the whole page down with it.
+#
+# Skipped entirely for read-only tiers (Exun, viewer). safe_write stops the
+# whole page run for them by design — that's the backstop that makes
+# view-only actually true — but this block runs on LOAD, not on a click, so
+# without this guard an Exun account opening Competitions got the red
+# "read-only account" error and nothing else: no metrics, no list, no
+# competitions at all. Housekeeping the page does to itself is not that
+# account's action to be refused. Any host or member visit still flips
+# them, so nothing stays stale for long.
 today_ist = datetime.now(IST).date()
-with _safe_write("check for newly-past competitions"):
-    stale_ids = [
-        c["competition_id"] for c in cached_table("competitions")
-        if not c.get("is_past") and c.get("competition_date")
-        and date.fromisoformat(c["competition_date"]) < today_ist
-    ]
-    if stale_ids:
-        client.table("competitions").update({"is_past": True}).in_(
-            "competition_id", stale_ids
-        ).execute()
-        invalidate_cache()
+if not is_read_only:
+    with _safe_write("check for newly-past competitions"):
+        stale_ids = [
+            c["competition_id"] for c in cached_table("competitions")
+            if not c.get("is_past") and c.get("competition_date")
+            and date.fromisoformat(c["competition_date"]) < today_ist
+        ]
+        if stale_ids:
+            client.table("competitions").update({"is_past": True}).in_(
+                "competition_id", stale_ids
+            ).execute()
+            invalidate_cache()
 
 competitions = sorted(
     cached_table("competitions"),

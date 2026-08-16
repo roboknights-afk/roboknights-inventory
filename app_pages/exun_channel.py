@@ -50,7 +50,18 @@ my_read_row = next(
     (r for r in cached_table("exun_channel_reads") if r["user_id"] == current_user_id), None
 )
 my_read_at = my_read_row.get("last_read_at") if my_read_row else None
-if latest_message_at and (not my_read_at or latest_message_at > my_read_at):
+#
+# Read-only tiers skip it: safe_write ends the page run for them, and this
+# fires on LOAD rather than on a click, so without the guard an Exun account
+# opening this channel saw the "read-only account" error instead of the
+# messages — on exactly the visit where there was something new to read.
+# Nothing depends on their receipt anyway; the unread nudge is scoped to
+# EXUN_CHANNEL_STUDENT_EMAILS (see shared.py).
+if (
+    latest_message_at
+    and (not my_read_at or latest_message_at > my_read_at)
+    and not st.session_state.get("is_read_only")
+):
     with safe_write("mark this channel read"):
         client.table("exun_channel_reads").upsert({
             "user_id": current_user_id,
