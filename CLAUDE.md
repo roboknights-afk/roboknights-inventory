@@ -1442,6 +1442,21 @@ through `safe_write`** or it bypasses this entirely.
 Note `st.stop()` and not `return`: a bare return before the `yield` makes
 `@contextmanager` raise "generator didn't yield".
 
+**The one real cost of that backstop, found 2026-08-16 by the student
+("exun cant see any comps"):** because it ENDS THE PAGE RUN, a
+`safe_write` that runs on page **load** rather than on a click blanks the
+entire page for read-only tiers — every section below it never renders.
+Two blocks did exactly that, both added long before the backstop existed:
+the past-competition auto-flip in `competitions.py`, so an Exun account
+opening Competitions saw only the red "read-only account" error and not a
+single competition; and the read receipt in `exun_channel.py`, on exactly
+the visit where there was a new message to read. Both are now guarded with
+`if not is_read_only:`, and the reproduction is in the commit — AppTest
+showed 0 metrics and 0 tabs before, all 4 metrics and both tabs after.
+**Housekeeping a page does to itself is not the visitor's action to
+refuse.** Only writes behind a button belong in a bare `safe_write`; check
+for on-load ones whenever a new tier is added.
+
 An account in `HOST_EMAILS`, `EXUN_EMAILS` or `VIEWER_EMAILS` **works with
 no `users` row at all** — `current_user_id` comes from the auth user, and
 the display name falls back to the email. That's why those tiers skip both
