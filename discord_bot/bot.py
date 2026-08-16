@@ -79,7 +79,7 @@ supabase = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
 # actually live. Printed on startup (see on_ready) - the only way to tell
 # from outside whether the running bot is the current code, since this
 # service is deployed by hand with `railway up`, not from GitHub.
-BOT_BUILD = "2026-08-16 real fallback error logging"
+BOT_BUILD = "2026-08-17 small-model fallback tier"
 
 # The bot now lives in a SECOND server it doesn't own — the Exun clan's,
 # in their RoboKnights channel, so their side can ask it about
@@ -122,6 +122,23 @@ def _channel_allowed(channel):
 # search happened. Same one send_dashboard_update.py uses for its
 # release-note summaries.
 GROQ_MODEL = "llama-3.3-70b-versatile"
+
+# The same key's SMALL model, kept in reserve for when the big one's daily
+# budget is gone. Groq's token-per-day limits are per MODEL, not per key -
+# confirmed from the 429 itself, which names the model
+# ("Rate limit reached for model `llama-3.3-70b-versatile` ... tokens per
+# day (TPD): Limit 100000") - so this is a genuinely separate allowance,
+# and a much larger one (14,400 requests/day here against 1,000).
+#
+# Added 2026-08-16 after the bot told someone in the Exun channel "I'm
+# maxed out on my daily AI usage limit" with 99,585 of 100,000 tokens
+# used, while Gemini and OpenRouter were both rate-limited at the same
+# moment. An 8-billion-parameter model gives noticeably shallower answers
+# than the 70b one; it is still enormously better than going dark for an
+# hour and a half. It sits between the two Groq attempts and Gemini, so
+# nothing changes on a normal day - this only runs once the good model is
+# actually out.
+GROQ_SMALL_MODEL = "llama-3.1-8b-instant"
 
 # Host-requested ban (2026-08-14): these Discord user IDs get no reply at
 # all, DM or @mention - not a moderation feature (their messages still get
@@ -1054,7 +1071,11 @@ def _extract_sources(response):
 # sync that silently did nothing for days: a swallowed exception with no
 # logging turns a broken feature into an invisible one. Written by the two
 # functions below, read only by that one log line.
-_last_provider_error = {"gemini": "not attempted", "openrouter": "not attempted"}
+_last_provider_error = {
+    "gemini": "not attempted",
+    "small_groq": "not attempted",
+    "openrouter": "not attempted",
+}
 
 
 def _ask_with_gemini(messages, channel_id=None):
@@ -1342,6 +1363,32 @@ def _ask_with_openrouter(messages):
         return None
 
 
+def _ask_with_small_groq(no_tools_messages):
+    # Same "record why, don't fail silently" contract as the other two
+    # fallbacks - see _last_provider_error.
+    try:
+        response = groq_client.chat.completions.create(
+            model=GROQ_SMALL_MODEL, messages=no_tools_messages, max_tokens=MAX_REPLY_TOKENS,
+        )
+        reply = response.choices[0].message.content
+        if not reply:
+            _last_provider_error["small_groq"] = "empty response"
+            return None
+        _last_provider_error["small_groq"] = "ok"
+        # Flagged for the same reason the plain-70b path is: this model
+        # has no tools and can't look anything up, and a confident wrong
+        # answer presented as fact is worse than a hedged one. Deliberately
+        # doesn't name the model - members don't need to know which
+        # provider is having a bad day, only how much to trust the answer.
+        return (
+            "*(Running on my backup model right now - my main one is out of its "
+            "daily budget, so this answer may be rougher than usual.)*\n\n" + reply
+        )
+    except Exception as e:
+        _last_provider_error["small_groq"] = repr(e)[:300]
+        return None
+
+
 def _ask_with_compound(messages, channel_id=None):
     # groq/compound: Groq's own search-and-read loop, server-side, no size
     # control on our end - kept only as what runs when TAVILY_API_KEY isn't
@@ -1355,7 +1402,9 @@ def _ask_with_compound(messages, channel_id=None):
     no_tools_messages = _with_no_tools_note(messages, channel_id)
     # Cleared per attempt, so the log line below can never report a
     # leftover reason from an earlier, unrelated question.
-    _last_provider_error.update(gemini="not attempted", openrouter="not attempted")
+    _last_provider_error.update(
+        gemini="not attempted", small_groq="not attempted", openrouter="not attempted"
+    )
     try:
         response = groq_client.chat.completions.create(
             model=COMPOUND_MODEL, messages=no_tools_messages,
@@ -1388,6 +1437,16 @@ def _ask_with_compound(messages, channel_id=None):
             gemini_reply = _ask_with_gemini(messages, channel_id)
             if gemini_reply is not None:
                 return gemini_reply, []
+            # Gemini's free tier is small enough to 429 under any real
+            # load, so the small Groq model - on its own, much larger
+            # daily budget - is what actually keeps the bot answering
+            # once the 70b one is spent. Same no-tools messages, which
+            # already have the club data pasted in when the question
+            # needs it (see CLUB_KEYWORDS), so it can still answer club
+            # questions without tool support.
+            small_reply = _ask_with_small_groq(no_tools_messages)
+            if small_reply is not None:
+                return small_reply, []
             openrouter_reply = _ask_with_openrouter(no_tools_messages)
             if openrouter_reply is not None:
                 return openrouter_reply, []
@@ -1399,6 +1458,7 @@ def _ask_with_compound(messages, channel_id=None):
             # where it's actually useful for debugging.
             print(f"ALL PROVIDERS FAILED - compound: {compound_error!r}; plain: {groq_error!r}; "
                   f"gemini: {_last_provider_error['gemini']}; "
+                  f"small_groq: {_last_provider_error['small_groq']}; "
                   f"openrouter: {_last_provider_error['openrouter']}", flush=True)
             return (
                 "I'm maxed out on my daily AI usage limit right now, so I can't "

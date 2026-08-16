@@ -1332,6 +1332,43 @@ is the intended lever for re-running verification for one person.
 No secrets in them, but they don't belong. Stage deliberately when the
 working tree has throwaway files in it.
 
+## When every free provider ran out at once (2026-08-16)
+
+First real question asked in the Exun channel got "I'm maxed out on my
+daily AI usage limit". The log line explaining why said `gemini: no
+reply; openrouter: no reply` — **those words were hardcoded**, printed
+identically whether the call 429'd, timed out, returned empty text, or
+never ran for want of a key. Third time this project has been bitten by a
+swallowed failure with no logging (Clio sync, the try/except around
+`notify_if_roster_complete`, now this). Both fallbacks now record a real
+reason — exception repr, HTTP status **and body** (a retired free model
+404s, a daily cap 429s, opposite fixes), Gemini's `finish_reason` when it
+hands back a candidate with no text, and "the reply was all reasoning and
+got stripped to nothing" — and the failure line prints what they recorded.
+
+What was actually wrong, probed directly with the real keys:
+
+| Provider | State |
+| --- | --- |
+| Groq `llama-3.3-70b-versatile` | 99,585 of 100,000 tokens/day used |
+| `groq/compound` | 429 on tokens/minute, then 413 on retry |
+| Gemini `gemini-flash-latest` | answers fine **with tools**, 429s on free-tier quota under load |
+| OpenRouter | works fine in isolation |
+
+**Groq's per-model token-per-day limit is the binding constraint**, and it
+is per MODEL, not per key — the 429 names the model. So
+`GROQ_SMALL_MODEL` (`llama-3.1-8b-instant`) was added as a tier between
+Gemini and OpenRouter: its own, much larger allowance (14,400 requests/day
+against 1,000). Answers are visibly shallower — it looks up one named
+member correctly but miscounts a filtered list — so the reply is prefixed
+with an honest "running on my backup model" note, deliberately without
+naming the provider. On a normal day it never runs at all.
+
+Useful numbers for later, from the response headers rather than the docs:
+70b is 12,000 tokens/min and 1,000 requests/day; 8b-instant is 6,000
+tokens/min and 14,400 requests/day. The daily TOKEN cap isn't in the
+headers at all — only the 429 body names it.
+
 ## The bot as a guest in the Exun server (2026-08-16)
 
 `roboknightsbot` was added to the Exun clan's own server, in their
