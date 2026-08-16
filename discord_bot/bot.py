@@ -79,7 +79,7 @@ supabase = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
 # actually live. Printed on startup (see on_ready) - the only way to tell
 # from outside whether the running bot is the current code, since this
 # service is deployed by hand with `railway up`, not from GitHub.
-BOT_BUILD = "2026-08-16 guest-channel scoping + member contact details"
+BOT_BUILD = "2026-08-16 real fallback error logging"
 
 # The bot now lives in a SECOND server it doesn't own — the Exun clan's,
 # in their RoboKnights channel, so their side can ask it about
@@ -1046,8 +1046,20 @@ def _extract_sources(response):
     return sources
 
 
+# Why the last fallback attempt actually failed. The ALL PROVIDERS FAILED
+# log line used to print the literal words "gemini: no reply; openrouter:
+# no reply" no matter what happened - 429, timeout, empty text, missing
+# key, all identical - so when the bot went quiet in the Exun channel
+# (2026-08-16) there was nothing to debug from. Same lesson as the Clio
+# sync that silently did nothing for days: a swallowed exception with no
+# logging turns a broken feature into an invisible one. Written by the two
+# functions below, read only by that one log line.
+_last_provider_error = {"gemini": "not attempted", "openrouter": "not attempted"}
+
+
 def _ask_with_gemini(messages, channel_id=None):
     if gemini_client is None:
+        _last_provider_error["gemini"] = "no GEMINI_API_KEY set"
         return None
     try:
         # Gemini's own shape: system prompt is a separate config field, not
@@ -1135,8 +1147,18 @@ def _ask_with_gemini(messages, channel_id=None):
         # the caller fall through to its real error message rather than
         # dead-end a member with "try asking again" (which is what
         # happened before, and gave no signal anything was actually wrong).
-        return response.text or None
-    except Exception:
+        if response.text:
+            _last_provider_error["gemini"] = "ok"
+            return response.text
+        # Empty text is a real, distinct case: the model can stop on a
+        # MAX_TOKENS or SAFETY finish reason and hand back a candidate
+        # with no text at all, which looks exactly like a crash from the
+        # outside unless the reason is recorded.
+        reasons = [str(c.finish_reason) for c in (response.candidates or [])]
+        _last_provider_error["gemini"] = f"empty text (finish_reason={reasons or 'none'})"
+        return None
+    except Exception as e:
+        _last_provider_error["gemini"] = repr(e)[:300]
         return None
 
 
@@ -1270,6 +1292,7 @@ def _ask_with_openrouter(messages):
     # of the messages: this path has no tools, and without that note the
     # model invents club data (see NO_TOOLS_NOTE above).
     if not OPENROUTER_API_KEY:
+        _last_provider_error["openrouter"] = "no OPENROUTER_API_KEY set"
         return None
     # This model is a reasoning model and, left alone, ships its thinking
     # to the channel: a real reply began "We need to answer user: 'hi,
@@ -1295,9 +1318,27 @@ def _ask_with_openrouter(messages):
             },
             timeout=30,
         )
-        r.raise_for_status()
-        return _strip_reasoning(r.json()["choices"][0]["message"]["content"]) or None
-    except Exception:
+        if r.status_code >= 300:
+            # The body matters more than the status here: a free model
+            # that's been retired 404s, and a daily cap 429s, and those
+            # need completely different fixes (swap OPENROUTER_MODEL vs
+            # wait it out). Trimmed, since it lands in the Railway logs.
+            _last_provider_error["openrouter"] = f"HTTP {r.status_code}: {r.text[:200]}"
+            return None
+        raw = r.json()["choices"][0]["message"]["content"]
+        reply = _strip_reasoning(raw) or None
+        if reply is None:
+            # This model is a reasoning model, so an answer that was ALL
+            # reasoning gets stripped down to nothing - indistinguishable
+            # from a failed call without saying so.
+            _last_provider_error["openrouter"] = (
+                f"empty after stripping reasoning (raw {len(raw or '')} chars)"
+            )
+        else:
+            _last_provider_error["openrouter"] = "ok"
+        return reply
+    except Exception as e:
+        _last_provider_error["openrouter"] = repr(e)[:300]
         return None
 
 
@@ -1312,6 +1353,9 @@ def _ask_with_compound(messages, channel_id=None):
     # returning a "try asking again" placeholder instead was what made
     # this whole chain dead-end on members with no real attempt made.
     no_tools_messages = _with_no_tools_note(messages, channel_id)
+    # Cleared per attempt, so the log line below can never report a
+    # leftover reason from an earlier, unrelated question.
+    _last_provider_error.update(gemini="not attempted", openrouter="not attempted")
     try:
         response = groq_client.chat.completions.create(
             model=COMPOUND_MODEL, messages=no_tools_messages,
@@ -1354,7 +1398,8 @@ def _ask_with_compound(messages, channel_id=None):
             # embed. The full detail still exists, in the Railway logs,
             # where it's actually useful for debugging.
             print(f"ALL PROVIDERS FAILED - compound: {compound_error!r}; plain: {groq_error!r}; "
-                  f"gemini: no reply; openrouter: no reply", flush=True)
+                  f"gemini: {_last_provider_error['gemini']}; "
+                  f"openrouter: {_last_provider_error['openrouter']}", flush=True)
             return (
                 "I'm maxed out on my daily AI usage limit right now, so I can't "
                 "answer this one. It resets on its own - try again a bit later.", []
