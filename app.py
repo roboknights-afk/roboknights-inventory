@@ -378,10 +378,22 @@ REMEMBER_ME_DAYS = 30
 
 def _set_remember_cookie(refresh_token):
     max_age = REMEMBER_ME_DAYS * 24 * 60 * 60
+    # TEMP DEBUG (2026-08-18): the write below has repeatedly failed to
+    # show up in st.context.cookies on the next load, even with the
+    # st.rerun() race already fixed — this wraps it in try/catch and logs
+    # to the browser console so we can see whether the script runs at all,
+    # throws (e.g. cross-origin access denied), or runs but doesn't stick.
+    # Remove once the real cause is found.
     components.html(
         f"""<script>
-        window.parent.document.cookie =
-            "{REMEMBER_ME_COOKIE}={refresh_token}; max-age={max_age}; path=/; SameSite=Lax";
+        try {{
+            console.log("[RK cookie debug] script running, about to write");
+            window.parent.document.cookie =
+                "{REMEMBER_ME_COOKIE}={refresh_token}; max-age={max_age}; path=/; SameSite=Lax";
+            console.log("[RK cookie debug] write done, parent.document.cookie now:", window.parent.document.cookie);
+        }} catch (e) {{
+            console.error("[RK cookie debug] write THREW:", e);
+        }}
         </script>""",
         height=0,
     )
