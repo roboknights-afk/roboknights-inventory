@@ -638,7 +638,52 @@ def render_chat_thread(thread_id, participant_ids, key_prefix="chat"):
                 "body": new_text.strip(),
             }).execute()
             invalidate_cache()
+            _notify_new_chat_message(
+                thread_id, other_ids, new_text.strip(), thread_messages,
+            )
         st.rerun()
+
+
+def _notify_new_chat_message(thread_id, other_ids, body, existing_messages):
+    # Who to email about a message just sent. A chat isn't a query thread —
+    # people send several messages in a row — so emailing on EVERY one
+    # would be pure spam. Only people who are CAUGHT UP get a mail: if
+    # someone already has an unread message sitting in this thread, they've
+    # been told once already and don't need telling again for each
+    # follow-up. A burst of ten messages therefore sends one email, not ten.
+    #
+    # Best-effort like every other notification in this app — a mail
+    # failure must never lose the message that was actually sent.
+    try:
+        sender_name = st.session_state.current_user_name
+        user_email_by_id = st.session_state.user_email_by_id
+        latest_existing = max(
+            (m["created_at"] for m in existing_messages), default=None
+        )
+        reads = {
+            r["user_id"]: r.get("last_read_at") for r in cached_table("chat_reads")
+            if r["thread_id"] == thread_id
+        }
+        preview = body if len(body) <= 200 else body[:197] + "..."
+        for uid in other_ids:
+            their_read_at = reads.get(uid)
+            caught_up = (
+                latest_existing is None
+                or (their_read_at and their_read_at >= latest_existing)
+            )
+            if not caught_up:
+                continue
+            email = user_email_by_id.get(uid)
+            if not email:
+                continue
+            send_email(
+                email,
+                f"New message from {sender_name}",
+                f"{sender_name} sent you a message:\n\n{preview}\n\n"
+                f"Reply here: {APP_URL}",
+            )
+    except Exception:
+        pass
 
 
 def google_calendar_link(title, meeting_date, meeting_time=None, details="", location=""):
