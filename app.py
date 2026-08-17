@@ -1089,6 +1089,11 @@ if st.session_state.get("needs_google_profile"):
 if st.session_state.auth_user is None and not st.session_state.get("tried_remember_login"):
     st.session_state.tried_remember_login = True
     remembered_token = st.context.cookies.get(REMEMBER_ME_COOKIE)
+    # TEMP DEBUG (2026-08-18): surfaces exactly what the server-side cookie
+    # read sees, and exactly why refresh_session fails if it does, instead
+    # of silently clearing the cookie with no visible reason. Remove once
+    # the real cause is found.
+    st.info(f"[RK debug] st.context.cookies saw remember token: {bool(remembered_token)}")
     if remembered_token:
         try:
             result = client.auth.refresh_session(remembered_token)
@@ -1101,7 +1106,8 @@ if st.session_state.auth_user is None and not st.session_state.get("tried_rememb
             # since there's nothing at all between the write and the rerun.
             st.session_state.pending_remember_token = result.session.refresh_token
             st.rerun()
-        except Exception:
+        except Exception as e:
+            st.error(f"[RK debug] refresh_session failed: {e!r}")
             _clear_remember_cookie()
 
 # Nobody logged in yet — show the email-verified landing, the reset
