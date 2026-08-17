@@ -476,6 +476,171 @@ def has_unread_chats(user_id):
     return False
 
 
+def create_request_thread(request_group_id, requester_id, owner_id, title):
+    # Every borrow request gets its own chat between the two people
+    # involved, created upfront with the request rather than waiting for
+    # someone to click "message" — so there's always somewhere obvious to
+    # ask "which one did you mean?" or "can I pick it up tomorrow?".
+    #
+    # Best-effort on purpose: a chat is an add-on to the request, so a
+    # failure here (most likely the migration not having been run yet)
+    # must never turn an otherwise-successful borrow request into an
+    # error. Same spirit as notify_if_roster_complete.
+    try:
+        client = get_client()
+        new_thread = client.table("chat_threads").insert({
+            "is_group": False,
+            "title": title,
+            "request_group_id": request_group_id,
+            "created_by": requester_id,
+        }).execute()
+        thread_id = new_thread.data[0]["thread_id"]
+        client.table("chat_participants").insert([
+            {"thread_id": thread_id, "user_id": requester_id},
+            {"thread_id": thread_id, "user_id": owner_id},
+        ]).execute()
+        invalidate_cache()
+        return thread_id
+    except Exception:
+        return None
+
+
+def request_thread_id(request_group_id):
+    # Which chat belongs to this request group, if the tables exist and one
+    # was made. Defensive for the same reason as above.
+    try:
+        return next(
+            (
+                t["thread_id"] for t in cached_table("chat_threads")
+                if t.get("request_group_id") == request_group_id
+            ),
+            None,
+        )
+    except Exception:
+        return None
+
+
+def render_chat_thread(thread_id, participant_ids, key_prefix="chat"):
+    # The actual conversation UI, shared by the Messages page and the
+    # request cards on Inventory. Lives here rather than in messages.py
+    # because app_pages/*.py run top-to-bottom as scripts on import — one
+    # page importing another would execute the whole page.
+    #
+    # key_prefix keeps widget keys unique when the same thread is rendered
+    # somewhere other than the Messages page.
+    client = get_client()
+    current_user_id = st.session_state.current_user_id
+    user_name_by_id = st.session_state.user_name_by_id
+
+    thread_messages = sorted(
+        (m for m in cached_table("chat_messages") if m["thread_id"] == thread_id),
+        key=lambda m: m["created_at"],
+    )
+
+    # Read receipt: only WRITE when there's actually something newer from
+    # someone else than what's on record, so re-opening an already-read
+    # thread doesn't spam updates and cache invalidations for no reason.
+    # Skipped entirely for read-only tiers — safe_write isn't used here,
+    # but a read-only account has no business writing a receipt either.
+    my_read_row = next(
+        (r for r in cached_table("chat_reads")
+         if r["thread_id"] == thread_id and r["user_id"] == current_user_id),
+        None,
+    )
+    my_read_at = my_read_row.get("last_read_at") if my_read_row else None
+    latest_from_other = max(
+        (m["created_at"] for m in thread_messages if m["sender_id"] != current_user_id),
+        default=None,
+    )
+    if (
+        latest_from_other
+        and (not my_read_at or latest_from_other > my_read_at)
+        and not st.session_state.get("is_read_only")
+    ):
+        client.table("chat_reads").upsert({
+            "thread_id": thread_id,
+            "user_id": current_user_id,
+            "last_read_at": datetime.now(timezone.utc).isoformat(),
+        }).execute()
+        invalidate_cache()
+
+    # Everyone else's last-read time, so a sent message can show whether
+    # it's been read. In a group that means "read by everyone", which is
+    # the only reading of it that doesn't need a per-person breakdown.
+    other_ids = [uid for uid in participant_ids if uid != current_user_id]
+    other_reads = [
+        r.get("last_read_at") for r in cached_table("chat_reads")
+        if r["thread_id"] == thread_id and r["user_id"] in other_ids
+    ]
+    everyone_read_at = (
+        min(other_reads)
+        if other_reads and len(other_reads) == len(other_ids) and all(other_reads)
+        else None
+    )
+
+    if not thread_messages:
+        st.caption("No messages yet — say something.")
+
+    for msg in thread_messages:
+        mine = msg["sender_id"] == current_user_id
+        sender_name = "You" if mine else user_name_by_id.get(msg["sender_id"], "Unknown")
+        with st.chat_message("user" if mine else "assistant", avatar=":material/person:"):
+            if st.session_state.get("editing_chat_message_id") == msg["message_id"]:
+                edited_body = st.text_area(
+                    "Edit message", value=msg["body"],
+                    key=f"{key_prefix}_edit_{msg['message_id']}",
+                    label_visibility="collapsed",
+                )
+                save_col, cancel_col = st.columns([1, 1])
+                if save_col.button(
+                    "Save", key=f"{key_prefix}_save_{msg['message_id']}", icon=":material/check:"
+                ):
+                    with safe_write("save this edit"):
+                        client.table("chat_messages").update({
+                            "body": edited_body.strip(),
+                            "edited_at": datetime.now(timezone.utc).isoformat(),
+                        }).eq("message_id", msg["message_id"]).execute()
+                        invalidate_cache()
+                    st.session_state.editing_chat_message_id = None
+                    st.rerun()
+                if cancel_col.button(
+                    "Cancel", key=f"{key_prefix}_cancel_{msg['message_id']}", icon=":material/close:"
+                ):
+                    st.session_state.editing_chat_message_id = None
+                    st.rerun()
+            else:
+                col1, col2 = st.columns([5, 1], vertical_alignment="center")
+                label = f"**{sender_name}**"
+                if msg.get("edited_at"):
+                    label += " _(edited)_"
+                col1.markdown(label)
+                st.write(msg["body"])
+                timestamp_line = f":material/schedule: {format_relative(msg['created_at'])}"
+                if mine:
+                    if everyone_read_at and msg["created_at"] <= everyone_read_at:
+                        timestamp_line += "  •  :blue[✓✓ Read]"
+                    else:
+                        timestamp_line += "  •  ✓ Sent"
+                st.caption(timestamp_line, help=format_ist(msg["created_at"]))
+                # You can only edit your own messages, same as Queries.
+                if mine and col2.button(
+                    "Edit", key=f"{key_prefix}_editbtn_{msg['message_id']}", icon=":material/edit:"
+                ):
+                    st.session_state.editing_chat_message_id = msg["message_id"]
+                    st.rerun()
+
+    new_text = st.chat_input("Type a message...", key=f"{key_prefix}_input_{thread_id}")
+    if new_text and new_text.strip():
+        with safe_write("send this message"):
+            client.table("chat_messages").insert({
+                "thread_id": thread_id,
+                "sender_id": current_user_id,
+                "body": new_text.strip(),
+            }).execute()
+            invalidate_cache()
+        st.rerun()
+
+
 def google_calendar_link(title, meeting_date, meeting_time=None, details="", location=""):
     # A plain "add to Google Calendar" URL - no OAuth, no API key, no
     # calendar integration to maintain. The club is on Google Workspace

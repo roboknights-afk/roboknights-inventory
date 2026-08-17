@@ -16,7 +16,8 @@ from datetime import date, timedelta
 import streamlit as st
 
 from shared import (
-    APP_URL, cached_table, get_client, invalidate_cache, safe_write, send_email, today_ist,
+    APP_URL, cached_table, create_request_thread, get_client, invalidate_cache,
+    render_chat_thread, request_thread_id, safe_write, send_email, today_ist,
 )
 
 client = get_client()
@@ -218,6 +219,10 @@ def render_request_dialog(name, owner_id, owner_name, max_qty, units=None, bulk_
             if bulk_part is not None:
                 # A single request row carrying the quantity — unlike
                 # serialised parts there are no individual units to point at.
+                # It still gets a group id, purely so the request chat below
+                # has something stable to hang off — a bulk request had no
+                # group of its own before this.
+                group_id = str(uuid.uuid4())
                 client.table("requests").insert({
                     "part_id": bulk_part["part_id"],
                     "requester_id": current_user_id,
@@ -225,6 +230,7 @@ def render_request_dialog(name, owner_id, owner_name, max_qty, units=None, bulk_
                     "status": "pending",
                     "requested_days": days_wanted,
                     "quantity": qty_wanted,
+                    "request_group_id": group_id,
                 }).execute()
                 serial_list = bulk_part["part_number"]
             else:
@@ -245,6 +251,14 @@ def render_request_dialog(name, owner_id, owner_name, max_qty, units=None, bulk_
                     for u in chosen
                 ]).execute()
                 serial_list = ", ".join(u["part_number"] for u in chosen)
+
+            # A chat between the two people involved, created with the
+            # request rather than on demand, so there's always somewhere
+            # obvious to sort out details ("which one?", "when can I pick
+            # it up?"). Best-effort — see create_request_thread.
+            create_request_thread(
+                group_id, current_user_id, owner_id, f"{qty_wanted} × {name}",
+            )
 
             invalidate_cache()
             send_email(
@@ -841,6 +855,25 @@ with tab_parts:
 # both lists — nothing extra to track.
 
 
+def render_request_chat(gid, first, key_prefix):
+    # The per-request chat, shown on both sides of a loan (the owner's
+    # request card and the borrower's own card) and at both stages
+    # (pending, and still-on-loan after approval) — the details worth
+    # sorting out don't stop mattering the moment it's approved.
+    #
+    # Requests made before this feature existed have no thread, and a
+    # read-only account has no business in someone's private chat.
+    if is_read_only:
+        return
+    thread_id = request_thread_id(gid)
+    if not thread_id:
+        return
+    with st.expander(":material/chat: Messages about this"):
+        render_chat_thread(
+            thread_id, [first["requester_id"], first["owner_id"]], key_prefix=key_prefix,
+        )
+
+
 def group_by_request(reqs):
     # Units asked for together share a request_group_id, so they read as one
     # loan ("3 × Johnson 600rpm") instead of three identical lines. Anything
@@ -978,6 +1011,7 @@ with tab_loans:
                         st.rerun()
 
                 st.caption(f":material/tag: {serial_list}")
+                render_request_chat(gid, first, key_prefix=f"reqchat_{gid}")
 
     elif loans_view == VIEW_LENT:
         st.subheader(":material/logout: Parts I've lent out")
@@ -1018,6 +1052,7 @@ with tab_loans:
                                 )
                                 st.rerun()
                     st.caption(f":material/tag: {', '.join(p['part_number'] for p in group_parts)}")
+                    render_request_chat(gid, first, key_prefix=f"lentchat_{gid}")
 
     else:
         st.subheader(":material/login: What I've borrowed")
@@ -1039,6 +1074,7 @@ with tab_loans:
                     due_badge(col3, first)
                     col3.caption(f"Due {format_due(first)}")
                     st.caption(f":material/tag: {', '.join(p['part_number'] for p in group_parts)}")
+                    render_request_chat(gid, first, key_prefix=f"borrowchat_{gid}")
 
 
 # --- Tab 3: add a part, plus notes about the admin tools ----------------------

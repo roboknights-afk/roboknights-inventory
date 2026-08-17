@@ -8,12 +8,10 @@
 # included. Read receipts are one row per person per thread, since each
 # member reads each of their threads independently.
 
-from datetime import datetime, timezone
-
 import streamlit as st
 
 from shared import (
-    cached_table, format_ist, format_relative, get_client, invalidate_cache, safe_write,
+    cached_table, get_client, invalidate_cache, render_chat_thread, safe_write,
 )
 
 client = get_client()
@@ -90,10 +88,16 @@ def _thread_label(thread, participant_ids):
     # A group shows its title; a DM shows the OTHER person's name, since
     # "chat with yourself and Aryamman" is just "Aryamman" from where
     # you're sitting.
+    other = next((uid for uid in participant_ids if uid != current_user_id), None)
+    other_name = user_name_by_id.get(other, "Unknown")
+    # A borrow-request chat is a 2-person thread too, but its title says
+    # which request it's about — worth keeping, alongside who it's with,
+    # since someone can easily have several going at once.
+    if thread.get("request_group_id") and thread.get("title"):
+        return f"{thread['title']} · {other_name}"
     if thread.get("is_group"):
         return thread.get("title") or "Group chat"
-    other = next((uid for uid in participant_ids if uid != current_user_id), None)
-    return user_name_by_id.get(other, "Unknown")
+    return other_name
 
 
 @st.dialog("New chat", on_dismiss=_close_new_chat)
@@ -168,104 +172,16 @@ def render_new_chat():
         st.rerun()
 
 
-def render_thread(thread, participant_ids, thread_messages):
-    thread_id = thread["thread_id"]
-
+def render_thread(thread, participant_ids):
+    # The conversation itself lives in shared.render_chat_thread, since the
+    # Inventory page's request cards render the same thing — see the
+    # comment there for why it can't just live on this page.
     if thread.get("is_group"):
         names = ", ".join(
             sorted(user_name_by_id.get(uid, "Unknown") for uid in participant_ids)
         )
         st.caption(f":material/group: {len(participant_ids)} people — {names}")
-
-    # Read receipt: only WRITE when there's actually something newer from
-    # someone else than what's on record, so re-opening an already-read
-    # thread doesn't spam updates and cache invalidations for no reason.
-    my_read_row = next(
-        (r for r in cached_table("chat_reads")
-         if r["thread_id"] == thread_id and r["user_id"] == current_user_id),
-        None,
-    )
-    my_read_at = my_read_row.get("last_read_at") if my_read_row else None
-    latest_from_other = max(
-        (m["created_at"] for m in thread_messages if m["sender_id"] != current_user_id),
-        default=None,
-    )
-    if latest_from_other and (not my_read_at or latest_from_other > my_read_at):
-        client.table("chat_reads").upsert({
-            "thread_id": thread_id,
-            "user_id": current_user_id,
-            "last_read_at": datetime.now(timezone.utc).isoformat(),
-        }).execute()
-        invalidate_cache()
-
-    # Everyone else's last-read time, so a sent message can show whether
-    # it's been read. In a group that means "read by everyone", which is
-    # the only reading of it that doesn't need a per-person breakdown.
-    other_ids = [uid for uid in participant_ids if uid != current_user_id]
-    other_reads = [
-        r.get("last_read_at") for r in cached_table("chat_reads")
-        if r["thread_id"] == thread_id and r["user_id"] in other_ids
-    ]
-    everyone_read_at = (
-        min(other_reads) if other_reads and len(other_reads) == len(other_ids)
-        and all(other_reads) else None
-    )
-
-    if not thread_messages:
-        st.caption("No messages yet — say something.")
-
-    for msg in thread_messages:
-        mine = msg["sender_id"] == current_user_id
-        sender_name = "You" if mine else user_name_by_id.get(msg["sender_id"], "Unknown")
-        with st.chat_message("user" if mine else "assistant", avatar=":material/person:"):
-            if st.session_state.editing_chat_message_id == msg["message_id"]:
-                edited_body = st.text_area(
-                    "Edit message", value=msg["body"], key=f"edit_chat_{msg['message_id']}",
-                    label_visibility="collapsed",
-                )
-                save_col, cancel_col = st.columns([1, 1])
-                if save_col.button("Save", key=f"save_chat_{msg['message_id']}", icon=":material/check:"):
-                    with safe_write("save this edit"):
-                        client.table("chat_messages").update({
-                            "body": edited_body.strip(),
-                            "edited_at": datetime.now(timezone.utc).isoformat(),
-                        }).eq("message_id", msg["message_id"]).execute()
-                        invalidate_cache()
-                    st.session_state.editing_chat_message_id = None
-                    st.rerun()
-                if cancel_col.button("Cancel", key=f"cancel_chat_{msg['message_id']}", icon=":material/close:"):
-                    st.session_state.editing_chat_message_id = None
-                    st.rerun()
-            else:
-                col1, col2 = st.columns([5, 1], vertical_alignment="center")
-                label = f"**{sender_name}**"
-                if msg.get("edited_at"):
-                    label += " _(edited)_"
-                col1.markdown(label)
-                st.write(msg["body"])
-                timestamp_line = f":material/schedule: {format_relative(msg['created_at'])}"
-                if mine:
-                    if everyone_read_at and msg["created_at"] <= everyone_read_at:
-                        timestamp_line += "  •  :blue[✓✓ Read]"
-                    else:
-                        timestamp_line += "  •  ✓ Sent"
-                st.caption(timestamp_line, help=format_ist(msg["created_at"]))
-                # You can only edit your own messages, same as Queries.
-                if mine:
-                    if col2.button("Edit", key=f"edit_chat_btn_{msg['message_id']}", icon=":material/edit:"):
-                        st.session_state.editing_chat_message_id = msg["message_id"]
-                        st.rerun()
-
-    new_text = st.chat_input("Type a message...", key=f"chat_input_{thread_id}")
-    if new_text and new_text.strip():
-        with safe_write("send this message"):
-            client.table("chat_messages").insert({
-                "thread_id": thread_id,
-                "sender_id": current_user_id,
-                "body": new_text.strip(),
-            }).execute()
-            invalidate_cache()
-        st.rerun()
+    render_chat_thread(thread["thread_id"], participant_ids)
 
 
 if not _tables_ready():
@@ -326,4 +242,4 @@ for t in my_threads:
         label += "  🔵 New"
 
     with st.expander(label, expanded=st.session_state.open_thread_id == thread_id):
-        render_thread(t, participant_ids, thread_messages)
+        render_thread(t, participant_ids)

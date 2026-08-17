@@ -509,3 +509,12 @@ create table if not exists chat_reads (
     last_read_at timestamptz,
     primary key (thread_id, user_id)
 );
+
+-- Per-request chat (2026-08-18): every borrow request gets its own chat
+-- between the requester and the owner, created with the request itself.
+-- Nullable — a plain DM or group chat isn't tied to any request. Text,
+-- not a foreign key to requests: several request ROWS share one
+-- request_group_id when someone asks for multiple units at once (see
+-- group_by_request in inventory.py), and the chat belongs to that whole
+-- group, not to one unit of it.
+alter table chat_threads add column if not exists request_group_id text;
