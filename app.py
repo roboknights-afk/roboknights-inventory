@@ -582,7 +582,13 @@ def handle_google_oauth_callback(client):
         # no password-typing friction here to weigh "save it" against, so
         # defaulting to staying logged in is the friction-reducing choice a
         # one-click login is supposed to be.
-        _set_remember_cookie(result.session.refresh_token)
+        #
+        # Deferred to the NEXT run (see pending_remember_token below) rather
+        # than written here directly — this function ends in st.rerun(),
+        # and firing that immediately after mounting the cookie-writing
+        # script raced the two: the rerun could tear the iframe down before
+        # it actually ran, silently dropping the cookie.
+        st.session_state.pending_remember_token = result.session.refresh_token
 
     # Only students need the extra profile step: is_host/is_exun are
     # decided purely by email (see is_host/is_exun below), and
@@ -799,19 +805,22 @@ def show_login_signup(client):
                     "Password", type="password", key="login_password",
                     autocomplete="current-password",
                 )
-                save_login = st.checkbox(
-                    "Save my login details on this device",
-                    key="login_save_details",
-                    help="Stays logged in on this device using a secure session token — "
-                         "never your actual password — so you don't have to type your "
-                         "password in again next time.",
+                st.caption(
+                    ":material/check_circle: Stays logged in on this device — "
+                    "never your actual password, just a secure session token.",
                 )
                 if st.button("Log in", icon=":material/login:", type="primary", width="stretch"):
                     try:
                         result = client.auth.sign_in_with_password({"email": email, "password": password})
                         st.session_state.auth_user = {"id": result.user.id, "email": result.user.email}
-                        if save_login and result.session and result.session.refresh_token:
-                            _set_remember_cookie(result.session.refresh_token)
+                        if result.session and result.session.refresh_token:
+                            # Always remembered now, same as the Google login
+                            # path — the separate opt-in checkbox this used to
+                            # require is gone; every login stays logged in.
+                            # Deferred to the NEXT run, same reasoning as the
+                            # Google login path above — writing the cookie
+                            # here raced the st.rerun() right below it.
+                            st.session_state.pending_remember_token = result.session.refresh_token
                         st.rerun()
                     except Exception as e:
                         st.error(f"Couldn't log in: {e}")
@@ -1072,8 +1081,11 @@ if st.session_state.auth_user is None and not st.session_state.get("tried_rememb
             st.session_state.auth_user = {"id": result.user.id, "email": result.user.email}
             # Refresh tokens rotate on every use — the one we just spent is
             # already invalid, so the cookie has to move to the NEW one or
-            # the next visit's silent restore would fail.
-            _set_remember_cookie(result.session.refresh_token)
+            # the next visit's silent restore would fail. Deferred to the
+            # NEXT run (see pending_remember_token below), same race as the
+            # other two write sites: this one is the most exposed to it,
+            # since there's nothing at all between the write and the rerun.
+            st.session_state.pending_remember_token = result.session.refresh_token
             st.rerun()
         except Exception:
             _clear_remember_cookie()
@@ -1109,6 +1121,16 @@ if _disabled_row and _disabled_row.get("is_disabled"):
     _clear_remember_cookie()
     st.error("This account has been disabled. Please contact the admin.")
     st.stop()
+
+# Actually writing the "remember me" cookie set by any of the three login
+# paths above (password login, Google login, silent restore) — deferred to
+# here, one run later, specifically so nothing calls st.rerun() right after
+# it. Doing it inline at the login moment raced the iframe's script against
+# the rerun that immediately followed it, sometimes losing the cookie write
+# entirely — which mattered a lot here because Supabase refresh tokens are
+# single-use: one dropped write meant the NEXT hard refresh failed too.
+if st.session_state.get("pending_remember_token"):
+    _set_remember_cookie(st.session_state.pop("pending_remember_token"))
 
 # --- Gear splash ---------------------------------------------------------
 # Plays exactly once per login: the gear spins up in the center, then the
