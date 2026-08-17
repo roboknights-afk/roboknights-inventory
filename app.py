@@ -353,58 +353,83 @@ def school_email_input(label, key):
 
 # --- "Save my login details" -----------------------------------------------
 # A real stay-logged-in session, using Supabase's OWN refresh token stored
-# in a cookie — never the actual password — so you don't have to type your
-# password in again next time you open the app. (The other half of "save my
-# login details" — asking the BROWSER to offer saving the password itself —
-# was tried via the Credential Management API and pulled back out: it
-# requires a very recent, direct user gesture ("transient activation"), and
-# Streamlit's login button click round-trips through the server before any
-# script of ours runs, which used up that window every time. Not a bug to
-# chase further — a real mismatch between what that API demands and how
+# in the browser — never the actual password — so you don't have to type
+# your password in again next time you open the app. (The other half of
+# "save my login details" — asking the BROWSER to offer saving the password
+# itself — was tried via the Credential Management API and pulled back out:
+# it requires a very recent, direct user gesture ("transient activation"),
+# and Streamlit's login button click round-trips through the server before
+# any script of ours runs, which used up that window every time. Not a bug
+# to chase further — a real mismatch between what that API demands and how
 # Streamlit is built. autocomplete="username"/"current-password" on the
 # fields below is the actual fix: the standards-based hint every browser's
 # OWN save-password heuristic already looks for, no custom JS involved.)
 #
-# Writing the cookie needs actual JS, and st.html() turned out not to run
-# <script> tags at all (confirmed live: a script inside st.html silently
-# does nothing, same family of gotcha as it stripping inline <svg> — see
-# the gear splash notes below). st.components.v1.html DOES run scripts
-# reliably, because it renders into a real sandboxed iframe rather than
-# being poured into the page via innerHTML — confirmed live too: a cookie
-# set from inside it shows up in st.context.cookies on the next load.
-REMEMBER_ME_COOKIE = "rk_remember_token"
-REMEMBER_ME_DAYS = 30
+# This used to be a cookie, read back via st.context.cookies. Abandoned
+# 2026-08-18 after a long live-debugging session proved, step by step, that
+# it could never work on Streamlit Community Cloud: the JS write genuinely
+# succeeds, the cookie genuinely gets stored, and the browser genuinely
+# sends it on a normal page request — confirmed with DevTools at every one
+# of those steps, including from a brand-new incognito window. But
+# st.context.cookies's own docstring says it only reflects cookies present
+# at the INITIAL WEBSOCKET HANDSHAKE, and Community Cloud's connection
+# setup for that handshake never forwards our cookie through to the Python
+# backend — an infra gap, not something fixable from application code.
+#
+# Replaced with localStorage (pure client-side, no header-forwarding to
+# depend on) plus a URL query param to hand the token to the Python side:
+# on load, JS checks localStorage and — if there's a token and the URL
+# doesn't already carry it — redirects through `?rk_token=...`, which
+# st.query_params reads directly off the actual request, same mechanism
+# already relied on elsewhere in this app (the request-approval email
+# links). Needs actual JS either way, and st.html() doesn't run <script>
+# tags at all (confirmed live: silently does nothing, same family of
+# gotcha as it stripping inline <svg> — see the gear splash notes below).
+# st.components.v1.html DOES run scripts reliably, since it renders into a
+# real sandboxed iframe rather than being poured into the page via
+# innerHTML.
+REMEMBER_ME_KEY = "rk_remember_token"
 
 
-def _set_remember_cookie(refresh_token):
-    max_age = REMEMBER_ME_DAYS * 24 * 60 * 60
-    # TEMP DEBUG (2026-08-18): the write below has repeatedly failed to
-    # show up in st.context.cookies on the next load, even with the
-    # st.rerun() race already fixed — this wraps it in try/catch and logs
-    # to the browser console so we can see whether the script runs at all,
-    # throws (e.g. cross-origin access denied), or runs but doesn't stick.
-    # Remove once the real cause is found.
+def _set_remember_token(refresh_token):
     components.html(
         f"""<script>
         try {{
-            console.log("[RK cookie debug] own href:", location.href);
-            console.log("[RK cookie debug] parent href:", window.parent.location.href);
-            console.log("[RK cookie debug] top href:", window.top.location.href);
-            window.parent.document.cookie =
-                "{REMEMBER_ME_COOKIE}={refresh_token}; max-age={max_age}; path=/; SameSite=Lax";
-            console.log("[RK cookie debug] write done, parent.document.cookie now:", window.parent.document.cookie);
-        }} catch (e) {{
-            console.error("[RK cookie debug] write THREW:", e);
-        }}
+            window.parent.localStorage.setItem("{REMEMBER_ME_KEY}", "{refresh_token}");
+        }} catch (e) {{}}
         </script>""",
         height=0,
     )
 
 
-def _clear_remember_cookie():
+def _clear_remember_token():
     components.html(
         f"""<script>
-        window.parent.document.cookie = "{REMEMBER_ME_COOKIE}=; max-age=0; path=/; SameSite=Lax";
+        try {{
+            window.parent.localStorage.removeItem("{REMEMBER_ME_KEY}");
+        }} catch (e) {{}}
+        </script>""",
+        height=0,
+    )
+
+
+def _try_restore_from_local_storage():
+    # Runs once per browser session (guarded by tried_remember_login at the
+    # call site) when nobody's logged in and the URL doesn't already carry
+    # a restore token: asks the browser whether it remembers one in
+    # localStorage and, if so, reloads through a query param so the Python
+    # side can actually see it. location.replace (not .href) so this
+    # doesn't leave an extra back-button entry.
+    components.html(
+        f"""<script>
+        try {{
+            const token = window.parent.localStorage.getItem("{REMEMBER_ME_KEY}");
+            if (token) {{
+                const url = new URL(window.parent.location.href);
+                url.searchParams.set("{REMEMBER_ME_KEY}", token);
+                window.parent.location.replace(url.toString());
+            }}
+        }} catch (e) {{}}
         </script>""",
         height=0,
     )
@@ -599,9 +624,9 @@ def handle_google_oauth_callback(client):
         #
         # Deferred to the NEXT run (see pending_remember_token below) rather
         # than written here directly — this function ends in st.rerun(),
-        # and firing that immediately after mounting the cookie-writing
+        # and firing that immediately after mounting the localStorage-writing
         # script raced the two: the rerun could tear the iframe down before
-        # it actually ran, silently dropping the cookie.
+        # it actually ran, silently dropping the write.
         st.session_state.pending_remember_token = result.session.refresh_token
 
     # Only students need the extra profile step: is_host/is_exun are
@@ -832,8 +857,8 @@ def show_login_signup(client):
                             # path — the separate opt-in checkbox this used to
                             # require is gone; every login stays logged in.
                             # Deferred to the NEXT run, same reasoning as the
-                            # Google login path above — writing the cookie
-                            # here raced the st.rerun() right below it.
+                            # Google login path above — writing it here
+                            # raced the st.rerun() right below it.
                             st.session_state.pending_remember_token = result.session.refresh_token
                         st.rerun()
                     except Exception as e:
@@ -1082,33 +1107,36 @@ if st.session_state.get("needs_google_profile"):
     st.stop()
 
 # Silently try a "remembered" session before showing any login UI at all —
-# see _set_remember_cookie for how this cookie gets written in the first
-# place. Guarded by tried_remember_login so a bad/expired token (cleared
-# below) only gets ONE retry attempt per browser session, not one on every
-# single rerun of the login screen.
-if st.session_state.auth_user is None and not st.session_state.get("tried_remember_login"):
-    st.session_state.tried_remember_login = True
-    remembered_token = st.context.cookies.get(REMEMBER_ME_COOKIE)
-    # TEMP DEBUG (2026-08-18): surfaces exactly what the server-side cookie
-    # read sees, and exactly why refresh_session fails if it does, instead
-    # of silently clearing the cookie with no visible reason. Remove once
-    # the real cause is found.
-    st.info(f"[RK debug] st.context.cookies saw remember token: {bool(remembered_token)}")
+# see the REMEMBER_ME_KEY comment above for how this token gets stored and
+# handed back via a query param. The query-param check runs every rerun
+# regardless of tried_remember_login: a token showing up there can only
+# mean our own JS put it there (see _try_restore_from_local_storage), so
+# there's no loop risk in always processing it. tried_remember_login only
+# guards the "ask the browser to check localStorage" step, so THAT only
+# fires once per browser session, not on every single rerun of the login
+# screen.
+if st.session_state.auth_user is None:
+    remembered_token = st.query_params.get(REMEMBER_ME_KEY)
     if remembered_token:
         try:
             result = client.auth.refresh_session(remembered_token)
             st.session_state.auth_user = {"id": result.user.id, "email": result.user.email}
             # Refresh tokens rotate on every use — the one we just spent is
-            # already invalid, so the cookie has to move to the NEW one or
-            # the next visit's silent restore would fail. Deferred to the
-            # NEXT run (see pending_remember_token below), same race as the
-            # other two write sites: this one is the most exposed to it,
-            # since there's nothing at all between the write and the rerun.
+            # already invalid, so the stored token has to move to the NEW
+            # one or the next visit's silent restore would fail. Deferred
+            # to the NEXT run (see pending_remember_token below), same race
+            # as the other two write sites: this one is the most exposed to
+            # it, since there's nothing at all between the write and the
+            # rerun.
             st.session_state.pending_remember_token = result.session.refresh_token
+            del st.query_params[REMEMBER_ME_KEY]
             st.rerun()
-        except Exception as e:
-            st.error(f"[RK debug] refresh_session failed: {e!r}")
-            _clear_remember_cookie()
+        except Exception:
+            _clear_remember_token()
+            del st.query_params[REMEMBER_ME_KEY]
+    elif not st.session_state.get("tried_remember_login"):
+        st.session_state.tried_remember_login = True
+        _try_restore_from_local_storage()
 
 # Nobody logged in yet — show the email-verified landing, the reset
 # screen, or the login/signup screen, then stop here so the rest of the
@@ -1138,19 +1166,19 @@ _disabled_row = next(
 )
 if _disabled_row and _disabled_row.get("is_disabled"):
     st.session_state.auth_user = None
-    _clear_remember_cookie()
+    _clear_remember_token()
     st.error("This account has been disabled. Please contact the admin.")
     st.stop()
 
-# Actually writing the "remember me" cookie set by any of the three login
+# Actually writing the "remember me" token set by any of the three login
 # paths above (password login, Google login, silent restore) — deferred to
 # here, one run later, specifically so nothing calls st.rerun() right after
 # it. Doing it inline at the login moment raced the iframe's script against
-# the rerun that immediately followed it, sometimes losing the cookie write
+# the rerun that immediately followed it, sometimes losing the write
 # entirely — which mattered a lot here because Supabase refresh tokens are
 # single-use: one dropped write meant the NEXT hard refresh failed too.
 if st.session_state.get("pending_remember_token"):
-    _set_remember_cookie(st.session_state.pop("pending_remember_token"))
+    _set_remember_token(st.session_state.pop("pending_remember_token"))
 
 # --- Gear splash ---------------------------------------------------------
 # Plays exactly once per login: the gear spins up in the center, then the
@@ -1407,7 +1435,7 @@ with st.sidebar:
             # A logout should genuinely log out — without this, "remember
             # me" would silently sign them right back in on the very next
             # rerun via the auto-restore check above.
-            _clear_remember_cookie()
+            _clear_remember_token()
             st.session_state.tried_remember_login = True
             # Tells the login screen to play the gear spin-DOWN once.
             st.session_state.splash_out = True
@@ -1421,8 +1449,8 @@ with st.sidebar:
 # working, just made invisible via CSS) and a hand-styled pill is appended
 # straight onto the actual page's <body> — a real DOM node, sibling to
 # Streamlit's own root, not nested inside anything Streamlit re-renders —
-# via the same window.parent.document technique _set_remember_cookie
-# above already uses to write a cookie. Clicking the pill finds the real
+# via the same window.parent.document reach-through the remember-me
+# functions above use. Clicking the pill finds the real
 # button and calls .click() on it, which fires Streamlit's own listener
 # exactly as if a person had clicked it, so the dialog opens for real.
 with st.container(key="rk_feedback_fab"):
