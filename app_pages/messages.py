@@ -54,6 +54,24 @@ def _open_new_chat():
     st.session_state.show_new_chat = True
 
 
+def _safe_table(name):
+    # Same reasoning as ai_logs.py and shared.meeting_invitee_rows: app
+    # code and SQL migrations ship separately, so a table that hasn't been
+    # created yet should show a "run the migration" note, not crash the
+    # whole page.
+    try:
+        return cached_table(name)
+    except Exception:
+        return None
+
+
+def _tables_ready():
+    return all(
+        _safe_table(t) is not None
+        for t in ("chat_threads", "chat_participants", "chat_messages", "chat_reads")
+    )
+
+
 def _my_thread_ids():
     return {
         p["thread_id"] for p in cached_table("chat_participants")
@@ -249,6 +267,14 @@ def render_thread(thread, participant_ids, thread_messages):
             invalidate_cache()
         st.rerun()
 
+
+if not _tables_ready():
+    st.warning(
+        ":material/database: The chat tables don't exist yet — run the "
+        "`chat_threads` / `chat_participants` / `chat_messages` / `chat_reads` "
+        "block at the bottom of `supabase_schema.sql` in Supabase's SQL editor."
+    )
+    st.stop()
 
 st.button(
     "New chat", icon=":material/add_comment:", type="primary",
