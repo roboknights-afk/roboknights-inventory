@@ -387,7 +387,9 @@ def _set_remember_cookie(refresh_token):
     components.html(
         f"""<script>
         try {{
-            console.log("[RK cookie debug] script running, about to write");
+            console.log("[RK cookie debug] own href:", location.href);
+            console.log("[RK cookie debug] parent href:", window.parent.location.href);
+            console.log("[RK cookie debug] top href:", window.top.location.href);
             window.parent.document.cookie =
                 "{REMEMBER_ME_COOKIE}={refresh_token}; max-age={max_age}; path=/; SameSite=Lax";
             console.log("[RK cookie debug] write done, parent.document.cookie now:", window.parent.document.cookie);
