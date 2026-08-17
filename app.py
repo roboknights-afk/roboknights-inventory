@@ -13,7 +13,8 @@ from supabase_auth.helpers import generate_pkce_challenge, generate_pkce_verifie
 
 from shared import (
     APP_URL, EXUN_CHANNEL_MEMBERS, EXUN_EMAILS, HOST_EMAILS, HOST_ROLES, VIEWER_EMAILS, cached_table,
-    get_client, has_unread_exun_channel, has_unread_queries, invalidate_cache, safe_write, send_email,
+    get_client, has_unread_chats, has_unread_exun_channel, has_unread_queries, invalidate_cache,
+    safe_write, send_email,
     sync_member_to_clio_sheet,
 )
 
@@ -1595,6 +1596,21 @@ if not st.session_state.is_exun:
     # account is kept out of them the same way Exun is.
     if not st.session_state.is_viewer:
         pages.append(st.Page("app_pages/queries.py", title=queries_title, icon=":material/quiz:"))
+# Member-to-member DMs and group chats. Read-only tiers (Exun, viewer) are
+# kept out of members' private conversations the same way Queries keeps
+# them out — the page itself re-checks too, since the nav list alone
+# doesn't stop a direct URL hit.
+if not st.session_state.is_read_only:
+    messages_title = "Messages"
+    # Defensive, same as the Queries badge: this runs on EVERY page load
+    # for every user, and a badge must never be able to take the whole app
+    # down over a not-yet-run migration.
+    try:
+        if has_unread_chats(st.session_state.current_user_id):
+            messages_title += " 🔵"
+    except Exception:
+        pass
+    pages.append(st.Page("app_pages/messages.py", title=messages_title, icon=":material/chat:"))
 pages.append(st.Page("app_pages/meetings.py", title="Meetings", icon=":material/groups:"))
 pages.append(st.Page("app_pages/achievements.py", title="Achievements", icon=":material/military_tech:"))
 pages.append(st.Page("app_pages/assistant.py", title="AI Assistant", icon=":material/smart_toy:"))

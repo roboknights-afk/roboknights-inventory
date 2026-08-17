@@ -449,6 +449,33 @@ def has_unread_exun_channel(user_id):
     return not my_read_at or latest > my_read_at
 
 
+def has_unread_chats(user_id):
+    # Same per-thread "newer than my last read" check messages.py does for
+    # its own 🔵 badges — reused here so the nav badge and the page can
+    # never disagree about what counts as unread.
+    my_thread_ids = {
+        p["thread_id"] for p in cached_table("chat_participants")
+        if p["user_id"] == user_id
+    }
+    if not my_thread_ids:
+        return False
+    my_reads = {
+        r["thread_id"]: r.get("last_read_at") for r in cached_table("chat_reads")
+        if r["user_id"] == user_id
+    }
+    latest_by_thread = {}
+    for m in cached_table("chat_messages"):
+        if m["thread_id"] in my_thread_ids and m["sender_id"] != user_id:
+            current = latest_by_thread.get(m["thread_id"])
+            if not current or m["created_at"] > current:
+                latest_by_thread[m["thread_id"]] = m["created_at"]
+    for thread_id, latest in latest_by_thread.items():
+        my_read_at = my_reads.get(thread_id)
+        if not my_read_at or latest > my_read_at:
+            return True
+    return False
+
+
 def google_calendar_link(title, meeting_date, meeting_time=None, details="", location=""):
     # A plain "add to Google Calendar" URL - no OAuth, no API key, no
     # calendar integration to maintain. The club is on Google Workspace
