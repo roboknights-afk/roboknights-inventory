@@ -418,16 +418,38 @@ def _try_restore_from_local_storage():
     # call site) when nobody's logged in and the URL doesn't already carry
     # a restore token: asks the browser whether it remembers one in
     # localStorage and, if so, reloads through a query param so the Python
-    # side can actually see it. location.replace (not .href) so this
-    # doesn't leave an extra back-button entry.
+    # side can actually see it.
+    #
+    # Navigating window.parent DIRECTLY from in here doesn't work — this
+    # script runs inside a sandboxed components.html iframe, and browsers
+    # block a sandboxed frame from navigating an ANCESTOR frame unless it's
+    # explicitly granted "allow-top-navigation", which Streamlit's
+    # component iframes don't set. It fails completely silently (no
+    # exception, just a console warning), which is exactly why this looked
+    # like nothing was happening at all. Fix: inject a real <script> tag
+    # into window.parent.document instead (same reach-through the "Report
+    # an issue" pill already uses) so the redirect runs as that document's
+    # OWN script — a frame navigating itself has no such restriction.
     components.html(
         f"""<script>
         try {{
-            const token = window.parent.localStorage.getItem("{REMEMBER_ME_KEY}");
-            if (token) {{
-                const url = new URL(window.parent.location.href);
-                url.searchParams.set("{REMEMBER_ME_KEY}", token);
-                window.parent.location.replace(url.toString());
+            const doc = window.parent.document;
+            if (!doc.getElementById('rk-remember-restore')) {{
+                const s = doc.createElement('script');
+                s.id = 'rk-remember-restore';
+                s.textContent = `
+                    (function() {{
+                        try {{
+                            const token = localStorage.getItem("{REMEMBER_ME_KEY}");
+                            if (token) {{
+                                const url = new URL(location.href);
+                                url.searchParams.set("{REMEMBER_ME_KEY}", token);
+                                location.replace(url.toString());
+                            }}
+                        }} catch (e) {{}}
+                    }})();
+                `;
+                doc.head.appendChild(s);
             }}
         }} catch (e) {{}}
         </script>""",
