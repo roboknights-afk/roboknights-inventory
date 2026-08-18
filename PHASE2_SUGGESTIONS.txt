@@ -10,11 +10,23 @@ Status key:  [ ] open   [~] in progress   [x] done
 OPEN
 ----
 
-[ ] Let a member rename a part they own.
-    A member can add a part but cannot change its name afterwards, so a typo
-    or a wrong name is permanent unless the part is deleted and re-added.
-    The owner (and admins) should be able to edit the name of an existing
-    item from the Inventory page.
+[ ] Let a member edit a part after adding it.
+    Right now a part can only be added or deleted - nothing about it can be
+    changed once it exists, so a typo or a wrong number means deleting the
+    part and starting again. The owner (and admins) should be able to edit an
+    existing item from the Inventory page:
+      - name
+      - part number
+      - quantity
+      - loose item / serialised toggle, if that can be changed safely
+    Things to be careful about while building it:
+      - For serialised parts, quantity is one row per unit, so raising it
+        means adding rows and lowering it means removing them. Units that are
+        currently lent out or requested must never be removed.
+      - For loose (bulk) items, quantity must not be allowed to drop below
+        the number currently on loan.
+      - Every edit should be written to the activity log, the same way adding
+        and deleting a part already is.
 
 
 DONE
