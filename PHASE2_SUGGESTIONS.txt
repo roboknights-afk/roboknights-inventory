@@ -29,6 +29,23 @@ OPEN
         and deleting a part already is.
 
 
+[ ] Let a member link their own Discord account, so the bot can DM them.
+    users.discord_user_id already exists, but it is filled in by hand and
+    only 7 of 53 members have one, so the bot cannot message most people
+    directly. Anything that needs to reach a member individually - a nudge
+    to verify details, a borrow request, a meeting reminder - has to go out
+    as email instead, or be sent manually by a host.
+    What it should do:
+      - A "Connect Discord" button on the member's own profile that runs
+        Discord OAuth and stores the returned user id against their account,
+        so nobody has to find and paste their own Discord ID.
+      - Let a member unlink it again.
+      - Show a host which members are still unlinked, the same way unverified
+        details can be listed today.
+      - Once enough members are linked, send the notifications that are
+        currently emails as Discord DMs too, where the member has a link.
+
+
 DONE
 ----
 
