@@ -11,7 +11,9 @@
 
 import streamlit as st
 
-from shared import cached_table, get_client, invalidate_cache, safe_write
+from shared import (
+    cached_table, get_client, invalidate_cache, safe_write, send_discord_message,
+)
 
 client = get_client()
 is_host = st.session_state.is_host
@@ -64,6 +66,38 @@ def _close_log_achievement():
 
 def _open_log_achievement():
     st.session_state.show_log_achievement = True
+
+
+def _notify_achievement(user_ids, comp_name, event_name, position, link):
+    # Posted to the club's #achievements Discord channel the moment a
+    # result is logged. ONE message per result, not per person — a team
+    # that logged together is one achievement with several names on it,
+    # and three identical posts would just be noise.
+    #
+    # Best-effort like every other Discord sender in this app: a webhook
+    # failure (or the webhook simply not being configured yet) must never
+    # turn a successfully-logged achievement into an error on screen.
+    try:
+        if not user_ids:
+            return
+        names = ", ".join(
+            sorted(user_name_by_id.get(uid, "Unknown") for uid in user_ids)
+        )
+        lines = [
+            ":trophy: **New achievement logged**",
+            "",
+            f"**{names}**",
+            f"{comp_name} — {event_name}",
+        ]
+        if position:
+            lines.append(f"Position: **{position}**")
+        if link:
+            # Wrapped in <> so Discord doesn't expand it into a big
+            # preview embed, same as the bot's search-source links.
+            lines.append(f"Attachment: <{link}>")
+        send_discord_message("\n".join(lines), channel="achievements")
+    except Exception:
+        pass
 
 
 @st.dialog("Log a result", width="large", on_dismiss=_close_log_achievement)
@@ -162,7 +196,10 @@ def render_log_achievement():
                             for a in client.table("achievements")
                             .select("user_id").eq("event_id", chosen_event_id).execute().data
                         }
-                        logged = 0
+                        # Tracked as ids, not just a count, so the Discord
+                        # post below can name exactly who ended up on this
+                        # result — skipped duplicates included in neither.
+                        logged_ids = []
                         for uid in targets:
                             if uid in already_logged_ids:
                                 continue
@@ -173,7 +210,8 @@ def render_log_achievement():
                                 "position": position.strip() or None,
                                 "media_link": link or None,
                             }).execute()
-                            logged += 1
+                            logged_ids.append(uid)
+                        logged = len(logged_ids)
 
                         # Auto-log the same result for every teammate (same
                         # team_no on this event, from the E2C import's team
@@ -183,7 +221,7 @@ def render_log_achievement():
                         # applies to a member logging their OWN result — a
                         # host already picked the exact people above, so
                         # nothing extra should be implied.
-                        auto_logged = 0
+                        auto_logged_ids = []
                         if not is_host:
                             my_row = (
                                 client.table("event_volunteers")
@@ -219,9 +257,21 @@ def render_log_achievement():
                                         "position": position.strip() or None,
                                         "media_link": link or None,
                                     }).execute()
-                                    auto_logged += 1
+                                    auto_logged_ids.append(t["user_id"])
+                        auto_logged = len(auto_logged_ids)
 
                         invalidate_cache()
+
+                        # Everyone who actually ended up on this result —
+                        # the people logged for, plus any teammates it was
+                        # auto-logged for — in one post.
+                        _notify_achievement(
+                            logged_ids + auto_logged_ids,
+                            comp_name_by_id.get(chosen_comp_id, "Unknown competition"),
+                            event_name_by_id.get(chosen_event_id, "Unknown event"),
+                            position.strip(),
+                            link,
+                        )
                     skipped = len(targets) - logged
                     if is_host:
                         msg = f"Logged this result for {logged} member(s)."
