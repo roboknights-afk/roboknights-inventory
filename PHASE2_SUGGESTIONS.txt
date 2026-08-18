@@ -1,0 +1,23 @@
+PHASE 2 - SUGGESTION SHEET
+==========================
+
+Running list of ideas and requests for Phase 2 of the RoboKnights dashboard.
+Each entry is written as a task to be done, not as a question.
+
+Status key:  [ ] open   [~] in progress   [x] done
+
+
+OPEN
+----
+
+[ ] Let a member rename a part they own.
+    A member can add a part but cannot change its name afterwards, so a typo
+    or a wrong name is permanent unless the part is deleted and re-added.
+    The owner (and admins) should be able to edit the name of an existing
+    item from the Inventory page.
+
+
+DONE
+----
+
+(nothing yet)
