@@ -638,19 +638,22 @@ def render_chat_thread(thread_id, participant_ids, key_prefix="chat"):
                 "body": new_text.strip(),
             }).execute()
             invalidate_cache()
-            _notify_new_chat_message(
-                thread_id, other_ids, new_text.strip(), thread_messages,
-            )
+            _notify_new_chat_message(thread_id, other_ids, thread_messages)
         st.rerun()
 
 
-def _notify_new_chat_message(thread_id, other_ids, body, existing_messages):
+def _notify_new_chat_message(thread_id, other_ids, existing_messages):
     # Who to email about a message just sent. A chat isn't a query thread —
     # people send several messages in a row — so emailing on EVERY one
     # would be pure spam. Only people who are CAUGHT UP get a mail: if
     # someone already has an unread message sitting in this thread, they've
     # been told once already and don't need telling again for each
     # follow-up. A burst of ten messages therefore sends one email, not ten.
+    #
+    # The mail deliberately carries NO message text — just "go look". These
+    # are private member-to-member conversations, and email is the one
+    # place their contents would end up outside the app's own access
+    # control, sitting in an inbox indefinitely.
     #
     # Best-effort like every other notification in this app — a mail
     # failure must never lose the message that was actually sent.
@@ -664,7 +667,15 @@ def _notify_new_chat_message(thread_id, other_ids, body, existing_messages):
             r["user_id"]: r.get("last_read_at") for r in cached_table("chat_reads")
             if r["thread_id"] == thread_id
         }
-        preview = body if len(body) <= 200 else body[:197] + "..."
+        # Named so the recipient knows WHICH conversation without the app
+        # having to put any of its contents in the mail — a group's own
+        # name, or a request chat's "2 × Johnson 600rpm".
+        thread = next(
+            (t for t in cached_table("chat_threads") if t["thread_id"] == thread_id),
+            None,
+        )
+        thread_title = (thread or {}).get("title")
+        where = f'"{thread_title}"' if thread_title else "this group"
         for uid in other_ids:
             their_read_at = reads.get(uid)
             caught_up = (
@@ -679,8 +690,9 @@ def _notify_new_chat_message(thread_id, other_ids, body, existing_messages):
             send_email(
                 email,
                 f"New message from {sender_name}",
-                f"{sender_name} sent you a message:\n\n{preview}\n\n"
-                f"Reply here: {APP_URL}",
+                f"A new message has been sent on the Messages channel in "
+                f"{where}, kindly check it.\n\n"
+                f"Open the dashboard here: {APP_URL}",
             )
     except Exception:
         pass
