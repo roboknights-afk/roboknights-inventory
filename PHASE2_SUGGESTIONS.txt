@@ -1,14 +1,86 @@
 PHASE 2 - SUGGESTION SHEET
 ==========================
 
-Running list of ideas and requests for Phase 2 of the RoboKnights dashboard.
+Running list of everything planned for Phase 2 of the RoboKnights dashboard.
 Each entry is written as a task to be done, not as a question.
 
 Status key:  [ ] open   [~] in progress   [x] done
 
 
-OPEN
-----
+ANNOUNCED - PROMISED TO THE CLUB
+--------------------------------
+These were promised to all ~52 members in the Phase 2 announcement sent on
+2026-08-18 (on the Announcements page, by email, and on both Discord servers).
+They are commitments, not ideas - the club has been told these are coming.
+
+[ ] Give the whole dashboard a new design.
+    A fresh look across every page, not a restyle of one or two. Whatever is
+    chosen has to hold up on a phone, since most members open it on one.
+    Decide the design language once and apply it everywhere, so pages built
+    at different times stop looking like they were built at different times.
+
+[ ] Send notifications on WhatsApp, not just email.
+    Announced as reminders and updates arriving directly on WhatsApp.
+    Where it stands today:
+      - shared.py already has send_whatsapp(), using the WhatsApp Cloud API
+        with message templates, and the credentials are already set.
+      - It is only wired into one thing so far: the loan due-date reminders
+        in send_due_reminders.py.
+    What is left:
+      - Decide which existing email notifications should also go to WhatsApp
+        (announcements, meeting invites, borrow requests, chat messages,
+        competition deadlines) and get a Meta-approved template for each -
+        Meta only allows pre-approved templates for messages the club sends
+        first, so every notification type needs its own template.
+      - Members whose phone number is missing or wrong get nothing, so this
+        depends on the verify-your-details flow actually being completed.
+      - Let a member choose what they get on WhatsApp instead of sending
+        everything, or it becomes spam and people block the number.
+
+[ ] Build meetings into the dashboard itself - video, audio and screen share.
+    Announced as calls inside the dashboard, with screen sharing, instead of
+    juggling separate links.
+    Where it stands today: the Meetings page only stores an external join
+    link (Google Meet/Jitsi), because real video calling was not realistic
+    in Streamlit.
+    Things to work out while building it:
+      - This is the single biggest reason the frontend may have to move off
+        Streamlit - browser video calling needs WebRTC and real frontend
+        code, which Streamlit cannot host. Settle the hosting/framework
+        question before starting this one.
+      - Decide whether to build on a service (Daily, LiveKit, 100ms, Jitsi
+        embed) or from scratch on raw WebRTC. A service is far less work and
+        handles the parts that are genuinely hard.
+      - Who is allowed to start a meeting, who can join, and whether calls
+        are recorded, all need deciding before it ships.
+
+[ ] Generate competition permission slips automatically.
+    Announced as: the consent form for an event is created for the member,
+    arrives on WhatsApp and email a day before the event, and comes already
+    filled in except for the parent's details and their signature.
+    What that needs:
+      - A form template for the school's permission slip, filled from what
+        the dashboard already stores - member name, grade, section,
+        admission no., competition name, event name, dates, venue.
+      - PDF generation, and somewhere to keep the generated file.
+      - A scheduled job that runs a day before each event and sends the slip
+        to everyone going. send_due_reminders.py already runs on a schedule
+        and is the obvious pattern to copy.
+      - A way for the member to hand the signed slip back - upload it, or a
+        host ticks it off - otherwise nobody knows who has actually returned
+        one. Announced or not, this is the half that decides whether the
+        feature saves anyone work.
+      - The slip must only be generated for members actually selected for
+        that event, not everyone in the club.
+
+[ ] Bring more of the club's workflow into the dashboard.
+    Announced as new features and integrations - the club's work living in
+    one place instead of being split across sheets and chats. Deliberately
+    open-ended; fill this in as specific integrations get decided.
+
+
+OTHER SUGGESTIONS
+-----------------
 
 [ ] Let a member edit a part after adding it.
     Right now a part can only be added or deleted - nothing about it can be
@@ -28,7 +100,6 @@ OPEN
       - Every edit should be written to the activity log, the same way adding
         and deleting a part already is.
 
-
 [ ] Let a member link their own Discord account, so the bot can DM them.
     users.discord_user_id already exists, but it is filled in by hand and
     only 7 of 53 members have one, so the bot cannot message most people
@@ -44,6 +115,19 @@ OPEN
         details can be listed today.
       - Once enough members are linked, send the notifications that are
         currently emails as Discord DMs too, where the member has a link.
+
+
+OPEN DECISIONS
+--------------
+
+[ ] Decide where the app is going to be hosted, and on what.
+    The plan is to move to Vercel, but Vercel cannot run Streamlit - it
+    serves static sites and short-lived serverless functions, while
+    Streamlit needs a long-lived server holding a websocket open to every
+    viewer. So this is a choice between rewriting the frontend off Streamlit
+    (which is also what in-app video calling would require) and keeping
+    Python on a host that supports it. Almost everything above depends on
+    this being settled first.
 
 
 DONE
