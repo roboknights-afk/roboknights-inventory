@@ -1014,7 +1014,10 @@ DISCORD_CHANNELS = {
     "dashboard": "DISCORD_DASHBOARD_WEBHOOK_URL",
     "general": "DISCORD_GENERAL_WEBHOOK_URL",
     "announcements": "DISCORD_ANNOUNCEMENTS_WEBHOOK_URL",
-    "achievements": "DISCORD_ACHIEVEMENTS_WEBHOOK_URL",
+    # The club's #wins-and-appreciation channel (singular "appreciation" —
+    # that's the real channel name), posted to when a result is logged on
+    # the Achievements page.
+    "wins": "DISCORD_WINS_WEBHOOK_URL",
 }
 
 # A webhook lets Discord's `username`/`avatar_url` fields on the POST body

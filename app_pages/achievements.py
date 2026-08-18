@@ -69,8 +69,8 @@ def _open_log_achievement():
 
 
 def _notify_achievement(user_ids, comp_name, event_name, position, link):
-    # Posted to the club's #achievements Discord channel the moment a
-    # result is logged. ONE message per result, not per person — a team
+    # Posted to the club's #wins-and-appreciation Discord channel the
+    # moment a result is logged. ONE message per result, not per person — a team
     # that logged together is one achievement with several names on it,
     # and three identical posts would just be noise.
     #
@@ -95,7 +95,7 @@ def _notify_achievement(user_ids, comp_name, event_name, position, link):
             # Wrapped in <> so Discord doesn't expand it into a big
             # preview embed, same as the bot's search-source links.
             lines.append(f"Attachment: <{link}>")
-        send_discord_message("\n".join(lines), channel="achievements")
+        send_discord_message("\n".join(lines), channel="wins")
     except Exception:
         pass
 
