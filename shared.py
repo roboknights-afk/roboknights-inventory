@@ -247,13 +247,22 @@ E2C_SHEET_ID = "1RLSXcAJ4t44M_wQ_hKlZqaTVmWjwAXrI8FInjHIZRTw"
 # service account instead (see get_sheets_write_client below) — an API key
 # alone can never write to a sheet, only read one that's shared publicly.
 CLIO_SHEET_ID = "18M5VLCmC0tczG61m9Zx2OWQXP9jOa_oAfpPBo_BhAi8"
-# Which tab the verify-details popup writes into. Renamed from the trial
-# tab "RK Verify (Test)" to "2026-27" (2026-08-23, student's explicit
-# call). Note the sheet ALSO has a "2026-2027" tab — the school's own
-# roster, deliberately a different tab that this never writes to. Same
-# column layout (Admission No / Name / Class / Institutional Email /
-# Contact Info / blank / Personal Email) as the real per-year tabs.
-CLIO_CURRENT_TAB = "2026-27"
+# Which tab the verify-details popup writes into, identified by the tab's
+# own SHEET ID rather than its title. Column layout matches the real
+# per-year tabs (Admission No / Name / Class / Institutional Email /
+# Contact Info / blank / Personal Email).
+#
+# It used to be looked up by title, and that broke live twice in one day
+# (2026-08-23): the tab was renamed "RK Verify (Test)" -> "2026-27" ->
+# "2026-27(new  and updated)", and each rename left the constant pointing
+# at a title that no longer existed. gspread raises WorksheetNotFound,
+# which the caller's best-effort try/except swallows, so three members
+# verified their details and silently never reached the sheet. A tab's
+# ID never changes when it's renamed, so this can't happen again — the
+# title below is a comment, not something the code depends on.
+#
+# From the sheet's URL when that tab is open: .../edit#gid=930634755
+CLIO_CURRENT_TAB_ID = 930634755  # currently titled "2026-27(new  and updated)"
 
 # Adhoc members get their own labeled block, below everyone else, in the
 # SAME tab (student's explicit call - not a separate tab like Alumni).
@@ -380,7 +389,7 @@ def sync_member_to_clio_sheet(
     gc = get_sheets_write_client()
     if gc is None or not admission_no:
         return
-    ws = gc.open_by_key(CLIO_SHEET_ID).worksheet(CLIO_CURRENT_TAB)
+    ws = gc.open_by_key(CLIO_SHEET_ID).get_worksheet_by_id(CLIO_CURRENT_TAB_ID)
 
     marker_row, col_a = _find_adhoc_marker_row(ws)
     if marker_row is None:
