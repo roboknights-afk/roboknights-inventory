@@ -247,28 +247,31 @@ E2C_SHEET_ID = "1RLSXcAJ4t44M_wQ_hKlZqaTVmWjwAXrI8FInjHIZRTw"
 # service account instead (see get_sheets_write_client below) — an API key
 # alone can never write to a sheet, only read one that's shared publicly.
 CLIO_SHEET_ID = "18M5VLCmC0tczG61m9Zx2OWQXP9jOa_oAfpPBo_BhAi8"
-# Which tab the verify-details popup writes into. Pointed at a separate
-# test tab for now (2026-08-14, student's explicit call) instead of the
-# real "2026-2027" roster tab, so this can be tried out live without
-# touching the school's actual admission records. Same column layout
-# (Admission No / Name / Class / Institutional Email / Contact Info /
-# blank / Personal Email) as the real per-year tabs, so switching this
-# constant to "2026-2027" later is the only change needed to go live.
-CLIO_CURRENT_TAB = "RK Verify (Test)"
+# Which tab the verify-details popup writes into. Renamed from the trial
+# tab "RK Verify (Test)" to "2026-27" (2026-08-23, student's explicit
+# call). Note the sheet ALSO has a "2026-2027" tab — the school's own
+# roster, deliberately a different tab that this never writes to. Same
+# column layout (Admission No / Name / Class / Institutional Email /
+# Contact Info / blank / Personal Email) as the real per-year tabs.
+CLIO_CURRENT_TAB = "2026-27"
 
 # Adhoc members get their own labeled block, below everyone else, in the
-# SAME tab (student's explicit call — not a separate tab like Alumni).
-# Reserved at a FIXED row rather than dynamically inserted, so adding a
-# new main-section member never has to shift the adhoc block down (which
-# would risk corrupting it, or any real data the sheet might have further
-# right in columns beyond G) — same reasoning as picking an explicit
-# target row over gspread's append_row earlier. Moved from 500 to 50
-# (2026-08-14, student's explicit call) — leaves room for ~47 main
-# members (rows 2-49); the roster was 30 non-adhoc members at the time
-# of this change, so there's headroom for now but nowhere near the ~490
-# the old row 500 gave. Revisit this number if the main section ever
-# gets close to filling it.
-CLIO_ADHOC_MARKER_ROW = 50
+# SAME tab (student's explicit call - not a separate tab like Alumni).
+#
+# This label used to live at a FIXED row (500, then 50), which stranded
+# it ~25 empty rows below the last member and capped how many members
+# the main section could hold. It's now FOUND by searching column A for
+# the label text, and moves down on its own as the roster grows
+# (2026-08-23, student's explicit call), so the block always sits
+# exactly CLIO_ADHOC_GAP_ROWS blank row(s) under the last member.
+#
+# A new member is added with an INSERT at that blank row rather than a
+# write into it, so the label and everything below shift down together.
+# Sheets moves each row with its own formatting when it shifts, so
+# neither the adhoc block nor anything further down the sheet - including
+# columns beyond G - gets rewritten or reformatted.
+CLIO_ADHOC_LABEL = "ADHOC MEMBERS"
+CLIO_ADHOC_GAP_ROWS = 1
 
 # A fast, live alternative to the Queries page for something urgent — a
 # plain wa.me link needs no API, unlike automated WhatsApp notifications
@@ -331,20 +334,44 @@ def _find_or_next_row(ws, admission_no, start_row, end_row):
     return first_empty if first_empty is not None else start_row + len(values)
 
 
+def _find_adhoc_marker_row(ws):
+    # Returns (marker_row, column_A_values). marker_row is None when the
+    # label isn't in this tab yet - a brand-new per-year tab - which the
+    # caller handles by creating the block under the current roster.
+    col_a = ws.col_values(1)
+    for i, val in enumerate(col_a, start=1):
+        if (val or "").strip().upper() == CLIO_ADHOC_LABEL:
+            return i, col_a
+    return None, col_a
+
+
+def _find_member_row(ws, admission_no, start_row, end_row):
+    # The matching row in [start_row, end_row], or None. Unlike
+    # _find_or_next_row above, this never falls back to "first empty
+    # row": the main roster's only empty row is the gap kept in front of
+    # the adhoc label, and writing a new member into it would eat that
+    # gap instead of inserting a row above it.
+    if end_row < start_row:
+        return None
+    for i, row_vals in enumerate(ws.get(f"A{start_row}:A{end_row}")):
+        if (row_vals[0] if row_vals else "") == admission_no:
+            return start_row + i
+    return None
+
+
 def sync_member_to_clio_sheet(
     admission_no, name, class_str, email, phone_no, phone_no_2="", personal_email="", is_adhoc=False,
 ):
     # Keeps the school's own Clio roster in sync with what a member just
     # confirmed in the app (see render_verify_details_dialog in app.py).
     # Matches an existing row by admission number and updates it in
-    # place; a member not already listed gets a new row appended instead,
-    # so this never accidentally creates a duplicate.
+    # place; a member not already listed gets a new row instead, so this
+    # never accidentally creates a duplicate.
     #
     # Adhoc members (users.role == 'adhoc') go in their own labeled block
-    # BELOW everyone else in this same tab, starting right after
-    # CLIO_ADHOC_MARKER_ROW — a fixed row, not one that moves as the main
-    # section grows, so a new main-section member can never shift the
-    # adhoc block (or anything below it) down.
+    # BELOW everyone else in this same tab, starting right after the
+    # CLIO_ADHOC_LABEL row — found by searching, not a fixed row number,
+    # so the block rides down as the roster above it grows.
     #
     # Best-effort like every other outside-this-app write here — wrapped
     # by the caller in the same try/except spirit as send_email, so a
@@ -355,32 +382,55 @@ def sync_member_to_clio_sheet(
         return
     ws = gc.open_by_key(CLIO_SHEET_ID).worksheet(CLIO_CURRENT_TAB)
 
-    # Cheap to re-set every time (one small write) rather than reading
-    # first to check if it's already there — keeps this function simple,
-    # and a label that's already correct just gets overwritten with the
-    # same text.
-    ws.update(f"A{CLIO_ADHOC_MARKER_ROW}", [["ADHOC MEMBERS"]])
-    ws.format(f"A{CLIO_ADHOC_MARKER_ROW}:G{CLIO_ADHOC_MARKER_ROW}", {
-        "textFormat": {"bold": True, "fontFamily": "Nunito", "fontSize": 11},
-    })
-
-    if is_adhoc:
-        start_row, end_row = CLIO_ADHOC_MARKER_ROW + 1, ws.row_count
-    else:
-        start_row, end_row = 2, CLIO_ADHOC_MARKER_ROW - 1
-    target_row = _find_or_next_row(ws, admission_no, start_row, end_row)
+    marker_row, col_a = _find_adhoc_marker_row(ws)
+    if marker_row is None:
+        # No block in this tab yet: start it the usual gap below whatever
+        # is already there (just the header row, on an otherwise empty
+        # tab). Only written when genuinely missing — re-writing it every
+        # sync, as this used to, would now mean guessing at a row number
+        # that moves.
+        last_filled = max(
+            (i for i, v in enumerate(col_a, start=1) if (v or "").strip()), default=1,
+        )
+        marker_row = last_filled + 1 + CLIO_ADHOC_GAP_ROWS
+        ws.update(f"A{marker_row}", [[CLIO_ADHOC_LABEL]])
+        ws.format(f"A{marker_row}:G{marker_row}", {
+            "textFormat": {"bold": True, "fontFamily": "Nunito", "fontSize": 11},
+        })
 
     # Column layout matches the real per-year tabs exactly: A=Admission
     # No, B=Name, C=Class, D=Institutional Email, E=Phone 1, F=Phone 2,
     # G=Personal Email — confirmed by reading the real "2025-2026" tab's
     # data directly, not just its header row (the header on F is blank).
     row = [admission_no, name, class_str, email, phone_no, phone_no_2, personal_email]
-    # Writing to an explicit "A{row}:G{row}" range rather than gspread's
-    # append_row — append_row tries to auto-detect where the sheet's
-    # "table" already starts, and on this sheet that guess landed 6
-    # columns off (wrote into G:M instead of A:G), confirmed live.
-    # Computing the row number ourselves sidesteps that guesswork.
-    ws.update(f"A{target_row}:G{target_row}", [row])
+
+    if is_adhoc:
+        # The adhoc block is last on the sheet, so there's always spare
+        # room under it — no insert needed, and _find_or_next_row's
+        # gap-aware search still handles a hole left by a removed member.
+        target_row = _find_or_next_row(ws, admission_no, marker_row + 1, ws.row_count)
+        # Writing to an explicit "A{row}:G{row}" range rather than
+        # gspread's append_row — append_row tries to auto-detect where the
+        # sheet's "table" already starts, and on this sheet that guess
+        # landed 6 columns off (wrote into G:M instead of A:G), confirmed
+        # live. Computing the row number ourselves sidesteps that.
+        ws.update(f"A{target_row}:G{target_row}", [row])
+        return
+
+    existing_row = _find_member_row(ws, admission_no, 2, marker_row - 1 - CLIO_ADHOC_GAP_ROWS)
+    if existing_row:
+        ws.update(f"A{existing_row}:G{existing_row}", [row])
+    else:
+        # A member who isn't listed yet goes in at the blank gap row, as
+        # an INSERT: the gap row, the label and the whole adhoc block all
+        # shift down one, which keeps exactly CLIO_ADHOC_GAP_ROWS blank
+        # rows in front of the label without a second write to move it.
+        # inherit_from_before copies the formatting of the roster row
+        # above, so a newly added member matches the rest of the block
+        # instead of inheriting the blank gap row's formatting.
+        ws.insert_row(
+            row, index=marker_row - CLIO_ADHOC_GAP_ROWS, inherit_from_before=True,
+        )
 
 
 # Every page was re-fetching whole tables from Supabase on every single
