@@ -39,6 +39,8 @@ if "returned_message" not in st.session_state:
     st.session_state.returned_message = None
 if "decision_message" not in st.session_state:
     st.session_state.decision_message = None
+if "cancel_message" not in st.session_state:
+    st.session_state.cancel_message = None
 if "approving_request_id" not in st.session_state:
     st.session_state.approving_request_id = None
 if "editing_part_id" not in st.session_state:
@@ -96,9 +98,17 @@ approved_requests = [r for r in all_requests if r["status"] == "approved"]
 # request side instead of the add-a-part side). Once one of yours gets
 # approved or rejected, it drops out of this count and frees up a slot.
 MAX_PENDING_REQUESTS = 5
-my_pending_count = sum(
-    1 for r in all_requests if r["requester_id"] == current_user_id and r["status"] == "pending"
+# Requests I'VE made that nobody has acted on yet. Nothing on the page used
+# to show these at all, so a request sent by mistake couldn't be taken back —
+# it just sat there using up one of the slots above until the owner happened
+# to approve or reject it. They're now their own view in the loans tab, with
+# a Cancel button (see VIEW_WAITING).
+my_pending = sorted(
+    (r for r in all_requests
+     if r["requester_id"] == current_user_id and r["status"] == "pending"),
+    key=lambda r: r["request_id"],
 )
+my_pending_count = len(my_pending)
 
 # For bulk items, how many are currently out on loan — derived from the
 # outstanding approved requests rather than stored on the part, so the count
@@ -926,11 +936,12 @@ with tab_loans:
     )
 
     VIEW_REQUESTS = f"Requests for me ({len(my_requests)})"
+    VIEW_WAITING = f"My requests ({len(group_by_request(my_pending))})"
     VIEW_LENT = f"Lent out ({len(group_by_request(lent_out))})"
     VIEW_BORROWED = f"Borrowed ({len(group_by_request(borrowed))})"
     loans_view = st.segmented_control(
         "Which loans to show",
-        [VIEW_REQUESTS, VIEW_LENT, VIEW_BORROWED],
+        [VIEW_REQUESTS, VIEW_WAITING, VIEW_LENT, VIEW_BORROWED],
         default=VIEW_REQUESTS,
         key="loans_view",
         label_visibility="collapsed",
@@ -1012,6 +1023,71 @@ with tab_loans:
 
                 st.caption(f":material/tag: {serial_list}")
                 render_request_chat(gid, first, key_prefix=f"reqchat_{gid}")
+
+    elif loans_view == VIEW_WAITING:
+        st.subheader(":material/hourglass_top: My requests")
+        st.caption(
+            "Requests you've sent that the owner hasn't approved or rejected yet. "
+            "Cancelling one frees up a slot straight away."
+        )
+
+        if st.session_state.cancel_message:
+            st.toast(st.session_state.cancel_message, icon=":material/undo:")
+            st.session_state.cancel_message = None
+
+        if not my_pending:
+            st.caption("You have no requests waiting on an owner.")
+        else:
+            for gid, group_reqs in group_by_request(my_pending).items():
+                first = group_reqs[0]
+                group_parts = [part_by_id[r["part_id"]] for r in group_reqs if r["part_id"] in part_by_id]
+                if not group_parts:
+                    continue  # the part was deleted out from under the request
+                part_name = group_parts[0]["name"]
+                serial_list = ", ".join(p["part_number"] for p in group_parts)
+                owner_name = user_name_by_id.get(first["owner_id"], "Unknown")
+                unit_count = sum(r.get("quantity") or 1 for r in group_reqs)
+                requested_days = first.get("requested_days") or 7
+
+                with st.container(border=True, key=f"rkcard_waiting_{gid}"):
+                    col1, col2, col3, col4 = st.columns([2, 2, 2, 2], vertical_alignment="center")
+                    col1.markdown(f"**{unit_count} × {part_name}**")
+                    col2.write(f"Asked {owner_name} for {requested_days} day(s)")
+                    col3.badge("Waiting on owner", icon=":material/schedule:", color="orange")
+
+                    if col4.button(
+                        "Cancel request", key=f"cancel_req_{gid}",
+                        icon=":material/close:", width="stretch",
+                    ):
+                        with safe_write("cancel this request"):
+                            # 'cancelled', not a deleted row: the request
+                            # history is a record like every other status
+                            # here, and the owner may already have been
+                            # emailed about it. It drops out of their
+                            # "Requests for my parts" list either way,
+                            # since that only reads 'pending'.
+                            for r in group_reqs:
+                                client.table("requests").update({"status": "cancelled"}).eq(
+                                    "request_id", r["request_id"]
+                                ).execute()
+                            invalidate_cache()
+                            # The owner was emailed when this came in, so
+                            # tell them it's withdrawn — otherwise they go
+                            # to approve something that no longer exists.
+                            send_email(
+                                user_email_by_id.get(first["owner_id"]),
+                                f"Request cancelled: {unit_count} × {part_name}",
+                                f"{current_user_name} cancelled their request for "
+                                f"{unit_count} × {part_name} ({serial_list}). "
+                                f"No action needed from you.",
+                            )
+                            st.session_state.cancel_message = (
+                                f"Cancelled your request for {unit_count} × {part_name}."
+                            )
+                            st.rerun()
+
+                    st.caption(f":material/tag: {serial_list}")
+                    render_request_chat(gid, first, key_prefix=f"waitchat_{gid}")
 
     elif loans_view == VIEW_LENT:
         st.subheader(":material/logout: Parts I've lent out")
