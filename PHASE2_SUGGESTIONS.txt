@@ -100,6 +100,27 @@ OTHER SUGGESTIONS
       - Every edit should be written to the activity log, the same way adding
         and deleting a part already is.
 
+[ ] Give a member a real record of their own competition history.
+    Asked for by Naitik Jindal (11-F) on 2026-08-25. Today a member can only
+    see what is coming up; there is no single place that shows what they have
+    already done. Add sections for:
+      - competitions I am in        (upcoming, still to happen)
+      - competitions I have been in (already happened)
+      - competitions I have won     (achievements already logged for them)
+      - events I have been in       (the individual events, not just the
+                                     competition they sat under)
+    Also fix the two filters on the Competitions page. "I'm in" and
+    "Selected" read as the same thing to a member - anyone who gets selected
+    for everything they volunteer for sees an identical list twice. Either
+    label the difference plainly (volunteered / picked for the team) or drop
+    one of them.
+    All of the data needed already exists - event_volunteers holds who
+    volunteered and who was selected, competitions.is_past says whether it
+    has happened, and the achievements table holds results - so this is a
+    presentation job, not new tracking. Where these sections live (the Home
+    page, a member profile page, or the Competitions page) should be settled
+    alongside the new design.
+
 [ ] Let a member link their own Discord account, so the bot can DM them.
     users.discord_user_id already exists, but it is filled in by hand and
     only 7 of 53 members have one, so the bot cannot message most people
