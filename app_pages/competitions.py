@@ -1236,10 +1236,15 @@ if comp_filter != "All":
         comp = comp_by_id.get(event["competition_id"])
         if comp is None:
             return False
+        # "I'm in" and "Selected" are about what you're still going to —
+        # a competition that already happened isn't something you're in
+        # any more, it's something you were in. Past ones are still there
+        # to read in the Past tab with the filter off; they just don't
+        # count as current involvement.
         if comp_filter == "I'm in":
-            return event["event_id"] in my_event_ids_here
+            return event["event_id"] in my_event_ids_here and not comp.get("is_past")
         if comp_filter == "Selected":
-            return event["event_id"] in my_selected_event_ids
+            return event["event_id"] in my_selected_event_ids and not comp.get("is_past")
         # "I can join"
         return (
             not is_read_only
@@ -1816,6 +1821,7 @@ def render_competition_card(comp):
                     already_volunteered = any(v["user_id"] == current_user_id for v in event_volunteers)
                     is_eligible = (
                         not is_read_only  # view-only tiers see every event, never volunteer
+                        and not comp.get("is_past")  # it already happened
                         and not comp.get("not_attending")
                         and current_user_grade is not None
                         and e["min_grade"] <= current_user_grade <= e["max_grade"]
@@ -1853,14 +1859,22 @@ def render_competition_card(comp):
                                 "sheet does."
                             )
 
+                        # Past tense once it's over: on a finished competition
+                        # "Finalized team" and "Volunteers" read as though it's
+                        # still being organised, which is what made members ask
+                        # why the app still showed them as being in it.
                         if finalized:
                             st.caption(
-                                f":material/verified: Finalized team ({len(finalized)}/{cap}): "
+                                (f":material/verified: Team that went ({len(finalized)}): "
+                                 if comp.get("is_past") else
+                                 f":material/verified: Finalized team ({len(finalized)}/{cap}): ")
                                 + ", ".join(_label(v) for v in finalized)
                             )
                         if still_pending:
                             st.caption(
-                                f":material/group: Volunteers ({len(still_pending)}): "
+                                (f":material/group: Volunteered but not selected ({len(still_pending)}): "
+                                 if comp.get("is_past") else
+                                 f":material/group: Volunteers ({len(still_pending)}): ")
                                 + ", ".join(_label(v) for v in still_pending)
                             )
                         if not finalized and not still_pending:
@@ -1938,6 +1952,16 @@ def render_competition_card(comp):
                                         invalidate_cache()
                                         st.session_state.volunteer_message = f"You volunteered for {e['name']}!"
                                         st.rerun()
+
+                        elif comp.get("is_past") and not is_read_only:
+                            # The Volunteer/Withdraw buttons used to keep
+                            # showing on finished competitions, so members
+                            # could sign up for something that had already
+                            # happened — and withdrawing would have quietly
+                            # edited the record of who actually went.
+                            st.caption(
+                                ":material/lock: This competition is over — signups are closed."
+                            )
 
                         # Host-only: finalize who's actually selected,
                         # capped at team_size * max_teams. Only newly
