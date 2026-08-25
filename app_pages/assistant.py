@@ -33,7 +33,10 @@ from shared import (
     is_meeting_visible, meeting_invited_ids, meeting_invitee_rows, send_email, today_ist,
 )
 
-GROQ_MODEL = "llama-3.3-70b-versatile"
+# Groq retired llama-3.3-70b-versatile on 2026-08-25 (the API 404s a
+# retired model rather than erroring clearly). See the long note in
+# discord_bot/bot.py for how that surfaced and how to check next time.
+GROQ_MODEL = "openai/gpt-oss-120b"
 # Resending the ENTIRE conversation on every turn (the standard chat
 # pattern) grows without bound in a long session — fine normally, but a
 # web-search reply can be long, and Groq's compound models fold web page
@@ -549,14 +552,16 @@ if prompt:
                         # useful for debugging.
                         print(f"AI Assistant error (web search retry): {e2!r}", flush=True)
                         reply = (
-                            "I'm maxed out on my daily AI usage limit right now, so I can't "
-                            "answer this one. It resets on its own - try again a bit later."
+                            "My AI service isn't responding right now, so I can't answer this "
+                            "one. This isn't anything you did and it isn't a limit on "
+                            "your account - try again in a bit, and tell a host if it keeps up."
                         )
                 else:
                     print(f"AI Assistant error: {e!r}", flush=True)
                     reply = (
-                        "I'm maxed out on my daily AI usage limit right now, so I can't "
-                        "answer this one. It resets on its own - try again a bit later."
+                        "My AI service isn't responding right now, so I can't answer this "
+                        "one. This isn't anything you did and it isn't a limit on your "
+                        "account - try again in a bit, and tell a host if it keeps up."
                     )
             st.markdown(reply)
             _render_sources(sources)

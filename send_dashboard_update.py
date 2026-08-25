@@ -34,7 +34,10 @@ FOOTER = "\n\n***This is automated message***"
 # commits in particular would otherwise dominate the summary on a busy push.
 SKIP_PREFIXES = ("merge ", "revert \"merge")
 
-GROQ_MODEL = "llama-3.3-70b-versatile"
+# Groq retired llama-3.3-70b-versatile on 2026-08-25 (the API 404s a
+# retired model rather than erroring clearly). See the long note in
+# discord_bot/bot.py for how that surfaced and how to check next time.
+GROQ_MODEL = "openai/gpt-oss-120b"
 SUMMARY_PROMPT = (
     "You write release notes for a school robotics club's web app. Club members "
     "are students aged 14-18; most are not programmers.\n\n"

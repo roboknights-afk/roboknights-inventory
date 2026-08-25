@@ -121,7 +121,23 @@ def _channel_allowed(channel):
 # Plain model - handles every reply's actual thinking, whether or not a
 # search happened. Same one send_dashboard_update.py uses for its
 # release-note summaries.
-GROQ_MODEL = "llama-3.3-70b-versatile"
+#
+# Was llama-3.3-70b-versatile until 2026-08-25, when members reported the
+# bot saying "I'm maxed out on my daily AI usage limit" to the FIRST
+# question of the morning. It wasn't a limit at all: Groq had RETIRED both
+# Llama models this bot used, and the API answers a retired model with a
+# 404 "model does not exist", not a quota error. Every request fell
+# through to Gemini and OpenRouter (429, rate-limited upstream), and the
+# member got the maxed-out message. Verified against Groq's own /models
+# list for this key before switching. gpt-oss-120b was picked over
+# qwen3.6-27b because it actually makes tool calls (Tavily search and the
+# club-data lookup both depend on that) and keeps its thinking in a
+# separate `reasoning` field instead of dumping it into the reply.
+#
+# IF THE BOT EVER GOES QUIET LIKE THIS AGAIN, check the model list first:
+#   curl -H "Authorization: Bearer $GROQ_API_KEY" \
+#        https://api.groq.com/openai/v1/models
+GROQ_MODEL = "openai/gpt-oss-120b"
 
 # The same key's SMALL model, kept in reserve for when the big one's daily
 # budget is gone. Groq's token-per-day limits are per MODEL, not per key -
@@ -138,7 +154,8 @@ GROQ_MODEL = "llama-3.3-70b-versatile"
 # hour and a half. It sits between the two Groq attempts and Gemini, so
 # nothing changes on a normal day - this only runs once the good model is
 # actually out.
-GROQ_SMALL_MODEL = "llama-3.1-8b-instant"
+# (Was llama-3.1-8b-instant, retired at the same time as the 70b above.)
+GROQ_SMALL_MODEL = "openai/gpt-oss-20b"
 
 # Host-requested ban (2026-08-14): these Discord user IDs get no reply at
 # all, DM or @mention - not a moderation feature (their messages still get
@@ -1489,9 +1506,17 @@ def _ask_with_compound(messages, channel_id=None):
                   f"gemini: {_last_provider_error['gemini']}; "
                   f"small_groq: {_last_provider_error['small_groq']}; "
                   f"openrouter: {_last_provider_error['openrouter']}", flush=True)
+            # Deliberately no longer says "I'm maxed out on my daily AI
+            # usage limit". Members read that as "I asked too much" and
+            # started apologising for a one-line follow-up question, when
+            # what had actually happened was every provider failing at
+            # once - on 2026-08-25 because Groq had retired the model,
+            # nothing to do with usage at all. Say what's true: it's
+            # broken on our end, not their fault, and not their quota.
             return (
-                "I'm maxed out on my daily AI usage limit right now, so I can't "
-                "answer this one. It resets on its own - try again a bit later.", []
+                "My AI service isn't responding right now, so I can't answer this one. "
+                "This isn't anything you did and it isn't a limit on your account - "
+                "try again in a bit, and tell a host if it keeps happening.", []
             )
 
 
