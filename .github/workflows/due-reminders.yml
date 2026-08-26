@@ -6,6 +6,8 @@ on:
     - cron: "30 3 * * *"
     # 10:30 UTC = 4:00 PM IST — "how did it go" achievement reminders, competition day itself
     - cron: "30 10 * * *"
+    # 14:30 UTC = 8:00 PM IST — the evening check on the day's Discord messages
+    - cron: "30 14 * * *"
   workflow_dispatch: # lets us trigger it manually from the Actions tab, for testing
 
 jobs:
@@ -22,7 +24,7 @@ jobs:
       - run: pip install supabase python-dotenv requests
       # Manual runs (github.event.schedule is empty) do both, for easy testing.
       - name: Loan + day-before competition reminders (9am IST)
-        if: github.event.schedule != '30 10 * * *'
+        if: github.event.schedule != '30 10 * * *' && github.event.schedule != '30 14 * * *'
         run: python send_due_reminders.py
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
@@ -33,11 +35,27 @@ jobs:
           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
           SMTP_SENDER: ${{ secrets.SMTP_SENDER }}
       - name: Achievement reminders (4pm IST)
-        if: github.event.schedule != '30 3 * * *'
+        if: github.event.schedule != '30 3 * * *' && github.event.schedule != '30 14 * * *'
         run: python send_achievement_reminders.py
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          SMTP_SENDER: ${{ secrets.SMTP_SENDER }}
+      # The evening check on the club's Discord (8pm IST). Reads the last 24
+      # hours of discord_channel_log and emails a report of anything that
+      # looks like a personal attack. Reads and reports only - it never
+      # replies, deletes, or warns anyone.
+      - name: Discord evening check (8pm IST)
+        if: github.event.schedule != '30 3 * * *' && github.event.schedule != '30 10 * * *'
+        run: python check_discord_messages.py
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           SMTP_HOST: ${{ secrets.SMTP_HOST }}
           SMTP_PORT: ${{ secrets.SMTP_PORT }}
           SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
