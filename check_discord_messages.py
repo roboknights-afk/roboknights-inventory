@@ -70,6 +70,53 @@ RETRY_WAIT_SECONDS = 30
 # Never sleep longer than this in one go, however long Groq asks for.
 MAX_RETRY_WAIT_SECONDS = 150
 
+# --- automatic warnings -------------------------------------------------
+# Off unless AUTO_WARN is set to 1. The switch exists because this is the
+# one part of this job that ACTS on the model's judgement rather than
+# handing it to a person: a wrong call here is a real student publicly
+# accused by a bot at 8pm with nobody having read it first. Arming it
+# should be a decision someone makes on purpose, not a default.
+AUTO_WARN = os.environ.get("AUTO_WARN") == "1"
+
+# Only "clear" flags are ever warned automatically. Borderline ones still
+# go in the report, where a person decides what to do about them.
+AUTO_WARN_SEVERITY = "clear"
+
+# A hard ceiling per run. If one night produces nine "clear" flags, the
+# likeliest explanation is that the review went wrong, and the right
+# outcome then is a person reading the report - not a bot posting nine
+# public accusations into the channel while everyone is asleep.
+MAX_WARNINGS_PER_RUN = 3
+
+DISCORD_GENERAL_WEBHOOK = os.environ.get("DISCORD_GENERAL_WEBHOOK_URL")
+DISCORD_AUTOMATED_MARKER = "\n\n***This is automated message***"
+DISCORD_MESSAGE_LIMIT = 2000
+
+WARNING_PROMPT = """You are writing a warning to a member of a school \
+robotics club's Discord server, aged between 11 and 18, about something \
+they posted.
+
+Write ONE continuous paragraph of at least 2000 characters. No headings, \
+no bullet points, no lists - flowing prose only.
+
+Requirements:
+- Say plainly what was wrong with the message and why it matters to the \
+people who read it.
+- Be firm and serious, but never insulting, sarcastic or mocking. You are \
+correcting behaviour, not attacking a person.
+- Do not swear, and do not repeat any slur or explicit wording from the \
+message itself.
+- Do not threaten specific punishments, do not mention removing or \
+restricting anyone's access, and do not claim any action has been taken.
+- Make clear that the same standard applies to every member equally.
+- End by saying what is expected from them from here on.
+
+The member's name: {name}
+What they posted: {content}
+Why it was flagged: {reason}
+
+Write only the paragraph itself, nothing else."""
+
 PROMPT = """You review one day of chat messages from a school robotics \
 club's Discord server. The members are students aged 11 to 18.
 
@@ -91,8 +138,19 @@ Do NOT flag:
 Under-flagging is correct. A wrongly flagged message means a student gets \
 questioned over a joke, which is worse than missing a borderline one.
 
+Give each flagged message a severity:
+- "clear"      - nobody reasonable would defend it: a slur, sexual content \
+aimed at a member, a real threat, or plain abuse.
+- "borderline" - it might be out of line, but tone, context or a joke could \
+explain it.
+
+When in doubt it is "borderline". Only "clear" ones are acted on \
+automatically, so a wrong "clear" costs a student a public accusation over \
+something they meant as a joke.
+
 Reply with JSON only, no other text, in exactly this shape:
-{"flagged": [{"id": "<the id shown>", "reason": "<one short sentence>"}]}
+{"flagged": [{"id": "<the id shown>", "reason": "<one short sentence>", \
+"severity": "clear"}]}
 
 If nothing qualifies, reply exactly: {"flagged": []}
 
@@ -123,6 +181,104 @@ def ist(iso):
     # Supabase stores UTC; IST is a flat +5:30 with no DST.
     return (datetime.fromisoformat(iso.replace("Z", "+00:00"))
             + timedelta(hours=5, minutes=30)).strftime("%d %b %Y, %I:%M %p")
+
+
+def already_handled(message_ids):
+    """Message ids this check has already recorded, so a re-run - manual,
+    or after a failure halfway through - can never warn somebody twice for
+    something they said once."""
+    if not message_ids:
+        return set()
+    try:
+        rows = (client.table("discord_flags").select("discord_message_id")
+                .in_("discord_message_id", list(message_ids)).execute().data)
+        return {r["discord_message_id"] for r in rows}
+    except Exception as exc:
+        # The table may not exist yet (the migration is run by hand, same
+        # as every other schema change here). Failing OPEN would mean
+        # re-warning everybody every run, so fail closed instead: no
+        # memory, no automatic warnings.
+        print(f"discord_flags unavailable, not warning anyone: {exc!r}", flush=True)
+        return None
+
+
+def write_warning(row, reason, key):
+    """Ask the model for the warning paragraph itself."""
+    prompt = WARNING_PROMPT.format(
+        name=row.get("discord_display_name") or "this member",
+        content=(row.get("content") or "").strip(),
+        reason=reason,
+    )
+    try:
+        r = requests.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers={"Authorization": f"Bearer {key}"},
+            json={"model": GROQ_MODEL, "temperature": 0.3, "max_tokens": 1400,
+                  "reasoning_effort": "low",
+                  "messages": [{"role": "user", "content": prompt}]},
+            timeout=90,
+        )
+    except Exception as exc:
+        print(f"   could not write the warning: {exc!r}", flush=True)
+        return None
+    if r.status_code != 200:
+        print(f"   could not write the warning: HTTP {r.status_code} {r.text[:200]}",
+              flush=True)
+        return None
+    text = (r.json()["choices"][0]["message"].get("content") or "").strip()
+    return text or None
+
+
+def post_to_general(text):
+    """Post to the club's Discord. Deliberately its own small function
+    rather than shared.send_discord_message() - this script never imports
+    shared.py, since that pulls in Streamlit (same reasoning as the other
+    cron scripts). The automated-message footer is added here to match
+    what every other message this project sends carries.
+
+    Discord refuses anything over 2000 characters and the warnings are
+    deliberately longer than that, so they go out in parts.
+    """
+    if not DISCORD_GENERAL_WEBHOOK:
+        print("   DISCORD_GENERAL_WEBHOOK_URL is not set - cannot post", flush=True)
+        return None
+    body = text + DISCORD_AUTOMATED_MARKER
+    chunks, rest = [], body
+    while rest:
+        if len(rest) <= DISCORD_MESSAGE_LIMIT:
+            chunks.append(rest)
+            break
+        # Break on a space rather than mid-word.
+        cut = rest.rfind(" ", 0, DISCORD_MESSAGE_LIMIT)
+        chunks.append(rest[:cut if cut > 0 else DISCORD_MESSAGE_LIMIT])
+        rest = rest[(cut + 1) if cut > 0 else DISCORD_MESSAGE_LIMIT:]
+
+    first_id = None
+    for chunk in chunks:
+        r = requests.post(f"{DISCORD_GENERAL_WEBHOOK}?wait=true",
+                          json={"content": chunk}, timeout=20)
+        if r.status_code >= 300:
+            print(f"   posting failed: HTTP {r.status_code} {r.text[:200]}", flush=True)
+            return first_id
+        first_id = first_id or r.json().get("id")
+        time.sleep(1)
+    return first_id
+
+
+def record_flag(row, reason, severity, warning_id):
+    try:
+        client.table("discord_flags").upsert({
+            "discord_message_id": row["discord_message_id"],
+            "discord_user_id": row["discord_user_id"],
+            "display_name": row.get("discord_display_name"),
+            "content": (row.get("content") or "")[:2000],
+            "reason": reason,
+            "severity": severity,
+            "warned_at": datetime.now(timezone.utc).isoformat() if warning_id else None,
+            "warning_message_id": warning_id,
+        }).execute()
+    except Exception as exc:
+        print(f"   could not record the flag: {exc!r}", flush=True)
 
 
 def review(messages):
@@ -281,12 +437,51 @@ def main():
         return
 
     by_id = {r["discord_message_id"]: r for r in rows}
-    hits = [(by_id[f["id"]], f.get("reason", "")) for f in flagged if f.get("id") in by_id]
-    print(f"flagged: {len(hits)}", flush=True)
+    hits = [(by_id[f["id"]], f.get("reason", ""), (f.get("severity") or "borderline").lower())
+            for f in flagged if f.get("id") in by_id]
+    print(f"flagged: {len(hits)} "
+          f"({sum(1 for h in hits if h[2] == AUTO_WARN_SEVERITY)} clear)", flush=True)
     if not hits:
         # Nothing to send. The GitHub Actions run itself is the record
         # that the check happened.
         return
+
+    # --- automatic warnings ---------------------------------------------
+    # Only when armed, only "clear" flags, only ones never dealt with
+    # before, and never more than MAX_WARNINGS_PER_RUN in one night.
+    seen = already_handled([r["discord_message_id"] for r, _, _ in hits])
+    warned = {}
+    if AUTO_WARN and not dry_run and seen is not None:
+        key = os.environ.get("GROQ_API_KEY")
+        candidates = [h for h in hits
+                      if h[2] == AUTO_WARN_SEVERITY
+                      and h[0]["discord_message_id"] not in seen]
+        if len(candidates) > MAX_WARNINGS_PER_RUN:
+            print(f"   {len(candidates)} clear flags is more than the {MAX_WARNINGS_PER_RUN} "
+                  f"allowed in one run - warning nobody, this needs a person", flush=True)
+            candidates = []
+        for row, reason, _ in candidates:
+            who = row.get("discord_display_name") or row["discord_user_id"]
+            text = write_warning(row, reason, key)
+            if not text:
+                continue
+            mention = f"<@{row['discord_user_id']}>\n\n"
+            posted = post_to_general(mention + text)
+            if posted:
+                warned[row["discord_message_id"]] = posted
+                print(f"   warned {who} ({len(text)} chars, message {posted})", flush=True)
+            time.sleep(2)
+    elif AUTO_WARN and seen is None:
+        print("   automatic warnings skipped: no record of what was already handled",
+              flush=True)
+
+    # Every flag is recorded either way, so tomorrow's run knows this one
+    # has been seen - whether or not a warning went out for it.
+    if not dry_run:
+        for row, reason, severity in hits:
+            if seen is not None and row["discord_message_id"] not in seen:
+                record_flag(row, reason, severity,
+                            warned.get(row["discord_message_id"]))
 
     lines = [
         f"The evening check went through {len(rows)} Discord messages from the "
@@ -301,12 +496,16 @@ def main():
     # conversation can be shown with it.
     position = {r["discord_message_id"]: i for i, r in enumerate(rows)}
 
-    for row, reason in hits:
+    for row, reason, severity in hits:
         who = row.get("discord_display_name") or row["discord_user_id"]
+        sent = warned.get(row["discord_message_id"])
         lines += [
-            f"{ist(row['created_at'])} - {who}",
+            f"{ist(row['created_at'])} - {who}  [{severity}]",
             f"   >>> {(row['content'] or '').strip()}",
             f"   flagged because: {reason}",
+            # Whether a warning was posted is the first thing a reader
+            # needs: it decides whether they still have to do something.
+            f"   {'WARNED AUTOMATICALLY - message ' + sent if sent else 'no warning sent - your call'}",
             f"   {jump_link(row)}",
             "",
         ]

@@ -518,3 +518,28 @@ create table if not exists chat_reads (
 -- group_by_request in inventory.py), and the chat belongs to that whole
 -- group, not to one unit of it.
 alter table chat_threads add column if not exists request_group_id text;
+
+-- The evening Discord check (2026-08-27). One row per message the check
+-- has already dealt with, so a re-run — manual or after a failure — can
+-- never warn the same person twice for the same message. This is the only
+-- reason the check has any memory at all; without it, "automatic
+-- warnings" and "somebody triggered the workflow again" combine into
+-- members being warned repeatedly for something they said once.
+--
+-- warned_at is null when the message was flagged but no warning was sent
+-- (borderline, or the nightly cap was already reached), so the report
+-- still shows it to a person without it ever having been posted.
+create table if not exists discord_flags (
+    discord_message_id text primary key,
+    discord_user_id    text not null,
+    display_name       text,
+    content            text,
+    reason             text,
+    severity           text,
+    flagged_at         timestamptz not null default now(),
+    warned_at          timestamptz,
+    warning_message_id text
+);
+
+create index if not exists discord_flags_user_idx
+    on discord_flags(discord_user_id, flagged_at);

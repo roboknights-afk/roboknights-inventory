@@ -56,6 +56,13 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          # Set the repo VARIABLE (Settings -> Secrets and variables ->
+          # Actions -> Variables) AUTO_WARN to 1 to let the check post its
+          # own warnings, or leave it unset and it only ever reports. A
+          # variable rather than a code change, so arming and disarming it
+          # doesn't need a commit and a deploy.
+          AUTO_WARN: ${{ vars.AUTO_WARN }}
+          DISCORD_GENERAL_WEBHOOK_URL: ${{ secrets.DISCORD_GENERAL_WEBHOOK_URL }}
           SMTP_HOST: ${{ secrets.SMTP_HOST }}
           SMTP_PORT: ${{ secrets.SMTP_PORT }}
           SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
