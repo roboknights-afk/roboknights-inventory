@@ -56,8 +56,19 @@ MAX_MESSAGES = 600  # a normal day is ~200; this is a runaway guard, not a targe
 # 500 tokens of input, so a batch request lands near 2,000 all-in.
 BATCH_SIZE = 60
 BATCH_PAUSE_SECONDS = 25
+# How much of the surrounding conversation to show with each flagged
+# message. Enough to judge it, not so much that the report becomes the
+# whole day again.
+CONTEXT_BEFORE = 3
+CONTEXT_AFTER = 2
+
+# The club's own Discord server, for building links back to a message.
+HOME_GUILD_ID = os.environ.get("DISCORD_HOME_GUILD_ID", "607226177425506325")
+
 RETRY_ATTEMPTS = 4
 RETRY_WAIT_SECONDS = 30
+# Never sleep longer than this in one go, however long Groq asks for.
+MAX_RETRY_WAIT_SECONDS = 150
 
 PROMPT = """You review one day of chat messages from a school robotics \
 club's Discord server. The members are students aged 11 to 18.
@@ -98,6 +109,14 @@ def send_email(to_email, subject, body):
         server.starttls()
         server.login(os.environ["SMTP_USERNAME"], os.environ["SMTP_PASSWORD"])
         server.send_message(msg)
+
+
+def jump_link(row):
+    # A raw channel id told the reader nothing. This is a real Discord link:
+    # clicking it opens the message itself, in the conversation, which is
+    # where any decision about it actually gets made.
+    return (f"https://discord.com/channels/{HOME_GUILD_ID}/"
+            f"{row['discord_channel_id']}/{row['discord_message_id']}")
 
 
 def ist(iso):
@@ -184,6 +203,17 @@ def _review_batch(messages, key):
         # depending on it - and losing the night's check to a busy minute is
         # not.
         wait = float(r.headers.get("retry-after") or 0) or RETRY_WAIT_SECONDS
+        if wait > MAX_RETRY_WAIT_SECONDS:
+            # Groq will happily ask for a 43-minute wait when the daily
+            # budget (not just the per-minute one) is gone - seen live at
+            # retry-after 2578. Sleeping that out inside a GitHub Actions
+            # run burns runner minutes for a job that is very likely to
+            # fail anyway, so stop and report instead. The report going out
+            # is what tells anyone the check didn't happen; a silent
+            # 43-minute nap tells nobody anything.
+            print(f"   rate limited for {wait:.0f}s - too long to wait, giving up",
+                  flush=True)
+            return None
         print(f"   rate limited, waiting {wait:.0f}s (attempt {attempt + 1}"
               f"/{RETRY_ATTEMPTS})", flush=True)
         time.sleep(wait + 1)
@@ -253,15 +283,34 @@ def main():
         "can read very differently with the conversation around it.",
         "",
     ]
+    # Where each flagged message sits in the day, so the surrounding
+    # conversation can be shown with it.
+    position = {r["discord_message_id"]: i for i, r in enumerate(rows)}
+
     for row, reason in hits:
         who = row.get("discord_display_name") or row["discord_user_id"]
         lines += [
             f"{ist(row['created_at'])} - {who}",
-            f"   {(row['content'] or '').strip()}",
+            f"   >>> {(row['content'] or '').strip()}",
             f"   flagged because: {reason}",
-            f"   channel: {row['discord_channel_id']}",
+            f"   {jump_link(row)}",
             "",
         ]
+        # The note at the top of this report tells whoever reads it to judge
+        # the message in context. It used to then show the message entirely
+        # on its own, which made that instruction impossible to follow - a
+        # line like "All bark no bite" means one thing after a threat and
+        # another between friends. The conversation around it is the single
+        # most useful thing in the whole report.
+        i = position[row["discord_message_id"]]
+        around = rows[max(0, i - CONTEXT_BEFORE):i + CONTEXT_AFTER + 1]
+        lines.append("   what was being said around it:")
+        for other in around:
+            mark = ">>" if other["discord_message_id"] == row["discord_message_id"] else "  "
+            name = other.get("discord_display_name") or other["discord_user_id"]
+            lines.append(f"     {mark} {ist(other['created_at'])[-8:]} {name}: "
+                         f"{(other['content'] or '').strip()[:200]}")
+        lines.append("")
     body = "\n".join(lines)
 
     if dry_run:

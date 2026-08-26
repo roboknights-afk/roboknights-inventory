@@ -185,6 +185,48 @@ variables → Actions), since this runs on GitHub's servers, not in the app:
 A push containing nothing but merge commits posts nothing at all — a
 "we updated!" notice with no content is worse than staying quiet.
 
+## The Discord evening check
+
+`check_discord_messages.py` runs at **8:00 PM IST** (14:30 UTC) from the
+existing `.github/workflows/due-reminders.yml` workflow — the same one that
+sends the loan and achievement reminders, just a third cron entry and a
+third step.
+
+It reads the last 24 hours of the `discord_channel_log` table (which the
+Discord bot already fills with every message it can see in the club's own
+server) and emails a report of anything that reads as a personal attack,
+with the surrounding conversation and a link straight to the message.
+
+**It only reads and reports.** It never replies, deletes, warns anyone, or
+touches a Discord message. A person decides what to do about a flag. The
+prompt is deliberately biased towards under-flagging — arguing, swearing at
+nobody in particular, jokes and banter are explicitly left alone — because a
+false positive means a member gets questioned over a joke.
+
+Nothing new is needed to turn it on: every secret it uses
+(`SUPABASE_URL`, `SUPABASE_KEY`, `GROQ_API_KEY`, and the five `SMTP_*`
+values) is already a GitHub repo secret for the other workflows.
+
+Two optional variables:
+
+- `MODERATION_REPORT_EMAIL` — who gets the report. Defaults to
+  `roboknights@dpsrkp.net`, deliberately **not** the whole `HOST_EMAILS`
+  set, which includes teachers. A nightly "these students were rude" email
+  reaching staff inboxes should be a decision someone makes on purpose, not
+  a side effect of switching this on.
+- `DISCORD_HOME_GUILD_ID` — only used to build the links back to a message.
+  Defaults to the club's own server id.
+
+If nothing is flagged, no email is sent — the workflow run itself is the
+record that the check happened. If the review can't run at all (no API key,
+every retry rate-limited), that **does** send an email, because a check
+that silently stops running is worse than one that fails loudly.
+
+To test it: **Actions → Due date reminders → Run workflow**. A manual run
+executes all three steps, this one included. Locally,
+`python check_discord_messages.py --dry-run` prints the report instead of
+emailing it.
+
 ## Discord AI bot (auto-replies to @mentions and DMs)
 
 `discord_bot/bot.py` is a separate, always-on Discord bot — not part of the
