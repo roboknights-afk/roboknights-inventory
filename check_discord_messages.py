@@ -38,8 +38,29 @@ load_dotenv()
 client = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
 
 # Same model the rest of the project moved to on 2026-08-25, after Groq
-# retired the Llama models everything used to run on.
+# retired the Llama models everything used to run on. Used here only for
+# WRITING a warning - see REVIEW_MODEL for the bulk of the work.
 GROQ_MODEL = "openai/gpt-oss-120b"
+
+REVIEW_MODEL = "openai/gpt-oss-120b"
+
+# Used only when the model above has run out of budget for the day.
+# Groq's limits are per MODEL, so this genuinely still answers when the
+# other one refuses everything - confirmed with 120b at 199,316 of its
+# 200,000 daily tokens.
+#
+# It is NOT as good at this, and the difference is not academic. Run over
+# the same 124 messages, 120b flagged the single worst thing said that
+# night (an explicit sexual remark aimed at members). 20b missed it
+# entirely, and instead rated two ordinary argumentative lines - "who are
+# you to talk about manners", "behave like the junior you are" - as
+# CLEAR, which is the rating that posts a public accusation about a named
+# student with nobody reading it first.
+#
+# So a run that falls back to it is marked degraded, and a degraded run
+# never warns anyone. It still produces the report, which is the half
+# that has a person in the loop.
+REVIEW_FALLBACK_MODEL = "openai/gpt-oss-20b"
 
 # Who gets the report. Deliberately the club's own account by default and
 # NOT the full HOST_EMAILS set, which includes teachers: a nightly
@@ -310,7 +331,13 @@ def _strip_quotes_of(warning, original):
             if at != -1:
                 print(f"   the warning quoted {len(chunk)} characters of the "
                       f"original message - removed", flush=True)
-                cleaned = warning[:at] + "that message" + warning[at + len(chunk):]
+                before, after = warning[:at], warning[at + len(chunk):]
+                # Models tend to wrap the quote in quotation marks, which
+                # would otherwise be left stranded around the replacement
+                # ('the message you posted, "that message."').
+                if before[-1:] in "\"'“‘" and after[:1] in "\"'”’":
+                    before, after = before[:-1], after[1:]
+                cleaned = before + "that message" + after
                 # Anything else quoted gets caught on the next pass.
                 return _strip_quotes_of(cleaned, original)
     return warning
@@ -386,12 +413,26 @@ def review(messages):
         print("GROQ_API_KEY is not set - cannot review, exiting", flush=True)
         return None
 
+    for model in (REVIEW_MODEL, REVIEW_FALLBACK_MODEL):
+        got = _review_all(messages, key, model)
+        if got is not None:
+            # A run on anything but the main model is degraded: the report
+            # still goes out, but nothing is warned automatically off a
+            # judgement the weaker model is measurably bad at.
+            return got, model == REVIEW_MODEL
+        if model == REVIEW_MODEL:
+            print(f"   {REVIEW_MODEL} unavailable - retrying on "
+                  f"{REVIEW_FALLBACK_MODEL}, warnings will be suppressed", flush=True)
+    return None
+
+
+def _review_all(messages, key, model):
     flagged = []
     batches = [messages[i:i + BATCH_SIZE] for i in range(0, len(messages), BATCH_SIZE)]
     for n, batch in enumerate(batches, start=1):
         if n > 1:
             time.sleep(BATCH_PAUSE_SECONDS)
-        part = _review_batch(batch, key)
+        part = _review_batch(batch, key, model)
         if part is None:
             return None  # a partial review is worse than an honest failure
         print(f"   batch {n}/{len(batches)}: {len(batch)} messages, {len(part)} flagged",
@@ -400,14 +441,14 @@ def review(messages):
     return flagged
 
 
-def _review_batch(messages, key):
+def _review_batch(messages, key, model):
     listing = "\n".join(
         f'[{m["discord_message_id"]}] {m.get("discord_display_name") or m["discord_user_id"]}: '
         f'{(m["content"] or "").strip()}'
         for m in messages
     )
     body = {
-        "model": GROQ_MODEL,
+        "model": model,
         "temperature": 0,
         # max_tokens is CHARGED, not just capped: Groq counts the full
         # reservation against the budget whether or not it gets used. The
@@ -482,8 +523,25 @@ def _review_batch(messages, key):
         content = r.json()["choices"][0]["message"]["content"] or ""
         start, end = content.find("{"), content.rfind("}")
         if start == -1 or end == -1:
-            print(f"no JSON in the review reply: {content[:200]!r}", flush=True)
-            return None
+            # Seen live on the smaller model: one batch in five came back
+            # with an empty answer, which used to end the whole night's
+            # review. One batch misbehaving is not a reason to check
+            # nothing, so ask that batch again before giving up.
+            print(f"no JSON in the review reply: {content[:120]!r} - asking again",
+                  flush=True)
+            time.sleep(5)
+            r = requests.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers={"Authorization": f"Bearer {key}"}, json=body, timeout=90,
+            )
+            if r.status_code != 200:
+                print(f"   retry failed: HTTP {r.status_code}", flush=True)
+                return None
+            content = r.json()["choices"][0]["message"]["content"] or ""
+            start, end = content.find("{"), content.rfind("}")
+            if start == -1 or end == -1:
+                print(f"   still nothing usable: {content[:120]!r}", flush=True)
+                return None
         return json.loads(content[start:end + 1]).get("flagged", [])
     except Exception as exc:
         print(f"could not read the review reply: {exc!r}", flush=True)
@@ -508,7 +566,8 @@ def main():
     if not rows:
         return
 
-    flagged = review(rows)
+    result = review(rows)
+    flagged, full_quality = result if result else (None, False)
     if flagged is None:
         # Distinct from "nothing was flagged" on purpose. The check not
         # running is itself worth an email, or nobody finds out for weeks.
@@ -538,7 +597,10 @@ def main():
     # before, and never more than MAX_WARNINGS_PER_RUN in one night.
     seen = already_handled([r["discord_message_id"] for r, _, _ in hits])
     warned = {}
-    if AUTO_WARN and not dry_run and seen is not None:
+    if AUTO_WARN and not full_quality:
+        print("   reviewed on the backup model - warnings suppressed, "
+              "the report goes out for a person to read", flush=True)
+    if AUTO_WARN and full_quality and not dry_run and seen is not None:
         key = os.environ.get("GROQ_API_KEY")
         candidates = [h for h in hits
                       if h[2] == AUTO_WARN_SEVERITY
@@ -579,6 +641,16 @@ def main():
         "can read very differently with the conversation around it.",
         "",
     ]
+    if not full_quality:
+        lines += [
+            "NOTE: the main review model had no budget left today, so this "
+            "ran on the backup one. It is measurably worse at this - on a "
+            "test it missed an explicit sexual remark entirely and rated two "
+            "ordinary argumentative lines as clear-cut. No warnings were "
+            "sent automatically, and these ratings deserve more doubt than "
+            "usual.",
+            "",
+        ]
     # Where each flagged message sits in the day, so the surrounding
     # conversation can be shown with it.
     position = {r["discord_message_id"]: i for i, r in enumerate(rows)}
