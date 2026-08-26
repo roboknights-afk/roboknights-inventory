@@ -1332,8 +1332,21 @@ def render_verify_details_dialog(user_row):
                         phone_no.strip(), phone_no_2.strip(), personal_email.strip(),
                         is_adhoc=user_row.get("role") == "adhoc",
                     )
-                except Exception:
-                    pass
+                except Exception as exc:
+                    # Best-effort, but NOT silent. This bare `pass` has now
+                    # hidden two separate Clio outages: the service-account
+                    # secret missing from Streamlit Cloud, and the tab being
+                    # renamed out from under a title-based lookup. Both times
+                    # members verified, saw "Details saved", and never
+                    # reached the sheet, and nobody found out until someone
+                    # noticed a name wasn't there — most recently Arhaan
+                    # Gupta and Krishna Naraayan, both backfilled 2026-08-25.
+                    # The member is still not blocked; the failure just stops
+                    # being invisible in the Streamlit Cloud logs.
+                    print(
+                        f"CLIO SYNC FAILED for {admission_no.strip()} "
+                        f"({name.strip()}): {exc!r}", flush=True,
+                    )
             st.toast("Details saved", icon=":material/check_circle:")
             st.rerun()
 
