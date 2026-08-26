@@ -166,11 +166,17 @@ def _review_batch(messages, key):
     body = {
         "model": GROQ_MODEL,
         "temperature": 0,
-        # This model thinks before it answers, and the thinking comes out of
-        # the SAME budget as the answer. At 1500 a real 60-message batch came
-        # back finish_reason="length" with 1498 of 1500 tokens spent reasoning
-        # and an empty answer - so the headroom here is not optional.
-        "max_tokens": 4000,
+        # max_tokens is CHARGED, not just capped: Groq counts the full
+        # reservation against the budget whether or not it gets used. The
+        # same prompt was refused at max_tokens=4000 ("Requested 6276") and
+        # went through at 1200, seconds apart - so oversized headroom here
+        # is not free caution, it is the job squeezing itself out.
+        #
+        # 1200 is still six times what this actually needs: with
+        # reasoning_effort low, a real 60-message batch used 198 completion
+        # tokens. The earlier 1500 failed only because reasoning was set
+        # high by default and ate the entire budget before answering.
+        "max_tokens": 1200,
         # Measured on a real batch: "low" used 198 completion tokens, "medium"
         # used 2097, and both flagged the same message. Low it is - the free
         # tier allows 8,000 tokens a MINUTE across this whole project, and
@@ -211,8 +217,16 @@ def _review_batch(messages, key):
             # fail anyway, so stop and report instead. The report going out
             # is what tells anyone the check didn't happen; a silent
             # 43-minute nap tells nobody anything.
+            # Print the BODY, not just the wait. The wait alone doesn't say
+            # which limit was hit, and the two need opposite responses: a
+            # per-minute limit means slow down, a per-DAY one (200,000 tokens
+            # for this model, and only the 429 body ever names it) means the
+            # whole project has spent its budget and this job should use less
+            # of it. Guessing between them is how the last three swallowed
+            # failures in this project stayed unexplained for days.
             print(f"   rate limited for {wait:.0f}s - too long to wait, giving up",
                   flush=True)
+            print(f"   {r.text[:300]}", flush=True)
             return None
         print(f"   rate limited, waiting {wait:.0f}s (attempt {attempt + 1}"
               f"/{RETRY_ATTEMPTS})", flush=True)
