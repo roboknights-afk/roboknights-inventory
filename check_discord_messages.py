@@ -92,12 +92,18 @@ DISCORD_GENERAL_WEBHOOK = os.environ.get("DISCORD_GENERAL_WEBHOOK_URL")
 DISCORD_AUTOMATED_MARKER = "\n\n***This is automated message***"
 DISCORD_MESSAGE_LIMIT = 2000
 
+# The length the warnings are meant to be. Enforced in code, not by asking
+# the model for a character count - see write_warning().
+MIN_WARNING_CHARS = 2000
+
 WARNING_PROMPT = """You are writing a warning to a member of a school \
 robotics club's Discord server, aged between 11 and 18, about something \
 they posted.
 
-Write ONE continuous paragraph of at least 2000 characters. No headings, \
-no bullet points, no lists - flowing prose only.
+Write ONE continuous paragraph of between 2200 and 3000 characters. Count \
+as you go - a first draft asked for "at least 2000" came back at 1894, so \
+aim past the target rather than at it. No headings, no bullet points, no \
+lists - flowing prose only.
 
 Requirements:
 - Say plainly what was wrong with the message and why it matters to the \
@@ -110,6 +116,15 @@ message itself.
 restricting anyone's access, and do not claim any action has been taken.
 - Make clear that the same standard applies to every member equally.
 - End by saying what is expected from them from here on.
+
+Do NOT invent things that were not given to you. This club has no code of \
+conduct document, no written rules page, no mentors and no moderators, so \
+do not refer to any of them and never tell the member to go and read \
+something. Do not mention parents or teachers. Do not describe what the \
+club is for or what other members supposedly come here to do - you do not \
+know. Write only about the message itself, why it lands badly on the \
+people who read it, and what you expect instead. Plain, direct, human \
+wording - not the language of a company policy.
 
 The member's name: {name}
 What they posted: {content}
@@ -226,7 +241,79 @@ def write_warning(row, reason, key):
               flush=True)
         return None
     text = (r.json()["choices"][0]["message"].get("content") or "").strip()
-    return text or None
+    if not text:
+        return None
+
+    # Asking for a character count doesn't work: told "at least 2000" it
+    # produced 1894, and told "between 2200 and 3000" it produced 1542.
+    # Models don't count characters. So check it here and ask once for
+    # more, which is a thing they CAN do - expand something already
+    # written - rather than hit a number they can't measure.
+    if len(text) < MIN_WARNING_CHARS:
+        print(f"   warning came back at {len(text)} chars, asking for more", flush=True)
+        try:
+            r2 = requests.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers={"Authorization": f"Bearer {key}"},
+                json={"model": GROQ_MODEL, "temperature": 0.3, "max_tokens": 1600,
+                      "reasoning_effort": "low",
+                      "messages": [
+                          {"role": "user", "content": prompt},
+                          {"role": "assistant", "content": text},
+                          {"role": "user", "content":
+                           "That is too short. Rewrite it as one continuous "
+                           "paragraph roughly twice that length. Do not add any "
+                           "new accusation or any claim you have not already "
+                           "made - go deeper on why it affects the people who "
+                           "read it and on what is expected instead. Same rules "
+                           "as before. Reply with the paragraph only."},
+                      ]},
+                timeout=90,
+            )
+            if r2.status_code == 200:
+                longer = (r2.json()["choices"][0]["message"].get("content") or "").strip()
+                # Only take it if it is actually longer; a shorter retry
+                # means the second attempt went worse than the first.
+                if len(longer) > len(text):
+                    text = longer
+        except Exception as exc:
+            print(f"   could not expand the warning: {exc!r}", flush=True)
+
+    return _strip_quotes_of(text, row.get("content") or "")
+
+
+def _strip_quotes_of(warning, original):
+    """Take the flagged message back out of the warning if the model
+    quoted it.
+
+    The prompt says not to repeat explicit wording. It did anyway - a
+    warning about a sexual remark came back with the remark reprinted in
+    full, which would have republished it to the same public channel, in
+    front of the same younger members it was a problem for. A system
+    prompt is a request; this is the part that actually holds.
+
+    Any run of 25+ characters from the original found in the warning is
+    replaced, rather than the whole warning being thrown away - the rest
+    of it is usually fine, and a warning that never sends is its own kind
+    of failure.
+    """
+    original = " ".join((original or "").split())
+    if len(original) < 25:
+        return warning
+    lowered = warning.lower()
+    # Longest first, so a big quote is caught whole instead of leaving
+    # fragments behind after a short match is replaced.
+    for size in range(len(original), 24, -1):
+        for start in range(0, len(original) - size + 1):
+            chunk = original[start:start + size]
+            at = lowered.find(chunk.lower())
+            if at != -1:
+                print(f"   the warning quoted {len(chunk)} characters of the "
+                      f"original message - removed", flush=True)
+                cleaned = warning[:at] + "that message" + warning[at + len(chunk):]
+                # Anything else quoted gets caught on the next pass.
+                return _strip_quotes_of(cleaned, original)
+    return warning
 
 
 def post_to_general(text):
