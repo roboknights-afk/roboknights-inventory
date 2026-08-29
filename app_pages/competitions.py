@@ -13,7 +13,7 @@ from datetime import date, datetime
 
 import streamlit as st
 
-from e2c_import import scan_e2c_sheet
+from e2c_import import find_e2c_competition, scan_e2c_sheet
 from shared import (
     EXUN_EMAILS, HOST_EMAILS, IST, cached_table, discord_role_tags, get_client, invalidate_cache,
     notify_if_roster_complete, safe_write, send_discord_message, send_email,
@@ -602,17 +602,72 @@ def render_e2c_import():
             try:
                 st.session_state.e2c_scan_results = scan_e2c_sheet(client)
                 st.session_state.e2c_scan_error = None
+                st.session_state.e2c_found_by_name = None
             except Exception as e:
                 st.session_state.e2c_scan_results = None
                 st.session_state.e2c_scan_error = str(e)
             skeleton.empty()
 
+        # The scan above only shows competitions with something
+        # robotics-shaped in them — a note saying "robo", or two of our
+        # members already on the roster. That is the right default for a
+        # sheet that is mostly other clubs' events, but it means a real
+        # robotics competition whose note simply doesn't say so never
+        # appears, with no way to reach it. VOLTRIX 2K26 runs an event
+        # called Robowars and is invisible to the scan for exactly this
+        # reason. Typing the name is that way in.
+        st.caption("Competition missing from the scan? Look it up by name.")
+        find_col1, find_col2 = st.columns([4, 1])
+        find_name = find_col1.text_input(
+            "Find a competition by name", key="e2c_find_name",
+            placeholder="Competition name exactly as it appears on the sheet (e.g. VOLTRIX 2K26)",
+            label_visibility="collapsed",
+        )
+        if find_col2.button("Find", key="e2c_find_btn", icon=":material/travel_explore:") \
+                and find_name.strip():
+            try:
+                with st.spinner("Searching the E2C sheet…"):
+                    matches = find_e2c_competition(client, find_name)
+            except Exception as e:
+                matches = None
+                st.session_state.e2c_scan_error = str(e)
+            if matches:
+                # Replaces the list rather than adding to it, so it is
+                # obvious you are looking at one hand-picked competition
+                # and not a scan result. Scan again to get the full list back.
+                st.session_state.e2c_scan_results = matches
+                st.session_state.e2c_scan_error = None
+                st.session_state.e2c_found_by_name = find_name.strip()
+            elif matches is not None:
+                st.session_state.e2c_scan_results = []
+                st.session_state.e2c_found_by_name = find_name.strip()
+            st.rerun()
+
         if st.session_state.get("e2c_scan_error"):
             st.error(f"Couldn't read the E2C sheet: {st.session_state.e2c_scan_error}")
 
         results = st.session_state.get("e2c_scan_results")
+        found_by_name = st.session_state.get("e2c_found_by_name")
+        if found_by_name and results is not None:
+            if results:
+                st.info(
+                    f"Showing what the sheet has for **{found_by_name}** — "
+                    f"**every** event in it, not just auto-detected robotics ones, "
+                    f"so tick only the ones we actually enter. Scan again for the full list."
+                )
+                if any(c.get("found_in_past_section") for c in results):
+                    st.warning(
+                        "This one sits below the sheet's PAST EVENTS divider — it has "
+                        "already been held, so nobody can volunteer for it."
+                    )
+            else:
+                st.warning(
+                    f"No competition matching \"{found_by_name}\" on the sheet's current "
+                    f"year tab. Check the spelling against the sheet — the name has to be "
+                    f"the one in the big text in column A."
+                )
         if results is not None:
-            if not results:
+            if not results and not found_by_name:
                 st.caption("No robotics competitions found in the current year's tab.")
 
             # Events the host has explicitly said "no" to before — filtered
@@ -722,7 +777,10 @@ def render_e2c_import():
                             "Links: " + "  •  ".join(f"[{l['label']}]({l['url']})" for l in comp["links"])
                         )
 
-                    st.markdown("**Robotics events to import:**")
+                    st.markdown(
+                        "**Every event in this competition — tick the ones we enter:**"
+                        if found_by_name else "**Robotics events to import:**"
+                    )
 
                     # Rejected ones are filtered out of the suggested list
                     # entirely, not just left unchecked — that's the whole
@@ -761,6 +819,7 @@ def render_e2c_import():
                                 "info", f"\"{match['name']}\" is already in the list."
                             )
                         else:
+                            match["manually_added"] = True
                             st.session_state[extra_key].append(match)
                             st.session_state[f"e2c_addname_msg_{idx}"] = ("success", f"Added \"{match['name']}\".")
                         st.rerun()
@@ -780,8 +839,22 @@ def render_e2c_import():
                                    "are already on the roster, confirm before including"
                                    if e.get("needs_review") else "")
                             )
+                            # A scan already filtered down to robotics +
+                            # needs-review, so "not needs_review" and
+                            # "is_robotics" mean the same thing there. A
+                            # by-name lookup does NOT filter - it hands back
+                            # every event the competition runs - so the same
+                            # default would arrive with eight gaming events
+                            # pre-ticked. Only genuinely detected robotics
+                            # starts ticked; an event the host typed in by
+                            # name still does, since asking for it by name is
+                            # the decision.
+                            default_include = bool(
+                                e.get("manually_added") or e.get("is_robotics")
+                                or (not found_by_name and not e.get("needs_review"))
+                            )
                             include = ecol2.checkbox(
-                                "Include", value=not e.get("needs_review"), key=f"e2c_incl_{idx}_{eidx}",
+                                "Include", value=default_include, key=f"e2c_incl_{idx}_{eidx}",
                             )
                             with ecol3:
                                 _reject_event_button(comp["name"], e["name"], f"e2c_reject_{idx}_{eidx}")

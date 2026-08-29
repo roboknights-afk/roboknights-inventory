@@ -526,7 +526,58 @@ def _parse_all_events(block, user_id_by_name):
     return events
 
 
+def _searchable(text):
+    # Loose enough that "atlent" finds "ATLENT 5.0" and a stray hyphen or
+    # apostrophe doesn't cost a match. Only used for the by-name lookup
+    # below, never for deciding what a competition IS.
+    #
+    # Note this strips non-Latin script entirely, so "Techस्पर्धा" comes out
+    # as just "tech" — which is exactly why the match below is whole-word
+    # and not a plain substring.
+    return re.sub(r"[^a-z0-9]+", " ", (text or "").lower()).strip()
+
+
+def _name_matches(typed, sheet_name):
+    # Whole words, in either direction: typing part of the name finds the
+    # full one ("atlent" -> "ATLENT 5.0"), and typing more than the sheet
+    # holds still finds it ("ATLENT 5.0 2026" -> "ATLENT 5.0").
+    #
+    # A plain substring test was tried first and was wrong: "Techस्पर्धा"
+    # normalises to "tech", which is inside "techlligence", so searching
+    # for TECHLLIGENCE returned both. Padding with spaces makes "tech"
+    # match the word tech and not the start of another word.
+    typed, sheet_name = f" {typed} ", f" {sheet_name} "
+    return typed in sheet_name or sheet_name in typed
+
+
 def scan_e2c_sheet(client):
+    # The normal scan: this year's tab, upcoming competitions only, and
+    # only the ones with something robotics-shaped in them.
+    return _scan(client)
+
+
+def find_e2c_competition(client, wanted_name):
+    """Look up ONE competition by name, ignoring both filters the normal
+    scan applies.
+
+    The normal scan drops a competition entirely when none of its events
+    reads as robotics — no note category saying "robo", and fewer than two
+    RoboKnights members already on its roster. That is the right default
+    (the sheet is mostly other clubs' events), but it means a genuine
+    robotics competition whose note simply doesn't say so is invisible,
+    with no way to reach it. This is that way: type the name, get the
+    competition and EVERY event in it, and pick the robotics ones by hand.
+
+    Also searches past the "PAST EVENTS" divider, since a competition
+    sitting just under it is exactly the kind that gets missed.
+
+    Returns a list — usually one, empty if nothing matched, more than one
+    only if the typed name is ambiguous.
+    """
+    return _scan(client, wanted_name=wanted_name)
+
+
+def _scan(client, wanted_name=None):
     # client is the Supabase client, used to match scanned competitions/
     # events against what's already in the database (by name) — both to
     # label a competition "already imported" and so an already-imported
@@ -536,7 +587,9 @@ def scan_e2c_sheet(client):
     tab = _pick_current_tab(E2C_SHEET_ID, api_key)
     rows = _fetch_raw_rows(E2C_SHEET_ID, api_key, tab)
     blocks = _split_into_blocks(rows[2:])  # rows[0:2] are the sheet's own title/header rows
-    blocks = _drop_past_events(blocks)
+    upcoming_count = len(_drop_past_events(blocks))
+    if not wanted_name:
+        blocks = blocks[:upcoming_count]
 
     existing_id_by_name = {
         c["name"].strip().lower(): c["competition_id"]
@@ -552,8 +605,10 @@ def scan_e2c_sheet(client):
     # fallback in _NameMatcher for abbreviated middle names.
     user_id_by_name = _NameMatcher(client.table("users").select("user_id, name").execute().data)
 
+    target = _searchable(wanted_name) if wanted_name else None
+
     competitions = []
-    for block in blocks:
+    for block_no, block in enumerate(blocks):
         all_events = _parse_all_events(block, user_id_by_name)
         # Shown by default: real keyword-detected robotics events, PLUS
         # events that weren't keyword-detected but have 2+ real members
@@ -561,9 +616,20 @@ def scan_e2c_sheet(client):
         # need the host's confirmation, not silently imported (see
         # needs_review in _parse_all_events).
         events = [e for e in all_events if e["is_robotics"] or e["needs_review"]]
-        if not events:
-            continue  # nothing robotics-related, and nothing worth a manual look
         info = _parse_competition_info(block)
+
+        if target:
+            # A by-name lookup skips the robotics filter entirely — being
+            # asked for by name IS the signal, and the host picks the real
+            # events off the full list themselves. Substring either way, so
+            # "atlent" finds "ATLENT 5.0" and the full name still works.
+            here = _searchable(info["name"])
+            if not here or not _name_matches(target, here):
+                continue
+            events = all_events
+        elif not events:
+            continue  # nothing robotics-related, and nothing worth a manual look
+
         existing_id = existing_id_by_name.get(info["name"].strip().lower())
         for e in all_events:
             e["existing_event_id"] = (
@@ -577,5 +643,20 @@ def scan_e2c_sheet(client):
         info["already_imported"] = existing_id is not None
         info["date_parsed"] = _parse_date_best_effort(info["date_text"])
         info["deadline_parsed"] = _parse_date_best_effort(info["deadline_text"] or "")
+        # Only ever true on a by-name lookup, which is the one that reads
+        # past the sheet's "PAST EVENTS" divider. Worth saying out loud in
+        # the UI: nobody can volunteer for something already held.
+        info["found_in_past_section"] = bool(target) and block_no >= upcoming_count
+        # What the normal scan would have made of it, so the UI can say
+        # WHY it wasn't in the list rather than just showing it.
+        info["auto_detected"] = bool(
+            [e for e in all_events if e["is_robotics"] or e["needs_review"]]
+        )
         competitions.append(info)
+
+    if target:
+        # An exact name beats a partial one, so typing a full name that
+        # happens to be a prefix of another doesn't hand back the wrong one
+        # first.
+        competitions.sort(key=lambda c: _searchable(c["name"]) != target)
     return competitions
