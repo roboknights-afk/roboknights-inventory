@@ -328,15 +328,6 @@ if old_rows and old_rows < TOTAL_ROWS:
         "sheetId": sid, "dimension": "ROWS", "length": TOTAL_ROWS - old_rows}})
 
 requests += [
-    # Row heights are set by row INDEX and survive a rewrite - the exact
-    # trap that hid members' names in the Clio Alumni sheet when a layout
-    # shifted. Reset every row to the default first, so yesterday's 8px
-    # hairlines can't land in the middle of today's competition.
-    {"updateDimensionProperties": {
-        "range": {"sheetId": sid, "dimension": "ROWS",
-                  "startIndex": 0, "endIndex": max(TOTAL_ROWS, old_rows)},
-        "properties": {"pixelSize": 21}, "fields": "pixelSize",
-    }},
     {"updateCells": {
         "range": {"sheetId": sid, "startRowIndex": 0, "endRowIndex": TOTAL_ROWS,
                   "startColumnIndex": 0, "endColumnIndex": NCOLS},
@@ -369,12 +360,66 @@ for i, w in enumerate(src_widths[:NCOLS]):
             "properties": {"pixelSize": w["pixelSize"]}, "fields": "pixelSize",
         }})
 
-for r in rule_rows:
-    requests.append({"updateDimensionProperties": {
-        "range": {"sheetId": sid, "dimension": "ROWS",
-                  "startIndex": r - 1, "endIndex": r},
-        "properties": {"pixelSize": 8}, "fields": "pixelSize",
-    }})
+# --------------------------------------------------------- row heights
+# Every row's height is set explicitly, every run. Three things forced
+# this, in the order they were learned:
+#
+# 1. Heights are set by row INDEX and survive a rewrite - the trap that
+#    hid members' names in the Clio Alumni sheet when a layout shifted.
+#    So they cannot simply be left alone.
+# 2. Setting them all to 21px sliced every competition name in half:
+#    those lines are 22pt and need about 30px. 40px is what the
+#    hand-maintained "2026-2027" tab uses for its own 22pt rows.
+# 3. autoResizeDimensions looks like the right answer and is a no-op on
+#    ROWS through this API - tested directly on this tab, heights came
+#    back unchanged at 21px.
+#
+# Worth knowing WHY the older hand-run version never hit any of this: it
+# deleted and recreated the tab every time, and a freshly created row
+# keeps Sheets' own auto-fit. Once a height is set explicitly it is
+# pinned for good. Reusing the tab (so its gid stays stable) means that
+# free auto-fit is gone and the heights are ours to get right.
+BIG_PT = 22
+BIG_ROW_PX = 40
+DEFAULT_ROW_PX = 21
+HAIRLINE_PX = 8
+
+big_rows = sorted({r for (r, _), cell in grid.items()
+                   if cell["size"] >= BIG_PT and cell["value"]})
+
+
+def height_runs(rows, px):
+    """Consecutive rows at the same height become one request instead of
+    one each - a competition's name/mode/status are always three in a
+    row, so this roughly thirds the op count."""
+    out, start, prev = [], None, None
+    for r in rows:
+        if start is None:
+            start = prev = r
+        elif r == prev + 1:
+            prev = r
+        else:
+            out.append({"updateDimensionProperties": {
+                "range": {"sheetId": sid, "dimension": "ROWS",
+                          "startIndex": start - 1, "endIndex": prev},
+                "properties": {"pixelSize": px}, "fields": "pixelSize"}})
+            start = prev = r
+    if start is not None:
+        out.append({"updateDimensionProperties": {
+            "range": {"sheetId": sid, "dimension": "ROWS",
+                      "startIndex": start - 1, "endIndex": prev},
+            "properties": {"pixelSize": px}, "fields": "pixelSize"}})
+    return out
+
+
+# Everything back to the default first, so yesterday's 40px title row
+# can't sit in the middle of today's plain text, then the exceptions.
+requests.append({"updateDimensionProperties": {
+    "range": {"sheetId": sid, "dimension": "ROWS",
+              "startIndex": 0, "endIndex": max(TOTAL_ROWS, old_rows)},
+    "properties": {"pixelSize": DEFAULT_ROW_PX}, "fields": "pixelSize"}})
+requests += height_runs(big_rows, BIG_ROW_PX)
+requests += height_runs(sorted(rule_rows), HAIRLINE_PX)
 
 # Trim the tail last, once everything above it has been written.
 if old_rows > TOTAL_ROWS:
@@ -385,5 +430,42 @@ if old_rows > TOTAL_ROWS:
 sh.batch_update({"requests": requests})
 print(f"wrote {TAB!r}: {len(upcoming)} upcoming + {len(past)} past, "
       f"{LAST} rows, {len(rule_rows)} hairlines, {len(requests)} ops", flush=True)
+
+# ------------------------------------------------------- check itself
+# This job writes something a person LOOKS at, and the first version of it
+# shipped a change that read back perfectly - right competitions, right
+# rows, right values - while every competition name was sliced in half on
+# screen, because the rows were too short for 22pt text. Checking the data
+# landed is not the same as checking the sheet is readable, so check the
+# thing that actually broke: every row holding a big line has to be tall
+# enough to show it.
+MIN_BIG_ROW_PX = 28  # 22pt needs about 30px; below 28 is visibly clipped
+after = sh.fetch_sheet_metadata(
+    {"fields": "sheets(properties/sheetId,data/rowMetadata/pixelSize)"})
+heights = next((s["data"][0].get("rowMetadata", []) for s in after["sheets"]
+                if s["properties"]["sheetId"] == sid), [])
+
+
+def height_of(grid_row):
+    # grid rows are 1-based and row 1 is the header, so grid row r is
+    # rowMetadata[r - 1].
+    i = grid_row - 1
+    return (heights[i].get("pixelSize") if i < len(heights) else None) or 0
+
+
+clipped = [r for r in big_rows if height_of(r) < MIN_BIG_ROW_PX]
+if clipped:
+    print(f"PROBLEM: {len(clipped)} of {len(big_rows)} big-text rows are under "
+          f"{MIN_BIG_ROW_PX}px and will be clipped on screen.", flush=True)
+    for r in clipped[:10]:
+        name = next((grid[(r, c)]["value"] for c in range(NCOLS)
+                     if (r, c) in grid and grid[(r, c)]["value"]), "")
+        print(f"   row {r}: {height_of(r)}px  {name!r}", flush=True)
+    print(f"open: https://docs.google.com/spreadsheets/d/{NIKE_ID}/edit#gid={sid}",
+          flush=True)
+    sys.exit(1)
+
+print(f"checked: all {len(big_rows)} big-text rows are tall enough "
+      f"({min(height_of(r) for r in big_rows)}px smallest)", flush=True)
 print(f"open: https://docs.google.com/spreadsheets/d/{NIKE_ID}/edit#gid={sid}",
       flush=True)
