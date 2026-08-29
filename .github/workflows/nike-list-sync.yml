@@ -1,0 +1,39 @@
+name: Nike's List sync
+
+# Rebuilds the "2026-27 (bot)" tab in Nike's List from the dashboard.
+#
+# Why this exists: the generator was a script somebody ran by hand, so the
+# sheet was only ever as fresh as the last time anyone remembered. Dynamix
+# 26 was added to the dashboard and simply never appeared there. A daily
+# job removes the remembering.
+#
+# It only ever touches that one tab. The hand-maintained "2026-2027" tab
+# is not read, written or resized.
+on:
+  schedule:
+    # 2:30 UTC = 8:00 AM IST. GitHub delays scheduled runs on this repo by
+    # anywhere from minutes to several hours, which is fine here - the tab
+    # is a full rebuild from the database, so a late run is simply a
+    # slightly later refresh, never a missed one.
+    - cron: "30 2 * * *"
+  workflow_dispatch: # "Run workflow" in the Actions tab, for an immediate refresh
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install supabase python-dotenv gspread google-auth
+      - name: Rebuild the 2026-27 (bot) tab
+        run: python nike_list_sync.py
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          # The same base64 service-account JSON the Clio sync uses. This
+          # is a FIFTH place that credential has to exist (.env, Streamlit
+          # Cloud, Railway, and now here) - three outages in this project
+          # have come from a secret being in one store and not another.
+          GOOGLE_SERVICE_ACCOUNT_JSON_B64: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON_B64 }}
