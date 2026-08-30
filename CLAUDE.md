@@ -56,6 +56,18 @@ Python 3, Streamlit for the UI, Supabase (hosted Postgres + Auth) for storage
 and login, everything in a single `app.py` for now. No Docker, Flask, React,
 or npm.
 
+**Changed 2026-08-30 — the "no React, no npm" half of that rule is over.**
+Phase 2 rebuilds the dashboard as a real web app (Next.js + TypeScript +
+Tailwind, on Vercel) in a **separate repo**, `../roboknights-web`, together
+with a rebuilt roboknights.in. See `MIGRATION.md` for the plan and the
+chunk order. Two things stay true inside *this* repo:
+
+- **This repo stays Python.** Every scheduled job, the Discord bot,
+  `e2c_import.py` and the Streamlit app itself keep working, unchanged,
+  for the whole migration. Don't add npm to this repo.
+- **The Streamlit app stays live and is not touched** until the new one
+  does more than it does. Nothing is switched over unilaterally.
+
 **Changed 2026-07-12:** this project started on SQLite with a fake "I am:
 [name]" dropdown (see git history / old CLAUDE.md text below if you need the
 original v1 plan). The student deliberately chose to move to Supabase for
