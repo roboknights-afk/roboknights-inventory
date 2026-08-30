@@ -111,18 +111,32 @@ disagrees:
 - **Next.js (App Router) + TypeScript**, deployed on **Vercel**. This is
   what Vercel is built for and is the only reason the hosting decision was
   ever a rewrite rather than a redeploy.
-- **One new repo, `C:\Users\gogof\roboknights-web`.** Not a folder inside
-  this repo — this repo stays Python, so its GitHub Actions jobs and the
-  Streamlit deploy keep working untouched. Same split the student already
-  runs for Domain Square (`ds2-website` + `ds2-dashboard-web`), except
-  RoboKnights gets **one** project holding both the public site and the
-  dashboard, because the live roboknights.in source isn't on this machine
-  or in either GitHub account — so the site is rebuilt alongside the
-  dashboard rather than edited in place. Public pages at `/`, dashboard at
-  `/dashboard/*`, one design language, one deploy.
-- Versions match `ds2-dashboard-web` deliberately, so there is one Next.js
-  setup to learn and not two: Next 16, React 19, Tailwind 4,
-  `@supabase/ssr` + `@supabase/supabase-js`.
+**Two repos, exactly like Domain Square already does it:**
+
+| | Website | Dashboard |
+| --- | --- | --- |
+| Repo | `Documents\GitHub\RoboKnights-Clan.github.io` (already exists) | `C:\Users\gogof\roboknights-dashboard-web` (new, created 2026-08-30) |
+| Origin | `iamnaitiknj/RoboKnights-Clan.github.io`, upstream `RoboKnights-Clan/…` | none yet — local only |
+| Stack | Next 12, **Pages Router**, React 17, Tailwind 3 | Next 16, **App Router**, React 19, Tailwind 4 |
+| Deployed | yes — roboknights.in, via Vercel | no, and not until chunk 9 |
+
+- The dashboard is **not** a folder inside `roboknights-inventory`: that
+  repo stays pure Python, so its GitHub Actions jobs and the Streamlit
+  deploy keep working untouched.
+- The dashboard's versions match `ds2-dashboard-web` deliberately, so
+  there is one modern Next.js setup to learn and not two.
+- The two sites are different Next.js generations and that is fine — they
+  are separate deploys that only have to agree on how they *look*. Chunk 1
+  already lifted the site's palette (`#242424`, `#101010`, Work Sans)
+  straight out of its `tailwind.config.js` into the dashboard's tokens, so
+  they start matching rather than being reconciled later.
+
+**Before any website chunk starts:** that repo has ~4 months of
+uncommitted work sitting in it (11 files, +929/−1330, last touched
+2026-05-07, plus an untracked `components/ui/` with two unused component
+files). It is on branch `deploy`, which is what Vercel builds. Nothing
+should be committed there until the student says whether that work is
+wanted or should be thrown away.
 - **Tailwind CSS** for styling. The new design gets defined once as tokens
   and applied everywhere — the Phase 2 sheet's complaint is that pages
   built at different times look like it.
@@ -178,10 +192,13 @@ is checked before the next starts, and stays on localhost. The Streamlit
 app is live and untouched the whole way through; only chunk 9 changes
 anything real.
 
+Website halves land in `RoboKnights-Clan.github.io`; dashboard halves in
+`roboknights-dashboard-web`.
+
 | # | Website half | Dashboard half |
 | --- | --- | --- |
-| 1 | Site shell: layout, nav, footer, plain homepage | Inventory parts list, read-only, server-side from Supabase |
-| 2 | The real homepage design (hero, 24 Years, videos, FAQ) | The dashboard shell + shared components in the same language |
+| 1 | *(done differently — see below)* | ✅ Inventory parts list, read-only, server-side from Supabase |
+| 2 | Homepage design pass, on top of whatever survives the WIP decision | The dashboard shell + shared components in the same language |
 | 3 | About + Contact pages | Auth, access tiers, and the write backstop |
 | 4 | Members page (public roster) | Inventory writes: request, approve, return, due dates |
 | 5 | Achievements page (public) | Competitions - browse and sign-up, then host tools + E2C import |
@@ -192,10 +209,12 @@ anything real.
 
 Notes on the ordering, since it isn't arbitrary:
 
-- **Chunk 1 is deliberately boring.** It proves the whole chain end to end -
-  repo, build, Tailwind, a server route reading Supabase - before anything
-  important depends on it, and it is the chunk where the shape of a Next.js
-  page gets learned.
+- **Chunk 1 is deliberately boring, and its website half was deliberately
+  skipped.** The dashboard half proved the whole chain end to end - repo,
+  build, Tailwind, a server route reading Supabase. The website half was
+  *reading* the existing repo rather than writing to it, because of the
+  uncommitted work sitting in it; the first real website edit is chunk 2,
+  once that is resolved.
 - **Chunk 2 settles the design once**, on two real pages, rather than
   fifteen pages in. The Phase 2 sheet's complaint about the current app is
   that pages built at different times look like it.
@@ -224,8 +243,10 @@ is the bar for chunk 9, and the reason nothing is added until then.
   advance.
 - **Whether the AI Assistant page moves at all**, or whether members just
   use the Discord bot, which already answers the same questions.
-- **Whether the live roboknights.in content is ported or rewritten.** Its
-  source isn't on this machine or in either GitHub account, so the pages
-  are being rebuilt either way - the question is only whether the words and
-  images come across as they are. Text can be pulled off the live site;
-  images may need re-uploading by hand.
+- **What happens to the website repo's uncommitted work** (see the stack
+  section). Keep it, finish it, or throw it away - blocking every website
+  chunk until answered.
+- **Which GitHub account and remote the dashboard repo gets**, when it
+  eventually gets one. `roboknights-afk` is the obvious choice, but the
+  website lives under `RoboKnights-Clan` / `iamnaitiknj`, so this is worth
+  deciding rather than defaulting.
