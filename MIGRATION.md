@@ -116,7 +116,8 @@ disagrees:
 | | Website | Dashboard |
 | --- | --- | --- |
 | Repo | `Documents\GitHub\RoboKnights-Clan.github.io` (already exists) | `C:\Users\gogof\roboknights-dashboard-web` (new, created 2026-08-30) |
-| Origin | `iamnaitiknj/RoboKnights-Clan.github.io`, upstream `RoboKnights-Clan/…` | none yet — local only |
+| Origin | `iamnaitiknj/…` (fork), **upstream `RoboKnights-Clan/…` is the live one** | none yet — local only |
+| Branch | `deploy`, at `eac6f4d` = `upstream/deploy` | `master` |
 | Stack | Next 12, **Pages Router**, React 17, Tailwind 3 | Next 16, **App Router**, React 19, Tailwind 4 |
 | Deployed | yes — roboknights.in, via Vercel | no, and not until chunk 9 |
 
@@ -131,12 +132,31 @@ disagrees:
   straight out of its `tailwind.config.js` into the dashboard's tokens, so
   they start matching rather than being reconciled later.
 
-**Before any website chunk starts:** that repo has ~4 months of
-uncommitted work sitting in it (11 files, +929/−1330, last touched
-2026-05-07, plus an untracked `components/ui/` with two unused component
-files). It is on branch `deploy`, which is what Vercel builds. Nothing
-should be committed there until the student says whether that work is
-wanted or should be thrown away.
+**Which website code to work from — settled 2026-08-30.** The student's
+instruction was to use the live code, not the local working copy, and
+those were three different things:
+
+- `upstream/deploy` on `RoboKnights-Clan/RoboKnights-Clan.github.io` is
+  **the live site.** Work from this.
+- `origin/deploy` (the `iamnaitiknj` fork) was **3 commits behind it**.
+  The local checkout was sitting on that stale point. Fast-forwarded.
+- On top of that were ~4 months of uncommitted experiments from May 2026.
+  They are **parked on the local branch `wip-may-2026`**, not deleted, and
+  `deploy` is now clean at `eac6f4d`, matching live exactly. `npm ci` was
+  re-run so `node_modules` matches the live lockfile too.
+
+Two things were wrong with those experiments, recorded here so they are
+not re-introduced: `data/achievements.ts` had been overwritten with a copy
+of the alumni data, so the site did not build at all; and
+`pages/alumni.tsx` did not add its new hero component to the page, it
+replaced the page with it — no nav, no search, no batch grouping, names
+legible only sideways along animated panels.
+
+**How website changes have historically shipped:** commits land on the
+fork's `deploy`, then reach the org repo as a pull request (`Merge pull
+request #14 from iamnaitiknj/deploy`). So the flow for a website chunk is
+branch off `upstream/deploy` → commit locally → and only open a PR when
+the student asks. Nothing is pushed during Phase 2.
 - **Tailwind CSS** for styling. The new design gets defined once as tokens
   and applied everywhere — the Phase 2 sheet's complaint is that pages
   built at different times look like it.
@@ -198,7 +218,7 @@ Website halves land in `RoboKnights-Clan.github.io`; dashboard halves in
 | # | Website half | Dashboard half |
 | --- | --- | --- |
 | 1 | *(done differently — see below)* | ✅ Inventory parts list, read-only, server-side from Supabase |
-| 2 | Homepage design pass, on top of whatever survives the WIP decision | The dashboard shell + shared components in the same language |
+| 2 | Homepage design pass, from the live code | The dashboard shell + shared components in the same language |
 | 3 | About + Contact pages | Auth, access tiers, and the write backstop |
 | 4 | Members page (public roster) | Inventory writes: request, approve, return, due dates |
 | 5 | Achievements page (public) | Competitions - browse and sign-up, then host tools + E2C import |
@@ -243,9 +263,11 @@ is the bar for chunk 9, and the reason nothing is added until then.
   advance.
 - **Whether the AI Assistant page moves at all**, or whether members just
   use the Discord bot, which already answers the same questions.
-- **What happens to the website repo's uncommitted work** (see the stack
-  section). Keep it, finish it, or throw it away - blocking every website
-  chunk until answered.
+- **Whether anything on `wip-may-2026` gets salvaged later.** Not blocking
+  anything - it is parked and the live code is what gets built on. The one
+  piece worth revisiting is the mobile dark-mode toggle, which on the live
+  site is a `<button>` nested inside another `<button>`; that is invalid
+  HTML and worth fixing properly in a website chunk of its own.
 - **Which GitHub account and remote the dashboard repo gets**, when it
   eventually gets one. `roboknights-afk` is the obvious choice, but the
   website lives under `RoboKnights-Clan` / `iamnaitiknj`, so this is worth
