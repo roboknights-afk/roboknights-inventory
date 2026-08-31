@@ -157,6 +157,14 @@ else:
             "Phone no.": u.get("phone_no") or "",
             "Discord ID": u.get("discord_user_id") or "",
             "Verified": bool(u.get("details_verified")),
+            # Set on the Your profile page, by the member themselves - a
+            # host can see these but not tick them here, same as Role above.
+            # Two separate checkboxes because they're two separate facts:
+            # someone can have uploaded a photo and still be keeping it off
+            # the public site (photo_public defaults false and stays that
+            # way until they choose otherwise).
+            "Photo": bool(u.get("photo_path")),
+            "On site": bool(u.get("photo_public")),
             "Note": "⚠️ Account disabled" if u.get("is_disabled") else "",
             "Disabled": bool(u.get("is_disabled")),
         }
@@ -205,6 +213,18 @@ else:
                     help="Whether they've confirmed their details in the mandatory popup. "
                          "Uncheck to make the popup reappear for them next login (e.g. so "
                          "they can add something they missed).",
+                ),
+                "Photo": st.column_config.CheckboxColumn(
+                    "Photo", width="small", disabled=True,
+                    help="Whether they've uploaded a photo on the Your profile page. "
+                         "Set by the member, not editable here.",
+                ),
+                "On site": st.column_config.CheckboxColumn(
+                    "On site", width="small", disabled=True,
+                    help="Whether their photo is published on roboknights.in. Off by "
+                         "default even after uploading — the member ticks this themselves "
+                         "on Your profile. Not the same as Photo: someone can upload one "
+                         "and keep it dashboard-only.",
                 ),
                 "Note": st.column_config.TextColumn("Note", width="medium", disabled=True),
                 "Disabled": st.column_config.CheckboxColumn(
