@@ -575,3 +575,48 @@ alter table users add column if not exists photo_public boolean not null default
 alter table users add column if not exists instagram text;
 alter table users add column if not exists linkedin  text;
 alter table users add column if not exists github    text;
+
+-- Storage policies for the member-photos bucket. Run these AFTER creating
+-- the bucket, or uploading fails with "new row violates row-level security
+-- policy" - which is exactly what it did before these existed.
+--
+-- Storage has its own row-level security even though the tables do not, so
+-- a private bucket refuses everything until told otherwise.
+--
+-- The rule: a member may touch exactly one file, the one named after their
+-- own account id. users.user_id IS the Supabase Auth id (app.py sets
+-- current_user_id from auth_user["id"]), and profile.py names the file
+-- "<user_id>.jpg", so split_part(name, '.', 1) is whose photo it is.
+-- Nobody can read, replace or delete anybody else's.
+
+create policy "member reads own photo"
+on storage.objects for select to authenticated
+using (
+    bucket_id = 'member-photos'
+    and split_part(name, '.', 1) = auth.uid()::text
+);
+
+create policy "member uploads own photo"
+on storage.objects for insert to authenticated
+with check (
+    bucket_id = 'member-photos'
+    and split_part(name, '.', 1) = auth.uid()::text
+);
+
+create policy "member replaces own photo"
+on storage.objects for update to authenticated
+using (
+    bucket_id = 'member-photos'
+    and split_part(name, '.', 1) = auth.uid()::text
+)
+with check (
+    bucket_id = 'member-photos'
+    and split_part(name, '.', 1) = auth.uid()::text
+);
+
+create policy "member removes own photo"
+on storage.objects for delete to authenticated
+using (
+    bucket_id = 'member-photos'
+    and split_part(name, '.', 1) = auth.uid()::text
+);

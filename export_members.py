@@ -235,10 +235,28 @@ def main():
         else:
             print(f"   left alone (not ours): {existing.name}")
 
+    # Reading other people's photos needs more than the anon key: the
+    # bucket's policies let each member touch only their own file, which is
+    # the point of them. If a service key is available this uses it for
+    # storage only; if not, it says so rather than silently exporting a
+    # roster with every photo missing.
+    photo_client = client
+    service_key = os.environ.get("SUPABASE_SERVICE_KEY")
+    if service_key:
+        photo_client = create_client(os.environ["SUPABASE_URL"], service_key)
+    elif publishing:
+        print()
+        print(f"{len(publishing)} member(s) have published a photo, but this")
+        print("script cannot read them with the anon key - the bucket policies")
+        print("allow each member only their own file. Add SUPABASE_SERVICE_KEY")
+        print("to .env (Supabase -> Project Settings -> API -> service_role) to")
+        print("export photos. The roster below is written either way.")
+        print()
+
     for person in publishing:
         path = person["photo_path"]
         try:
-            data = client.storage.from_(BUCKET).download(path)
+            data = photo_client.storage.from_(BUCKET).download(path)
         except Exception as error:
             print(f"   could not fetch {path}: {error}")
             continue
