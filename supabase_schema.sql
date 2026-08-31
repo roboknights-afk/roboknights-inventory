@@ -577,17 +577,37 @@ alter table users add column if not exists linkedin  text;
 alter table users add column if not exists github    text;
 
 -- Storage policies for the member-photos bucket. Run these AFTER creating
--- the bucket, or uploading fails with "new row violates row-level security
--- policy" - which is exactly what it did before these existed.
+-- the bucket.
 --
--- Storage has its own row-level security even though the tables do not, so
--- a private bucket refuses everything until told otherwise.
+-- CORRECTION, 2026-09-01: these do NOT currently do anything for the
+-- Streamlit app, and cannot. Storage checks auth.uid() - the request's
+-- real, signed-in identity - and this app's Supabase client is a single
+-- @st.cache_resource object shared by every visitor to the whole server
+-- process. Its Storage sub-client is created lazily, once, and freezes a
+-- SNAPSHOT of whatever auth header existed at that one moment forever -
+-- it can never reliably be "whoever is signed in right now". Confirmed
+-- directly: the first real upload (Advit Gupta, 2026-08-31) 403'd with
+-- exactly this policy despite a completely correct sign-in. The actual
+-- fix was to stop relying on these and add get_storage_client() in
+-- shared.py, a service-role client used for Storage only - see its
+-- comment for the full explanation. Every write still checks
+-- st.session_state.current_user_id in Python first, same as every other
+-- permission in this app; the service key bypasses these policies
+-- entirely by design.
 --
--- The rule: a member may touch exactly one file, the one named after their
--- own account id. users.user_id IS the Supabase Auth id (app.py sets
--- current_user_id from auth_user["id"]), and profile.py names the file
--- "<user_id>.jpg", so split_part(name, '.', 1) is whose photo it is.
--- Nobody can read, replace or delete anybody else's.
+-- Left in place anyway, and still worth having: they are exactly correct
+-- for a client that DOES carry a real per-request user identity, which
+-- is how the Phase 2 Next.js dashboard's Supabase client works (a fresh,
+-- cookie-scoped client per request, not one shared object). If a
+-- browser-side upload is ever added there instead of going through a
+-- server route, these are the policies that make it safe. Until then
+-- they are inert, not wrong.
+--
+-- The rule, unchanged: a member may touch exactly one file, the one named
+-- after their own account id. users.user_id IS the Supabase Auth id
+-- (app.py sets current_user_id from auth_user["id"]), and profile.py
+-- names the file "<user_id>.jpg", so split_part(name, '.', 1) is whose
+-- photo it is. Nobody can read, replace or delete anybody else's.
 
 -- Postgres has no "create policy if not exists", so these drop first and
 -- the whole block can be re-run safely.

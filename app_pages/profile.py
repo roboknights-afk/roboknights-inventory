@@ -17,9 +17,10 @@ import re
 
 import streamlit as st
 
-from shared import cached_table, get_client, invalidate_cache, safe_write
+from shared import cached_table, get_client, get_storage_client, invalidate_cache, safe_write
 
 client = get_client()
+storage = get_storage_client()
 user_id = st.session_state.current_user_id
 
 BUCKET = "member-photos"
@@ -89,14 +90,20 @@ def _shrink(raw, ext):
 st.subheader("Photo")
 
 if me.get("photo_path"):
-    try:
-        st.image(
-            client.storage.from_(BUCKET).download(me["photo_path"]),
-            width=180,
-            caption="On file now",
+    if storage is None:
+        st.warning(
+            "A photo is on file, but this server isn't set up to show or "
+            "replace it yet — SUPABASE_SERVICE_KEY is missing. Tell a host."
         )
-    except Exception:
-        st.warning("Your photo is on file but could not be loaded just now.")
+    else:
+        try:
+            st.image(
+                storage.storage.from_(BUCKET).download(me["photo_path"]),
+                width=180,
+                caption="On file now",
+            )
+        except Exception:
+            st.warning("Your photo is on file but could not be loaded just now.")
 else:
     st.info("No photo yet. Until you add one the website shows your initials.")
 
@@ -105,9 +112,12 @@ upload = st.file_uploader(
     type=list(ALLOWED),
     help=f"JPG, JPEG or PNG, up to {MAX_MB} MB. Shrunk to {MAX_EDGE}px automatically.",
     key="profile_photo",
+    disabled=storage is None,
 )
+if storage is None:
+    st.caption("Uploads are off until a host adds SUPABASE_SERVICE_KEY.")
 
-if upload is not None:
+if upload is not None and storage is not None:
     raw = upload.getvalue()
     ext = upload.name.rsplit(".", 1)[-1].lower()
     if ext not in ALLOWED:
@@ -123,7 +133,7 @@ if upload is not None:
                 # findable by guessing whose it is. One file per member, so
                 # a new upload replaces the old rather than piling up.
                 path = f"{user_id}.{'png' if ext == 'png' else 'jpg'}"
-                client.storage.from_(BUCKET).upload(
+                storage.storage.from_(BUCKET).upload(
                     path,
                     data,
                     {"content-type": ALLOWED[ext], "upsert": "true"},

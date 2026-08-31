@@ -297,6 +297,42 @@ def get_client():
 
 
 @st.cache_resource
+def get_storage_client():
+    # A SEPARATE client, for Storage only, authenticated with the
+    # service_role key instead of the anon key get_client() uses for
+    # everything else. Storage policies on the member-photos bucket check
+    # auth.uid() — real Postgres row-level security, the first this app
+    # has ever actually depended on working. It cannot work through
+    # get_client(): that client is @st.cache_resource, ONE object shared
+    # by every visitor to this server process (not per browser session),
+    # and client.storage is created lazily, once, the first time anything
+    # touches it — storage3's SyncStorageClient.__init__ does
+    # `{**existing_headers}`, a SNAPSHOT copy, not a live reference — so
+    # whichever Authorization header happened to be live at that single
+    # moment is frozen there for the rest of the process's life. It can
+    # never reliably be "whoever is signed in right now". Confirmed
+    # directly: the first real upload (Advit Gupta, 2026-08-31) came back
+    # 403 "new row violates row-level security policy" despite a
+    # completely correct sign-in.
+    #
+    # So Storage gets the same model every OTHER permission in this app
+    # already uses: no reliance on Postgres RLS, a check in Python before
+    # the write (profile.py only ever builds a path from
+    # st.session_state.current_user_id, never from anything the browser
+    # sends). The service key bypasses RLS entirely by design — it must
+    # never reach a browser or a log. It is used for Storage only; the
+    # ordinary get_client() above still handles every table, unchanged.
+    #
+    # Returns None if the key isn't set yet, same "not configured yet"
+    # shape as get_sheets_write_client() below — profile.py shows a plain
+    # message rather than a stack trace until SUPABASE_SERVICE_KEY exists.
+    key = os.environ.get("SUPABASE_SERVICE_KEY")
+    if not key:
+        return None
+    return create_client(os.environ["SUPABASE_URL"], key)
+
+
+@st.cache_resource
 def get_sheets_write_client():
     # Returns None (never raises) when the credential isn't set up yet, so
     # a missing/not-yet-configured service account degrades to "the sync
