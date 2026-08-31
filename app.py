@@ -1628,6 +1628,11 @@ pages.append(st.Page("app_pages/meetings.py", title="Meetings", icon=":material/
 pages.append(st.Page("app_pages/achievements.py", title="Achievements", icon=":material/military_tech:"))
 pages.append(st.Page("app_pages/assistant.py", title="AI Assistant", icon=":material/smart_toy:"))
 pages.append(st.Page("app_pages/feedback.py", title="Feedback", icon=":material/feedback:"))
+# Your own photo and links. Not for the view-only tiers: Exun and viewer
+# accounts have no member record to attach a photo to, and nothing on this
+# page is about the club, only about yourself.
+if not st.session_state.is_read_only:
+    pages.append(st.Page("app_pages/profile.py", title="Your profile", icon=":material/account_circle:"))
 
 # Host-only elsewhere, but Members is also opened up to Exun (full
 # details, per an explicit call — Exun just can't edit it, unlike a host)

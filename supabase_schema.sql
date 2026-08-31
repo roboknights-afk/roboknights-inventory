@@ -543,3 +543,35 @@ create table if not exists discord_flags (
 
 create index if not exists discord_flags_user_idx
     on discord_flags(discord_user_id, flagged_at);
+
+-- Added 2026-08-31, for the member profile portal (app_pages/profile.py).
+--
+-- Photos are NOT stored here. They go in a Supabase Storage bucket named
+-- "member-photos", and this only holds the file name. Create that bucket
+-- once, by hand, in Storage -> New bucket:
+--
+--     name:   member-photos
+--     public: NO   <- this matters, see below
+--
+-- The bucket is private on purpose. There is no row-level security on any
+-- table in this project, and a public bucket is readable and listable by
+-- anyone who finds the URL. These are photos of school students, most of
+-- them minors. Nothing reads the bucket except server-side code holding
+-- the service key: the Streamlit app, and the export script that copies
+-- photos to the website.
+--
+-- photo_public is a SEPARATE decision from having uploaded a photo.
+-- Uploading puts a face in the club's own directory; ticking photo_public
+-- is what puts it on roboknights.in, a public website. Default false, and
+-- it must stay that way - nobody should end up on a public page because a
+-- default flipped.
+alter table users add column if not exists photo_path   text;
+alter table users add column if not exists photo_public boolean not null default false;
+
+-- Social handles, not URLs. The website used to store whole urls and ended
+-- up with 105 links pointing at instagram.com and github.com themselves,
+-- because a url field invites pasting a domain. A handle cannot be a
+-- domain, and the link is built from it at render time.
+alter table users add column if not exists instagram text;
+alter table users add column if not exists linkedin  text;
+alter table users add column if not exists github    text;
