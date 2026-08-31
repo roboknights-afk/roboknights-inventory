@@ -647,3 +647,30 @@ using (
     bucket_id = 'member-photos'
     and split_part(name, '.', 1) = auth.uid()::text
 );
+
+-- Added 2026-09-01, for automatically feeding new results onto the club
+-- website. Two real gaps this closes:
+--
+-- 1. Nothing tracked what LEVEL a result was at (Interschool / National /
+--    International / Regional) — competitions and competition_events never
+--    had this column, so a self-reported result had no way to be counted in
+--    the homepage's "X international events" figure. Now asked for at the
+--    same time as position.
+-- 2. Nothing reviewed a self-report before it counted as true. A member
+--    logging a result only ever reached other members inside the
+--    dashboard; nothing checked it before now. published_on_website is a
+--    host's explicit sign-off, same shape and same reasoning as
+--    users.photo_public — the club claiming publicly "we won this" is a
+--    bigger credibility risk than a member's own profile photo, so it gets
+--    the same "not automatic just because it exists" treatment, deliberately.
+alter table achievements add column if not exists level text;
+alter table achievements add column if not exists published_on_website boolean not null default false;
+
+-- Set by export_achievements.py once a result has actually been written
+-- into the website repo's data/achievements.ts — NOT by a host. This is
+-- what stops the export from appending the same result twice on a second
+-- run; matches the reminder_2day_sent / reminder_1day_sent idiom already
+-- used elsewhere in this schema, rather than trying to re-detect "is this
+-- already on the site" by matching text, which is exactly what missed the
+-- Techspardha / Techस्पर्धा duplicate the first time.
+alter table achievements add column if not exists exported_at timestamptz;

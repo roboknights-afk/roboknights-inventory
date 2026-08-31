@@ -16,6 +16,13 @@ from shared import (
 )
 
 client = get_client()
+
+# Interschool / National / International / Regional - the same buckets the
+# website's homepage already counts by (see data/record.ts's INTERNATIONAL
+# figure there). Asked for at the same time as position now; before this,
+# nothing anywhere in this schema tracked it at all.
+LEVEL_OPTIONS = ["Interschool", "National", "International", "Regional"]
+
 is_host = st.session_state.is_host
 is_exun = st.session_state.is_exun
 is_read_only = st.session_state.is_read_only
@@ -165,8 +172,12 @@ def render_log_achievement():
                     key=f"ach_log_for_{chosen_event_id}",
                 )
 
-            position = st.text_input(
+            pos_col, level_col = st.columns([2, 1])
+            position = pos_col.text_input(
                 "Position (e.g. 1st place, Finalist)", key="new_achievement_position"
+            )
+            level = level_col.selectbox(
+                "Level", LEVEL_OPTIONS, key="new_achievement_level",
             )
             media_link = st.text_input(
                 "Attachment/link (optional)", key="new_achievement_media",
@@ -208,6 +219,7 @@ def render_log_achievement():
                                 "competition_id": chosen_comp_id,
                                 "event_id": chosen_event_id,
                                 "position": position.strip() or None,
+                                "level": level,
                                 "media_link": link or None,
                             }).execute()
                             logged_ids.append(uid)
@@ -255,6 +267,7 @@ def render_log_achievement():
                                         "competition_id": chosen_comp_id,
                                         "event_id": chosen_event_id,
                                         "position": position.strip() or None,
+                                        "level": level,
                                         "media_link": link or None,
                                     }).execute()
                                     auto_logged_ids.append(t["user_id"])
@@ -396,3 +409,43 @@ with browse:
                             invalidate_cache()
                         st.session_state.achievement_message = "Deleted."
                         st.rerun()
+
+                # Host-only: level + whether this is allowed onto the public
+                # website. Applies to the whole group at once (a team's
+                # result is one fact, not one per person) — same reasoning
+                # as delete already grouping them. published_on_website is
+                # a host's explicit call, not something logging a result
+                # grants on its own — see the schema migration's comment on
+                # why that's deliberate.
+                if is_host:
+                    already_published = bool(first.get("published_on_website"))
+                    with st.expander(
+                        ":material/public: Published on website" if already_published
+                        else ":material/public_off: Not on website yet"
+                    ):
+                        lcol, pcol = st.columns([2, 1], vertical_alignment="bottom")
+                        chosen_level = lcol.selectbox(
+                            "Level", LEVEL_OPTIONS,
+                            index=(
+                                LEVEL_OPTIONS.index(first["level"])
+                                if first.get("level") in LEVEL_OPTIONS else 0
+                            ),
+                            key=f"ach_level_{first['achievement_id']}",
+                        )
+                        publish = pcol.checkbox(
+                            "On website", value=already_published,
+                            key=f"ach_publish_{first['achievement_id']}",
+                        )
+                        if st.button(
+                            "Save", icon=":material/save:",
+                            key=f"ach_save_{first['achievement_id']}",
+                        ):
+                            with safe_write("update this result's website status"):
+                                for a in group:
+                                    client.table("achievements").update({
+                                        "level": chosen_level,
+                                        "published_on_website": publish,
+                                    }).eq("achievement_id", a["achievement_id"]).execute()
+                                invalidate_cache()
+                            st.session_state.achievement_message = "Saved."
+                            st.rerun()
