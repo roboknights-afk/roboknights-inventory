@@ -589,6 +589,13 @@ alter table users add column if not exists github    text;
 -- "<user_id>.jpg", so split_part(name, '.', 1) is whose photo it is.
 -- Nobody can read, replace or delete anybody else's.
 
+-- Postgres has no "create policy if not exists", so these drop first and
+-- the whole block can be re-run safely.
+drop policy if exists "member reads own photo"     on storage.objects;
+drop policy if exists "member uploads own photo"   on storage.objects;
+drop policy if exists "member replaces own photo"  on storage.objects;
+drop policy if exists "member removes own photo"   on storage.objects;
+
 create policy "member reads own photo"
 on storage.objects for select to authenticated
 using (
