@@ -221,7 +221,7 @@ Website halves land in `RoboKnights-Clan.github.io`; dashboard halves in
 | 2 | ✅ Homepage rebuild (gear train, five machines, results ticker) | ✅ The dashboard shell + shared components in the same language |
 | 3 | ✅ About + Contact pages | ✅ Auth, access tiers, and the write backstop |
 | 4 | ✅ Members page (public roster) | ✅ Inventory writes + the dashboard on the site's palette |
-| 5 | Achievements page (public) | Competitions - browse and sign-up, then host tools + E2C import |
+| 5 | ✅ Achievements page (public) | ✅ Competitions browse/sign-up — host tools + E2C import still to come |
 | 6 | Alumni page | Home, Meetings, Announcements, Members (with the privacy rules) |
 | 7 | Resources + Blogs | Queries, Feedback, Messages, Exun channel |
 | 8 | 404 / error states, mobile pass, favicon + link previews | AI Logs, Discord Messages, Assistant |
