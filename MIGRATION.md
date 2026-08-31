@@ -218,8 +218,8 @@ Website halves land in `RoboKnights-Clan.github.io`; dashboard halves in
 | # | Website half | Dashboard half |
 | --- | --- | --- |
 | 1 | *(done differently — see below)* | ✅ Inventory parts list, read-only, server-side from Supabase |
-| 2 | Homepage design pass, from the live code | The dashboard shell + shared components in the same language |
-| 3 | About + Contact pages | Auth, access tiers, and the write backstop |
+| 2 | ✅ Homepage rebuild (gear train, five machines, results ticker) | ✅ The dashboard shell + shared components in the same language |
+| 3 | ✅ About + Contact pages | ✅ Auth, access tiers, and the write backstop |
 | 4 | Members page (public roster) | Inventory writes: request, approve, return, due dates |
 | 5 | Achievements page (public) | Competitions - browse and sign-up, then host tools + E2C import |
 | 6 | Alumni page | Home, Meetings, Announcements, Members (with the privacy rules) |
