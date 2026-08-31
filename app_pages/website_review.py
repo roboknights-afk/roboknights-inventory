@@ -11,7 +11,7 @@
 
 import streamlit as st
 
-from shared import cached_table, get_client, invalidate_cache, safe_write
+from shared import cached_table, get_client, get_storage_client, invalidate_cache, safe_write
 
 is_host = st.session_state.is_host
 if not is_host:
@@ -19,6 +19,14 @@ if not is_host:
     st.stop()
 
 client = get_client()
+# NOT client.storage - see get_storage_client()'s own comment in shared.py
+# for the full explanation, but the short version: this page needs to read
+# OTHER people's photos, not your own, and the storage bucket's policies
+# only ever let someone read their own file. Even a correctly-working
+# per-user identity wouldn't be enough here - only the service-role client
+# can see everyone's. Same client profile.py uses for its own upload/
+# download, for the same underlying reason.
+storage = get_storage_client()
 LEVEL_OPTIONS = ["Interschool", "National", "International", "Regional"]
 
 st.title("Website")
@@ -156,15 +164,20 @@ if not mem_list:
     st.caption("Nothing waiting on a member profile right now.")
 else:
     BUCKET = "member-photos"
+    if storage is None:
+        st.warning(
+            "Can't load photos here — SUPABASE_SERVICE_KEY is missing on "
+            "this server. Everything else on this page still works."
+        )
     for u in mem_list:
         status = u.get("website_status") or "pending"
         with st.container(border=True, key=f"rkcard_review_user_{u['user_id']}"):
             pcol, dcol = st.columns([1, 4])
-            if u.get("photo_path"):
+            if u.get("photo_path") and storage is not None:
                 try:
-                    pcol.image(client.storage.from_(BUCKET).download(u["photo_path"]), width=90)
-                except Exception:
-                    pcol.caption("Photo unavailable")
+                    pcol.image(storage.storage.from_(BUCKET).download(u["photo_path"]), width=90)
+                except Exception as error:
+                    pcol.caption(f"Photo unavailable ({error})")
             with dcol:
                 st.markdown(f"**{u['name']}**")
                 ig = st.text_input(
