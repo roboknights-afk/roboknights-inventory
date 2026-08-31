@@ -1647,9 +1647,11 @@ if st.session_state.is_host or st.session_state.is_exun or st.session_state.is_v
 
 # Host-only: approve/decline what members have submitted for the public
 # website — results, photos, social handles — before any of it reaches
-# roboknights.in.
+# roboknights.in. Two pages, not one: reviewing results and reviewing
+# member profiles are different tasks and don't need to share a page.
 if st.session_state.is_host:
-    pages.append(st.Page("app_pages/website_review.py", title="Website", icon=":material/public:"))
+    pages.append(st.Page("app_pages/website_achievements.py", title="Website: Results", icon=":material/emoji_events:"))
+    pages.append(st.Page("app_pages/website_members.py", title="Website: Members", icon=":material/badge:"))
 
 # Host-only: everything this app sends to Discord, across both the
 # competitions channel and the private Exun<>RK channel.
