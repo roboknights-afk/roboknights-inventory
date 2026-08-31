@@ -1628,10 +1628,14 @@ pages.append(st.Page("app_pages/meetings.py", title="Meetings", icon=":material/
 pages.append(st.Page("app_pages/achievements.py", title="Achievements", icon=":material/military_tech:"))
 pages.append(st.Page("app_pages/assistant.py", title="AI Assistant", icon=":material/smart_toy:"))
 pages.append(st.Page("app_pages/feedback.py", title="Feedback", icon=":material/feedback:"))
-# Your own photo and links. Not for the view-only tiers: Exun and viewer
-# accounts have no member record to attach a photo to, and nothing on this
-# page is about the club, only about yourself.
-if not st.session_state.is_read_only:
+# Your own photo and links. Restricted to real members (users.role in
+# "member"/"core_member"), not adhocs and not hosts/staff/Exun/viewer -
+# the student asked for this explicitly: adhocs are a looser, unconfirmed
+# tier, and this is about being listed on the public website, not about
+# using the dashboard. Hosts/Exun/staff have role=None (checked directly
+# against the data, not assumed), so this check alone already excludes
+# them without needing to repeat the is_read_only check too.
+if current_user_row and current_user_row.get("role") in ("member", "core_member"):
     pages.append(st.Page("app_pages/profile.py", title="Your profile", icon=":material/account_circle:"))
 
 # Host-only elsewhere, but Members is also opened up to Exun (full

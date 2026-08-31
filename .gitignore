@@ -4,3 +4,4 @@ __pycache__/
 inventory.db
 .claude/settings.local.json
 .claude/scheduled_tasks.lock
+streamlit.log

@@ -38,6 +38,14 @@ if me is None:
     st.error("No member record for this account — tell a host.")
     st.stop()
 
+# Belt and braces alongside the nav gating in app.py, which is what
+# actually keeps adhocs/hosts/Exun/viewers from seeing this page in the
+# first place — this just refuses to render anything if it's somehow
+# reached anyway (a stale link, a bookmark from before a role changed).
+if me.get("role") not in ("member", "core_member"):
+    st.error("This page is for members only.")
+    st.stop()
+
 
 def _clean_handle(value, kind):
     # People paste whole profile URLs into boxes labelled "handle". Rather
