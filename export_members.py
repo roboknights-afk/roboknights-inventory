@@ -51,7 +51,12 @@ BUCKET = "member-photos"
 # Not people: the club's own login.
 EXCLUDE_NAMES = {"roboknights clan"}
 
-ROLE_LABEL = {"core_member": "Core Member", "member": "Member", "adhoc": "Member"}
+# Only these two put someone on the public roster. Adhoc is a real,
+# looser tier - guests/ad-hoc participants, the same group profile.py
+# already keeps off the photo portal - and role=None means "standing not
+# set yet", not a confirmed membership. Neither belongs on a page that
+# represents the club to the outside world.
+ROLE_LABEL = {"core_member": "Core Member", "member": "Member"}
 
 # Grade -> the heading it appears under. Anything else is skipped rather
 # than guessed at, and reported so it is not silently lost.
@@ -169,6 +174,11 @@ def main():
             skipped.append((raw, f"grade {row.get('grade')!r} - no heading for it"))
             continue
 
+        role_label = ROLE_LABEL.get(row.get("role"))
+        if role_label is None:
+            skipped.append((raw, f"role {row.get('role')!r} - not a confirmed member"))
+            continue
+
         name = tidy_name(raw)
         # One row per person. The users table has a duplicate ("Eeshitv"
         # twice), and two spellings of Aviral. Either would appear twice on
@@ -182,7 +192,7 @@ def main():
         people.append({
             "heading": heading,
             "name": name,
-            "role": ROLE_LABEL.get(row.get("role"), "Member"),
+            "role": role_label,
             "photo_path": row.get("photo_path") if row.get("photo_public") else None,
             "socials": socials_for(row),
             "src": "",
