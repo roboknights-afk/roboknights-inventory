@@ -16,8 +16,12 @@ something a cron job did at 3am.
 Decisions baked in here, all made by the student on 2026-08-31:
 
   * The dashboard is the roster. Anyone without an account is not listed.
-  * Photos are published only where photo_public is true. Having uploaded
-    one is not enough.
+  * A photo AND social handles are published together, only where a
+    member ticked "show my photo" AND a host then approved it on the
+    "Website" page (website_status = 'approved'). Added 2026-09-01: until
+    then social handles had NO gate at all - they went out the moment
+    someone typed one in, the one part of a member's profile that was
+    never actually reviewed by anyone.
   * Names are title-cased for the website. The dashboard keeps whatever
     members typed; ALL CAPS is fine in a form and shouting on a page.
   * "Aviral Chadda" and "Aviral Chadha" were one person spelled two ways.
@@ -140,7 +144,7 @@ def main():
     load_dotenv(HERE / ".env")
     client = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
 
-    profile_columns = "photo_path,photo_public,instagram,linkedin,github"
+    profile_columns = "photo_path,photo_public,instagram,linkedin,github,website_status"
     base = "user_id,name,grade,role,is_staff,is_disabled"
     try:
         rows = client.table("users").select(f"{base},{profile_columns}").execute().data
@@ -151,10 +155,12 @@ def main():
         # so this carries on rather than refusing.
         if "does not exist" not in str(error):
             raise
-        print("NOTE: the profile columns are missing, so no photos or links")
-        print("      will be exported. Run the migration at the end of")
-        print("      supabase_schema.sql in Supabase's SQL editor, then")
-        print("      re-run this. The roster below is still correct.\n")
+        print("NOTE: at least one review column (most likely website_status,")
+        print("      added 2026-09-01 for host approval) is missing, so no")
+        print("      photos or links will be exported yet. Run the migration")
+        print("      at the end of supabase_schema.sql in Supabase's SQL")
+        print("      editor, then re-run this. The roster below is still")
+        print("      correct either way.\n")
         rows = client.table("users").select(base).execute().data
 
     people, skipped = [], []
@@ -189,12 +195,18 @@ def main():
             continue
         seen.add(fingerprint)
 
+        # Photo AND social handles are one reviewed bundle - a host has to
+        # have approved it on the "Website" page, not just the member
+        # having requested it. Neither shows at all otherwise, even if the
+        # handle fields themselves are filled in.
+        approved = bool(row.get("photo_public")) and row.get("website_status") == "approved"
+
         people.append({
             "heading": heading,
             "name": name,
             "role": role_label,
-            "photo_path": row.get("photo_path") if row.get("photo_public") else None,
-            "socials": socials_for(row),
+            "photo_path": row.get("photo_path") if approved else None,
+            "socials": socials_for(row) if approved else [],
             "src": "",
         })
 

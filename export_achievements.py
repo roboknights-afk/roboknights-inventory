@@ -2,11 +2,11 @@
 
     data/achievements.ts   new entries added at the end, nothing removed
 
-Only touches Supabase for two things: reading achievements.published_on_
-website (a host's explicit sign-off - see supabase_schema.sql's comment
-on why logging a result does not mean it is allowed onto the public site
-on its own) and, after a successful write, stamping exported_at so the
-same result never gets appended twice.
+Only touches Supabase for two things: reading achievements.website_status
+(a host's explicit "approved" - see the "Website" page in the app, and
+supabase_schema.sql's comment on why logging a result does not mean it
+is allowed onto the public site on its own) and, after a successful
+write, stamping exported_at so the same result never gets appended twice.
 
     python export_achievements.py --dry-run     see what would be added
     python export_achievements.py               write it
@@ -48,7 +48,7 @@ ACHIEVEMENTS_TS = SITE / "data" / "achievements.ts"
 
 # See the module docstring - this is the confirmed Techspardha duplicate,
 # not a placeholder to "figure out later". Never exported, regardless of
-# its published_on_website flag.
+# its website_status.
 PERMANENTLY_EXCLUDED = {(23, 41)}
 
 
@@ -135,12 +135,12 @@ def main():
     try:
         achievements = client.table("achievements").select(
             "achievement_id,user_id,competition_id,event_id,position,level,"
-            "published_on_website,exported_at"
-        ).eq("published_on_website", True).is_("exported_at", "null").execute().data
+            "website_status,website_note,exported_at"
+        ).eq("website_status", "approved").is_("exported_at", "null").execute().data
     except Exception as error:
         if "does not exist" not in str(error):
             raise
-        print("NOTE: the level/published_on_website/exported_at columns are")
+        print("NOTE: the level/website_status/exported_at columns are")
         print("      missing - run the migration at the end of")
         print("      supabase_schema.sql in Supabase's SQL editor first.")
         return

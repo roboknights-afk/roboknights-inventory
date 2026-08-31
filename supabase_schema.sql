@@ -648,23 +648,32 @@ using (
     and split_part(name, '.', 1) = auth.uid()::text
 );
 
--- Added 2026-09-01, for automatically feeding new results onto the club
--- website. Two real gaps this closes:
+-- Added 2026-09-01, for the "Website" host review queue: everything a
+-- member submits for the public site (a result, a photo, social handles)
+-- goes through the SAME approve/decline/edit model, in one place, before
+-- any of it reaches roboknights.in. Not run live yet, so this is written
+-- as the final shape directly rather than as a migration on top of a
+-- migration — an earlier same-day draft used a plain boolean
+-- (published_on_website); replaced here because a boolean cannot tell
+-- "declined" apart from "nobody has reviewed this yet", and the student
+-- asked for decline to be a real, distinct action.
 --
--- 1. Nothing tracked what LEVEL a result was at (Interschool / National /
---    International / Regional) — competitions and competition_events never
---    had this column, so a self-reported result had no way to be counted in
---    the homepage's "X international events" figure. Now asked for at the
---    same time as position.
--- 2. Nothing reviewed a self-report before it counted as true. A member
---    logging a result only ever reached other members inside the
---    dashboard; nothing checked it before now. published_on_website is a
---    host's explicit sign-off, same shape and same reasoning as
---    users.photo_public — the club claiming publicly "we won this" is a
---    bigger credibility risk than a member's own profile photo, so it gets
---    the same "not automatic just because it exists" treatment, deliberately.
+-- website_status is the same three values on both tables below:
+--   'pending'  — default. Logging a result, or a member ticking "show my
+--                photo", puts it here.
+--   'approved' — a host's explicit sign-off. Nothing publishes without
+--                this, regardless of what the member submitted.
+--   'declined' — a host's explicit no. Stays off the site; website_note
+--                can carry why, shown back to whoever submitted it.
+--
+-- Also fixes a real gap: nothing tracked LEVEL (Interschool / National /
+-- International / Regional) anywhere in the schema, so a self-reported
+-- result had no way to be counted in the homepage's "X international
+-- events" figure. Asked for at the same time as position now.
 alter table achievements add column if not exists level text;
-alter table achievements add column if not exists published_on_website boolean not null default false;
+alter table achievements add column if not exists website_status text not null default 'pending'
+    check (website_status in ('pending', 'approved', 'declined'));
+alter table achievements add column if not exists website_note text;
 
 -- Set by export_achievements.py once a result has actually been written
 -- into the website repo's data/achievements.ts — NOT by a host. This is
@@ -674,3 +683,13 @@ alter table achievements add column if not exists published_on_website boolean n
 -- already on the site" by matching text, which is exactly what missed the
 -- Techspardha / Techस्पर्धा duplicate the first time.
 alter table achievements add column if not exists exported_at timestamptz;
+
+-- Same review model for a member's own photo + social handles. Closes a
+-- real gap: until now, ticking "Show my photo on roboknights.in" published
+-- the photo AND the social handles with nobody else looking at it first —
+-- socials had no gate at all, not even that checkbox. photo_public keeps
+-- meaning exactly what it already means (a member's own request); a host
+-- approving here is the other half that actually makes something public.
+alter table users add column if not exists website_status text not null default 'pending'
+    check (website_status in ('pending', 'approved', 'declined'));
+alter table users add column if not exists website_note text;

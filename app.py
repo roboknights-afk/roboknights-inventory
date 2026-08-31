@@ -1645,6 +1645,12 @@ if current_user_row and current_user_row.get("role") in ("member", "core_member"
 if st.session_state.is_host or st.session_state.is_exun or st.session_state.is_viewer:
     pages.append(st.Page("app_pages/members.py", title="Members", icon=":material/badge:"))
 
+# Host-only: approve/decline what members have submitted for the public
+# website — results, photos, social handles — before any of it reaches
+# roboknights.in.
+if st.session_state.is_host:
+    pages.append(st.Page("app_pages/website_review.py", title="Website", icon=":material/public:"))
+
 # Host-only: everything this app sends to Discord, across both the
 # competitions channel and the private Exun<>RK channel.
 if st.session_state.is_host:

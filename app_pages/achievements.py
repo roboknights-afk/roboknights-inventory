@@ -410,42 +410,15 @@ with browse:
                         st.session_state.achievement_message = "Deleted."
                         st.rerun()
 
-                # Host-only: level + whether this is allowed onto the public
-                # website. Applies to the whole group at once (a team's
-                # result is one fact, not one per person) — same reasoning
-                # as delete already grouping them. published_on_website is
-                # a host's explicit call, not something logging a result
-                # grants on its own — see the schema migration's comment on
-                # why that's deliberate.
-                if is_host:
-                    already_published = bool(first.get("published_on_website"))
-                    with st.expander(
-                        ":material/public: Published on website" if already_published
-                        else ":material/public_off: Not on website yet"
-                    ):
-                        lcol, pcol = st.columns([2, 1], vertical_alignment="bottom")
-                        chosen_level = lcol.selectbox(
-                            "Level", LEVEL_OPTIONS,
-                            index=(
-                                LEVEL_OPTIONS.index(first["level"])
-                                if first.get("level") in LEVEL_OPTIONS else 0
-                            ),
-                            key=f"ach_level_{first['achievement_id']}",
-                        )
-                        publish = pcol.checkbox(
-                            "On website", value=already_published,
-                            key=f"ach_publish_{first['achievement_id']}",
-                        )
-                        if st.button(
-                            "Save", icon=":material/save:",
-                            key=f"ach_save_{first['achievement_id']}",
-                        ):
-                            with safe_write("update this result's website status"):
-                                for a in group:
-                                    client.table("achievements").update({
-                                        "level": chosen_level,
-                                        "published_on_website": publish,
-                                    }).eq("achievement_id", a["achievement_id"]).execute()
-                                invalidate_cache()
-                            st.session_state.achievement_message = "Saved."
-                            st.rerun()
+                # Approving/declining for the website happens in one place now
+                # — the host-only "Website" page — rather than scattered
+                # across every card here. A small status badge is enough
+                # context on this page; the review queue is where it's
+                # actually acted on.
+                status = first.get("website_status") or "pending"
+                if status == "approved":
+                    st.caption(":material/public: On the website")
+                elif status == "declined":
+                    st.caption(":material/public_off: Declined for the website")
+                elif is_host:
+                    st.caption(":material/hourglass_empty: Waiting for review on the Website page")

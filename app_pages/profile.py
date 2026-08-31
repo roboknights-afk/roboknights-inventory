@@ -146,30 +146,49 @@ if upload is not None and storage is not None:
                 st.rerun()
 
 # The publish decision, deliberately its own control rather than something
-# that happens because a file was uploaded.
+# that happens because a file was uploaded. Ticking this is a REQUEST, not
+# an immediate publish — a host reviews it on their own "Website" page
+# before anything actually appears on roboknights.in. See
+# supabase_schema.sql's comment on why that review step exists at all.
 st.divider()
 publish = st.checkbox(
     "Show my photo on roboknights.in",
     value=bool(me.get("photo_public")),
     disabled=not me.get("photo_path"),
-    help="Off means your photo stays inside the club dashboard only.",
+    help="A host reviews this before it actually appears on the site.",
 )
 if publish != bool(me.get("photo_public")):
     if st.button("Save that choice", icon=":material/save:"):
         with safe_write("change where your photo is shown"):
-            client.table("users").update({"photo_public": publish}).eq(
-                "user_id", user_id
-            ).execute()
+            client.table("users").update({
+                "photo_public": publish,
+                # A fresh decision - checking or unchecking it - goes back
+                # to the front of the review queue, even if a host already
+                # decided once before.
+                "website_status": "pending",
+            }).eq("user_id", user_id).execute()
             invalidate_cache()
             st.success(
-                "Your photo will appear on the website at the next update."
+                "Sent for a host to review."
                 if publish
-                else "Your photo is now dashboard-only."
+                else "Your photo is dashboard-only now."
             )
             st.rerun()
 
+status = me.get("website_status") or "pending"
 if me.get("photo_path") and not me.get("photo_public"):
     st.caption("Your photo is in the club directory. It is not on the public website.")
+elif me.get("photo_public") and status == "pending":
+    st.caption(":material/hourglass_empty: Waiting for a host to review this.")
+elif me.get("photo_public") and status == "approved":
+    st.caption(":material/public: On the website.")
+elif me.get("photo_public") and status == "declined":
+    note = me.get("website_note")
+    st.warning(
+        "A host didn't approve this for the website"
+        + (f": {note}" if note else ".")
+        + " Fix it and tick the box again to ask for another review."
+    )
 
 
 # --- Links -----------------------------------------------------------------
@@ -192,6 +211,12 @@ with st.form("profile_links"):
                 "linkedin": _clean_handle(linkedin, "linkedin"),
                 "github": _clean_handle(github, "github"),
             }
+            # Handles are part of the same reviewed bundle as the photo —
+            # changing them after a host already approved shouldn't let
+            # new, unreviewed text reach the site silently, so an edit
+            # made while already public sends it back for another look.
+            if me.get("photo_public"):
+                values["website_status"] = "pending"
             client.table("users").update(values).eq("user_id", user_id).execute()
             invalidate_cache()
             shown = [k for k, v in values.items() if v]
