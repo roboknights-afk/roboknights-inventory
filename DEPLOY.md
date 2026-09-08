@@ -242,16 +242,68 @@ It replies whenever @mentioned in a server channel or DMed directly, using
 the same free Groq model (`llama-3.3-70b-versatile`) the dashboard-update
 summaries already use — no new AI account needed.
 
-### Deploying it (Railway, free tier)
+### Deploying it (Oracle Cloud, Always Free)
 
-1. Go to [railway.app](https://railway.app) and sign in with GitHub.
-2. **New Project** → **Deploy from GitHub repo** → pick
-   `roboknights-afk/roboknights-inventory`.
-3. Once the service is created, open its **Settings** tab and set
-   **Root Directory** to `discord_bot` — this is what tells Railway to use
-   `discord_bot/requirements.txt` and `discord_bot/Procfile` instead of the
-   main app's.
-4. Open the **Variables** tab and add:
+**Moved off Railway 2026-09-09** — Railway's free trial was expiring, and
+Railway's own GitHub integration for this service never worked in the
+first place (its "Auto deploy unavailable" bug, see the git history for
+that whole saga). Oracle Cloud's Always Free tier costs nothing,
+permanently, with no trial clock — a small VM (the "Ampere A1" shape
+below) is more than this bot needs. Unlike Railway, this deploy path
+actually works from a push: `.github/workflows/deploy-bot.yml` rsyncs
+`discord_bot/` straight to the VM and restarts it, no third-party
+integration involved.
+
+**One-time setup (needs your own Oracle account — this part can't be done
+for you):**
+
+1. Sign up at [cloud.oracle.com](https://cloud.oracle.com) for an Always
+   Free account. Oracle asks for a card to verify identity even for
+   Always Free resources — it should never actually get charged as long
+   as you stay on Always Free shapes, but that's Oracle's own policy, not
+   this project's.
+2. **Menu → Compute → Instances → Create Instance.**
+   - Image: **Canonical Ubuntu** (22.04 or newer).
+   - Shape: **Ampere** → `VM.Standard.A1.Flex`, the Always Free ARM shape
+     (up to 4 OCPUs / 24 GB total, split across up to 4 instances) — 1
+     OCPU / 6 GB is plenty for this bot. The AMD `VM.Standard.E2.1.Micro`
+     shape is the other Always Free option if you'd rather avoid ARM, but
+     it's far smaller (1/8 OCPU, 1 GB).
+   - Add your SSH public key when prompted (generate one first with
+     `ssh-keygen` if you don't already have one) — this is how you'll log
+     in; there's no password.
+3. Once it's running, note the instance's **public IP address** from the
+   instance details page.
+4. From your own machine, copy the two setup files up and run the setup
+   script (the default Ubuntu image's login user is `ubuntu`):
+   ```
+   scp discord_bot/deploy/setup_oracle_vm.sh discord_bot/deploy/roboknights-bot.service ubuntu@<public-ip>:~/
+   ssh ubuntu@<public-ip> 'bash setup_oracle_vm.sh'
+   ```
+   This installs Python, creates `~/roboknights-bot`, and installs (but
+   doesn't yet start) a systemd service for the bot. Full detail in the
+   script's own comments.
+5. While still SSHed in, create `~/roboknights-bot/.env` with the bot's
+   real secrets — same variable names as the list below, just in a plain
+   `.env` file now instead of a platform's Variables tab.
+6. Back on GitHub: **Settings → Secrets and variables → Actions → New
+   repository secret**, add three:
+   - `ORACLE_HOST` — the public IP from step 3.
+   - `ORACLE_USER` — `ubuntu`.
+   - `ORACLE_SSH_KEY` — the **private** half of the key pair from step 2
+     (the file, not the `.pub` one) — paste its full contents.
+7. Push to `master` (touching anything under `discord_bot/`), or trigger
+   **Deploy Discord bot** by hand from the Actions tab. This rsyncs the
+   code over, installs requirements in the VM's venv, and starts the
+   service for real the first time.
+8. Confirm it's live: `ssh ubuntu@<public-ip>` then
+   `journalctl --user -u roboknights-bot -f` and look for the
+   `Running build: ...` line (from `BOT_BUILD` at the top of `bot.py`) —
+   if it doesn't match what's in the file, the deploy didn't actually
+   land.
+
+**The secrets** (same list, same values, regardless of which platform
+holds them):
    - `DISCORD_BOT_TOKEN` — from the bot's page at
      [discord.com/developers/applications](https://discord.com/developers/applications)
      → your application → **Bot** → Reset Token.
@@ -308,28 +360,25 @@ summaries already use — no new AI account needed.
      channel; this is what actually keeps it to the channel it was added
      for. Right-click the channel → **Copy Channel ID** (needs Developer
      Mode on, under User Settings → Advanced) to get it.
-5. **The bot does NOT auto-deploy on push.** This used to say it did, and
-   that was wrong — confirmed 2026-08-15 by reading the service's own
-   config, which has no GitHub source attached at all (`source: null`).
-   The running deployment was four days behind `master`, which is why a
-   whole run of fixes appeared to do nothing in Discord. Unlike Streamlit
-   Cloud (which really does redeploy on every push), this service only
-   gets new code when someone runs:
-
-   ```
-   cd discord_bot
-   railway up
-   ```
-
-   Confirm it worked by opening the service's **Deploy Logs** in Railway
-   and looking for the `Running build: ...` line — that value comes from
-   `BOT_BUILD` at the top of `bot.py`, so if it doesn't match what's in
-   the file, the old code is still live.
-
-   To make it auto-deploy properly (recommended, needs the Railway
-   dashboard): service → **Settings** → **Source** → **Connect Repo** →
-   `roboknights-afk/roboknights-inventory`, branch `master`, and set
-   **Root Directory** to `discord_bot`.
+   - `DISCORD_LOGS_CHANNEL_ID` (2026-09-01) — the channel ID of a
+     **#logs** channel in our own server. Whenever anyone deletes a
+     message anywhere the bot can see (home server only — it never does
+     this in a guest server), the bot posts what got deleted, who posted
+     it, and which channel, into this one. Optional — leave unset and
+     the bot just doesn't do this, same as every other Discord secret in
+     this project. Needs a real channel to exist first: create `#logs`
+     in the server, make sure `roboknightsbot` can view and send there
+     (it already can everywhere in our own server unless that channel's
+     permissions were narrowed), then right-click it → **Copy Channel
+     ID** and set the variable to that number.
+**It DOES auto-deploy on push now** — unlike Railway (see the note at the
+top of this section), `deploy-bot.yml` actually fires on every push
+touching `discord_bot/**` and finishes the job itself: rsync the code to
+the VM, install requirements, restart the service. Confirm a deploy
+landed via `journalctl --user -u roboknights-bot -f` on the VM, same
+`Running build: ...` check as before (`BOT_BUILD` at the top of
+`bot.py`) — or just watch the workflow run go green in the Actions tab,
+since its last step checks the service actually came back up.
 
 To test on your own laptop first: put all the variables above in a
 `.env` file inside `discord_bot/` (or run from the repo root, which
@@ -357,13 +406,15 @@ from our side alone.
    other channel of theirs, denying View Channel at the category or server
    level and allowing it on the one channel is the clean way.
 3. Get that channel's ID (right-click → **Copy Channel ID**, with
-   Developer Mode on) and add it to `DISCORD_GUEST_CHANNEL_IDS` in Railway,
+   Developer Mode on) and add it to `DISCORD_GUEST_CHANNEL_IDS` in
+   `~/roboknights-bot/.env` on the VM (SSH in and edit it directly),
    comma-separated if there's more than one. **Until this is set the bot
    stays silent there** — that's deliberate: joining a server should not
    by itself let anyone in it start querying our club data.
-4. Redeploy the bot (`cd discord_bot && railway up`, or just push — the
-   `deploy-bot.yml` workflow covers `discord_bot/**`) and confirm the new
-   `Running build:` line in the Deploy Logs.
+4. Restart the bot so it picks up the new `.env` value: SSH in and run
+   `systemctl --user restart roboknights-bot` (the deploy workflow only
+   restarts on a code push, and this was an `.env` edit, not a push).
+   Confirm with `journalctl --user -u roboknights-bot -f`.
 
 What the bot will and won't tell them: it answers from the same club data
 it already has — every member's name, grade, section and standing

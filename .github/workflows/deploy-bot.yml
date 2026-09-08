@@ -1,27 +1,30 @@
 name: Deploy Discord bot
 
-# Why this exists: Railway's own GitHub integration would normally handle
-# this, but it refused to work on this service — the repo and branch are
-# connected in Railway's UI, yet it still reports "Auto deploy unavailable"
-# and no build fires on a push (tested twice, 2026-08-15). Before that, the
-# service had no repo attached at all, so four days of fixes sat unshipped
-# while DEPLOY.md claimed pushes auto-deployed.
+# Moved off Railway to an Oracle Cloud Always Free VM (2026-09-09) - the
+# Railway free trial was expiring, and Railway's own GitHub integration
+# never worked for this service anyway (see git history / DEPLOY.md for
+# that saga). This workflow does the whole deploy itself: rsync the bot's
+# code to the VM, install its requirements there, restart it.
 #
-# This does the same job from our side instead of theirs: on a push that
-# touches the bot, run the exact `railway up` that already works by hand.
-# One less thing depending on a third party's permission plumbing.
+# The bot is self-contained (discord_bot/ never imports shared.py), so
+# only that folder needs to reach the VM - not the whole repo, and
+# nothing here needs git installed on the VM at all.
 #
-# Needs a RAILWAY_TOKEN repo secret — see DEPLOY.md for how to create it.
+# Needs three repo secrets - see DEPLOY.md's Oracle Cloud section for how
+# to get each one:
+#   ORACLE_HOST     - the VM's public IP
+#   ORACLE_USER     - the SSH username (ubuntu, for the standard image)
+#   ORACLE_SSH_KEY  - the private half of the key pair used to create the
+#                      instance, so this can SSH in as that user
 
 on:
   push:
     branches: [master]
-    # Only the bot's own files. A dashboard-only change (app_pages/, etc.)
-    # doesn't need the bot restarted, and a restart drops its in-memory
-    # channel context and re-runs the startup backfill.
+    # Only the bot's own files - a dashboard-only change doesn't need the
+    # bot restarted, and a restart drops its in-memory channel context
+    # and re-runs the startup backfill.
     paths:
       - "discord_bot/**"
-      - "railway.toml"
       - ".github/workflows/deploy-bot.yml"
   workflow_dispatch: # manual trigger from the Actions tab, for testing
 
@@ -30,13 +33,49 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install the Railway CLI
-        run: npm install -g @railway/cli
-      # Uploads the repo root, NOT discord_bot/ — railway.toml at the root
-      # is what points Railway at the bot. Running this from inside
-      # discord_bot/ is what once made Railway start the Streamlit app by
-      # mistake, so don't "helpfully" add a working-directory here.
-      - name: Deploy to Railway
-        run: railway up --service roboknights-discord-bot --detach
-        env:
-          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+
+      - name: Set up SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.ORACLE_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H "${{ secrets.ORACLE_HOST }}" >> ~/.ssh/known_hosts
+
+      # --exclude='.env': the VM's real secrets live only in
+      # ~/roboknights-bot/.env, created once by hand (see
+      # setup_oracle_vm.sh) and never checked into this repo. --delete
+      # would normally remove anything on the VM missing from this sync,
+      # but an *excluded* file is left alone unless --delete-excluded is
+      # also passed, which it deliberately isn't - so .env survives every
+      # deploy untouched.
+      - name: Sync bot code to the VM
+        run: |
+          rsync -avz --delete \
+            -e "ssh -i ~/.ssh/deploy_key -o UserKnownHostsFile=~/.ssh/known_hosts" \
+            --exclude='.env' --exclude='__pycache__' --exclude='deploy/' \
+            discord_bot/ "${{ secrets.ORACLE_USER }}@${{ secrets.ORACLE_HOST }}:~/roboknights-bot/"
+
+      # XDG_RUNTIME_DIR is set automatically in a real login shell but not
+      # always in a non-interactive SSH command - exported explicitly so
+      # `systemctl --user` can find the running user session that
+      # `loginctl enable-linger` (done once in setup_oracle_vm.sh) keeps
+      # alive.
+      - name: Install requirements and restart the bot
+        run: |
+          ssh -i ~/.ssh/deploy_key -o UserKnownHostsFile=~/.ssh/known_hosts \
+            "${{ secrets.ORACLE_USER }}@${{ secrets.ORACLE_HOST }}" '
+              export XDG_RUNTIME_DIR=/run/user/$(id -u)
+              cd ~/roboknights-bot &&
+              source venv/bin/activate &&
+              pip install -q -r requirements.txt &&
+              systemctl --user restart roboknights-bot
+            '
+
+      - name: Confirm it is live
+        run: |
+          sleep 5
+          ssh -i ~/.ssh/deploy_key -o UserKnownHostsFile=~/.ssh/known_hosts \
+            "${{ secrets.ORACLE_USER }}@${{ secrets.ORACLE_HOST }}" '
+              export XDG_RUNTIME_DIR=/run/user/$(id -u)
+              systemctl --user is-active roboknights-bot
+            '

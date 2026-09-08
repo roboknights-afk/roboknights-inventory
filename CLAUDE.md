@@ -1585,6 +1585,39 @@ placeholder values that don't describe them, are skipped by the
 verify-your-details popup, and show a "Staff" badge. Anything that filters
 by grade must tolerate `None`.
 
+## Discord bot: Railway → Oracle Cloud (2026-09-09)
+
+Railway's free trial was expiring 2026-09-11, and paying for it was never
+the plan (see the Railway saga in "The deploy that was never happening"
+above — its GitHub integration never worked properly either). Two
+options were discussed: a genuine serverless rewrite on AWS Lambda
+(slash-commands-only, loses passive @mention/DM replies and stops
+`discord_channel_log`), or just moving the exact same bot to a different
+always-on host. **Chose the second** — Oracle Cloud's Always Free tier
+(a small Ampere A1 VM, free permanently, no trial clock), zero feature
+loss, same passive-reading/logging behavior as before.
+
+What changed: `discord_bot/deploy/` is new (`roboknights-bot.service`, a
+systemd **--user** unit — not system-wide, specifically so the deploy
+workflow can restart it over SSH with no sudo — and
+`setup_oracle_vm.sh`, the one-time provisioning script). `deploy-bot.yml`
+no longer runs the Railway CLI; it rsyncs `discord_bot/` straight to the
+VM (excluding `.env`, which lives only on the VM and is never in this
+repo) and restarts the service over SSH. `railway.toml` is gone — nothing
+reads it anymore. Needs three new repo secrets: `ORACLE_HOST`,
+`ORACLE_USER`, `ORACLE_SSH_KEY` (replacing `RAILWAY_TOKEN`, which can be
+removed once this is confirmed working). Full manual steps (creating the
+Oracle account/VM — needs the student's own hands, same as every other
+third-party account in this project) are in DEPLOY.md.
+
+One genuine improvement over Railway, not just a swap: this deploy path
+**actually redeploys on push**, which Railway's broken GitHub integration
+never did — the whole reason `BOT_BUILD`/`journalctl` verification exists
+in the first place. Keep doing that verification anyway; a green Actions
+run is good evidence but the running-build check is what actually proved
+Railway was stale for four days, and cheap enough to keep doing out of
+habit.
+
 ## Explicitly NOT in v1
 
 No PDF-to-spreadsheet feature. (WhatsApp notifications used to be listed

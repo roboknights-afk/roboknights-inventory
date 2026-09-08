@@ -48,7 +48,7 @@ Streamlit app  ──┐
 (Streamlit Cloud)│
                  ├──►  Supabase (Postgres + Auth)  ◄──┐
 Discord bot   ───┘                                    │
-(Railway, 24/7)                                       │
+(Oracle Cloud, 24/7)                                  │
                                                       │
 GitHub Actions ───────────────────────────────────────┘
 (daily reminders, deploy notices)

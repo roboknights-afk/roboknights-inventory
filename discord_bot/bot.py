@@ -4,11 +4,12 @@
 # things up ("what is a p219 motor") instead of only answering from
 # training data.
 #
-# This runs as its own always-on process (deployed on Railway), separate
-# from the Streamlit app and from the GitHub Actions scripts. A real bot
-# connection needs a persistent gateway link held open 24/7 - neither
-# Streamlit Cloud (only runs while serving the app) nor GitHub Actions
-# (jobs time out) can do that.
+# This runs as its own always-on process (an Oracle Cloud Always Free VM,
+# moved off Railway 2026-09-09 when Railway's trial ran out - see
+# DEPLOY.md), separate from the Streamlit app and from the GitHub Actions
+# scripts. A real bot connection needs a persistent gateway link held open
+# 24/7 - neither Streamlit Cloud (only runs while serving the app) nor
+# GitHub Actions (jobs time out) can do that.
 #
 # This is a real Discord Bot application (its own token, its own identity
 # in the server) - NOT the club's actual account automated to send/receive
@@ -76,9 +77,11 @@ GROQ_API_KEY = os.environ["GROQ_API_KEY"]
 supabase = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
 
 # Bumped by hand whenever this file changes in a way worth confirming is
-# actually live. Printed on startup (see on_ready) - the only way to tell
-# from outside whether the running bot is the current code, since this
-# service is deployed by hand with `railway up`, not from GitHub.
+# actually live. Printed on startup (see on_ready) and readable via
+# `journalctl --user -u roboknights-bot` on the VM - the way to tell
+# whether the running bot is the current code. Unlike Railway, the
+# deploy-bot.yml workflow really does redeploy on every push now, but this
+# is still worth checking after one.
 BOT_BUILD = "2026-08-25 gpt-oss models (llama retired by Groq)"
 
 # The bot now lives in a SECOND server it doesn't own — the Exun clan's,
@@ -1382,7 +1385,7 @@ def _ask_with_openrouter(messages):
             # The body matters more than the status here: a free model
             # that's been retired 404s, and a daily cap 429s, and those
             # need completely different fixes (swap OPENROUTER_MODEL vs
-            # wait it out). Trimmed, since it lands in the Railway logs.
+            # wait it out). Trimmed, since it lands in journalctl.
             _last_provider_error["openrouter"] = f"HTTP {r.status_code}: {r.text[:200]}"
             return None
         raw = r.json()["choices"][0]["message"]["content"]
@@ -1500,8 +1503,8 @@ def _ask_with_compound(messages, channel_id=None):
             # error. Dumping those into Discord (what this did before)
             # pasted a wall of JSON, leaked the org id, and included a
             # billing URL that Discord then turned into a big link-preview
-            # embed. The full detail still exists, in the Railway logs,
-            # where it's actually useful for debugging.
+            # embed. The full detail still exists, in journalctl on the
+            # VM, where it's actually useful for debugging.
             print(f"ALL PROVIDERS FAILED - compound: {compound_error!r}; plain: {groq_error!r}; "
                   f"gemini: {_last_provider_error['gemini']}; "
                   f"small_groq: {_last_provider_error['small_groq']}; "
@@ -1688,12 +1691,12 @@ async def _send(channel, text):
 @client.event
 async def on_ready():
     print(f"Logged in as {client.user} (id: {client.user.id})")
-    # Which build is actually live. Railway has NO GitHub source attached
-    # to this service (confirmed 2026-08-15) - it only ever gets code from
-    # a `railway up`, so a push to master changes nothing here. Four days
-    # of fixes sat unshipped because of that, with no way to tell from
-    # Discord that the running bot was stale. This line makes it obvious
-    # in the Railway logs.
+    # Which build is actually live. Kept from the Railway era (see
+    # DEPLOY.md/CLAUDE.md for that story - four days of fixes sat
+    # unshipped with no way to tell from Discord the running bot was
+    # stale) even though deploy-bot.yml's Oracle path actually redeploys
+    # on push now - still worth confirming after one, via
+    # `journalctl --user -u roboknights-bot` on the VM.
     print(f"Running build: {BOT_BUILD}", flush=True)
 
     # Backfill: read real past messages so the bot has context from

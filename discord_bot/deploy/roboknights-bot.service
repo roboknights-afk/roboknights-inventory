@@ -1,0 +1,28 @@
+# systemd --USER unit (not a system-wide service) for the RoboKnights
+# Discord bot on its Oracle Cloud Always Free VM.
+#
+# Why --user and not a normal /etc/systemd/system service: a user unit
+# means the GitHub Actions deploy workflow can restart the bot over SSH
+# with a plain `systemctl --user restart`, with no sudo and no sudoers
+# file to edit for a non-interactive SSH session. The one thing a --user
+# service needs that a system one doesn't - staying alive after the SSH
+# session that started it ends - is handled once, at setup time, by
+# `loginctl enable-linger` (see setup_oracle_vm.sh), not by anything here.
+#
+# %h expands to this user's home directory - keeps this file identical
+# regardless of which Linux username the VM ends up with.
+
+[Unit]
+Description=RoboKnights Discord bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/roboknights-bot
+ExecStart=%h/roboknights-bot/venv/bin/python bot.py
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target

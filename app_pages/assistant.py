@@ -66,8 +66,8 @@ COMPOUND_MODEL = "groq/compound"
 #
 # Falls back to groq/compound when TAVILY_API_KEY isn't set, so this
 # changes nothing until the key is added to Streamlit Cloud's Secrets
-# (they're a separate store from the bot's Railway variables — see
-# DEPLOY.md).
+# (they're a separate store from the bot's own .env on its Oracle Cloud
+# VM — see DEPLOY.md).
 TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY")
 WEB_SEARCH_TOOL = {
     "type": "function",
