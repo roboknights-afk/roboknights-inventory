@@ -4,13 +4,15 @@
 # things up ("what is a p219 motor") instead of only answering from
 # training data.
 #
-# This runs as its own always-on process (a Hugging Face Space, moved off
-# Railway 2026-09-09 when its trial ran out, then off a planned Oracle
-# Cloud VM 2026-09-15 when that turned out to want a card - see
-# DEPLOY.md), separate from the Streamlit app and from the GitHub Actions
-# scripts. A real bot connection needs a persistent gateway link held open
-# 24/7 - neither Streamlit Cloud (only runs while serving the app) nor
-# GitHub Actions (jobs time out) can do that.
+# This runs as its own always-on process (a small VPS from a friend's
+# hosting company, moved off Railway 2026-09-09 when its trial ran out, a
+# planned-but-never-built Oracle Cloud VM that wanted a card, and a
+# Hugging Face Space whose free Docker tier turned out to have been
+# locked behind a paid plan since July 2026 - see DEPLOY.md/CLAUDE.md for
+# the full saga), separate from the Streamlit app and from the GitHub
+# Actions scripts. A real bot connection needs a persistent gateway link
+# held open 24/7 - neither Streamlit Cloud (only runs while serving the
+# app) nor GitHub Actions (jobs time out) can do that.
 #
 # This is a real Discord Bot application (its own token, its own identity
 # in the server) - NOT the club's actual account automated to send/receive
@@ -80,10 +82,11 @@ GROQ_API_KEY = os.environ["GROQ_API_KEY"]
 supabase = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
 
 # Bumped by hand whenever this file changes in a way worth confirming is
-# actually live. Printed on startup (see on_ready) and readable in the
-# Hugging Face Space's Logs tab - the way to tell whether the running bot
-# is the current code. Unlike Railway, deploy-bot.yml really does
-# redeploy on every push now, but this is still worth checking after one.
+# actually live. Printed on startup (see on_ready) and readable via
+# `journalctl --user -u roboknights-bot` on the VPS - the way to tell
+# whether the running bot is the current code. Unlike Railway, deploy-
+# bot.yml really does redeploy on every push now, but this is still
+# worth checking after one.
 BOT_BUILD = "2026-09-03 arbiter mode for Naitik's mentions"
 
 # The bot now lives in a SECOND server it doesn't own — the Exun clan's,
@@ -1805,8 +1808,8 @@ async def on_ready():
     # DEPLOY.md/CLAUDE.md for that story - four days of fixes sat
     # unshipped with no way to tell from Discord the running bot was
     # stale) even though deploy-bot.yml really does redeploy on every
-    # push now - still worth confirming after one, via the Hugging Face
-    # Space's Logs tab.
+    # push now - still worth confirming after one, via
+    # `journalctl --user -u roboknights-bot` on the VPS.
     print(f"Running build: {BOT_BUILD}", flush=True)
 
     # Backfill: read real past messages so the bot has context from
@@ -2062,13 +2065,16 @@ async def on_raw_message_delete(payload):
 
 
 def _start_keepalive_server():
-    # Only matters when this runs on Hugging Face Spaces (see DEPLOY.md -
-    # moved here from Oracle Cloud, which wanted a card for identity
-    # verification even on its free tier). A Space sleeps after 48h with
-    # NO HTTP TRAFFIC - Discord activity doesn't count, only requests to
-    # this port do - so an external uptime pinger (UptimeRobot, hitting
-    # this on a 5-minute schedule) is what actually keeps it running
-    # 24/7. On any other host this is harmless and just sits unused.
+    # Built for a Hugging Face Spaces deploy that never actually shipped
+    # (Spaces' free Docker tier turned out to be paid-only since July
+    # 2026, discovered before this was ever used for real - see
+    # DEPLOY.md/CLAUDE.md). A Space sleeps after 48h with NO HTTP TRAFFIC
+    # - Discord activity doesn't count, only requests to this port would
+    # - so an external uptime pinger hitting this port would be what kept
+    # it running 24/7 there. On the real VPS this bot actually runs on,
+    # nothing ever hits this port and it's simply inert. Left in rather
+    # than deleted, on the same "don't rip out what a future pivot might
+    # need again" reasoning as the unused Oracle Cloud deploy files.
     #
     # Deliberately Python's stdlib http.server, not a new dependency, for
     # something whose entire job is returning 200 OK to a health check.

@@ -1653,6 +1653,71 @@ left in place, not deleted — if a spare Pi/laptop/phone or a
 card-holding adult's willingness ever changes the calculus, either is a
 strictly better long-term home than a Space.
 
+**Superseded within hours — Hugging Face's free Docker tier had already
+been locked behind a paid plan since July 2026.** Found out the direct
+way: the student went to actually create the Space and its SDK picker
+showed Docker and Gradio both marked "Paid" and greyed out, with only
+Static (no server-side code execution at all) selectable for free.
+Confirmed via search — HF locked this down for unpaid accounts in early
+July 2026, well before this session's knowledge cutoff but not something
+checked against a live account before recommending it. **The lesson:**
+"is a card required" and "is this specific SDK/tier actually still free"
+are different questions, and only one of them got verified before
+building `_start_keepalive_server()`/`Dockerfile`/`README.md` and a whole
+DEPLOY.md section around it. Nothing was broken by this — the mistake
+was caught before any of it went live — but it cost real back-and-forth
+that a five-minute account-level check would have avoided.
+
+**What actually landed it, 2026-09-14: a friend's VPS.** The student knew
+someone running his own small VPS hosting company (Cloud on Fire) and
+got a real Ubuntu 24.04 box — 1 vCPU / 1 GB RAM, ₹149–249/month
+(exact tier not pinned down in this file on purpose; ask the student if
+it matters) — genuinely paid, but a flat, predictable cost instead of
+chasing another free tier that could be pulled without notice, same
+lesson as the Hugging Face miss above.
+
+The box arrived with **root + password login only, no SSH-key option at
+creation** — meaningfully different from how the Oracle plan assumed
+access would work. Handled with `paramiko` (this machine had no
+`sshpass` installed) in one script, one root session: created a
+non-root `deploy` user with passwordless sudo, installed a freshly
+generated SSH key for it, then — **last, deliberately, so a mistake
+earlier couldn't stand the session out of its own hardening** — set
+`PermitRootLogin no` and `PasswordAuthentication no` in `sshd_config` and
+restarted `ssh`, then opened a NEW connection to confirm the key-based
+`deploy` login worked and the original root password no longer did. The
+original weak password (`Roboknights@123`, chosen by the student before
+being told it was guessable) is now provably unusable over SSH.
+
+`discord_bot/deploy/roboknights-bot.service` — written for Oracle, never
+touched since — worked as-is; the systemd `--user` + `loginctl
+enable-linger` pattern doesn't care which provider the VM is on.
+`deploy-bot.yml` now targets this box via `VPS_HOST`/`VPS_USER`/
+`VPS_SSH_KEY` repo secrets (set directly via `gh secret set ... < file`,
+reading from a file rather than a shell argument specifically because
+auto mode's credential-leak check correctly refuses a raw secret typed
+into a command line — the right call, not a false positive to route
+around). `RAILWAY_TOKEN` was deleted from the repo's secrets as part of
+this, being fully dead by then. The Hugging-Face-specific files
+(`_start_keepalive_server()`, `discord_bot/Dockerfile`,
+`discord_bot/README.md`) are left in place, inert but harmless, same
+"don't delete what a future pivot might need" reasoning as the Oracle
+files before them.
+
+One real gotcha worth remembering if this bot is ever touched again
+without re-reading this file first: the "arbiter mode" feature
+(`ARBITER_DISCORD_IDS`, added 2026-09-03 per its own in-code comment) and
+the deleted-message logging channel had been sitting **uncommitted** in
+the working tree the whole time this hosting saga played out — commit
+`d8cda43` finally landed them, specifically because the live bot on the
+new VPS was deployed straight from the working tree (via `scp`, not
+`git`), so leaving that feature uncommitted would have meant the FIRST
+automated `deploy-bot.yml` run silently downgraded the live bot by
+removing it. Caught before it happened, not after — but a reminder that
+"what's actually running" and "what's actually committed" can drift
+apart during a long multi-session migration, and it's worth diffing them
+before trusting an automated deploy path for the first time.
+
 ## Explicitly NOT in v1
 
 No PDF-to-spreadsheet feature. (WhatsApp notifications used to be listed

@@ -48,7 +48,7 @@ Streamlit app  ──┐
 (Streamlit Cloud)│
                  ├──►  Supabase (Postgres + Auth)  ◄──┐
 Discord bot   ───┘                                    │
-(Hugging Face Spaces, 24/7)                           │
+(a friend's VPS, 24/7)                                │
                                                       │
 GitHub Actions ───────────────────────────────────────┘
 (daily reminders, deploy notices)

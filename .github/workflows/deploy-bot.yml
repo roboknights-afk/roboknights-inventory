@@ -1,21 +1,24 @@
 name: Deploy Discord bot
 
-# Moved to Hugging Face Spaces (2026-09-15) - the Oracle Cloud plan
-# (previously here, see git history for that config) needed a card for
-# identity verification even on its Always Free tier, which the student
-# doesn't have. Hugging Face Spaces' free Docker tier needs no card at
-# all (2 vCPU / 16 GB RAM, email signup only) - see DEPLOY.md for the
-# full comparison of hosting options and why this one won.
+# Moved to a friend's VPS (Cloud on Fire, 2026-09-14) - Hugging Face Spaces
+# (previously here) locked its free Docker tier behind a paid plan in July
+# 2026, after Railway's trial had already run out and Oracle wanted a card
+# for identity verification. See DEPLOY.md for the full survey and why a
+# real, paid-but-cheap VPS from someone the student knows won out.
 #
 # The bot is self-contained (discord_bot/ never imports shared.py), so
-# only that folder needs to reach the Space - not the whole repo, and a
-# Space is itself a git repo, so this deploys with a plain git push
-# rather than needing SSH/rsync like the Oracle plan would have.
+# only that folder needs to reach the VPS - not the whole repo. Same
+# rsync-over-SSH + systemd --user restart shape as the (never-provisioned)
+# Oracle Cloud plan, just pointed at a real box this time.
 #
-# Needs two repo secrets - see DEPLOY.md's Hugging Face section for how
-# to get each one:
-#   HF_TOKEN  - a Hugging Face access token with WRITE access to the Space
-#   HF_SPACE  - the Space's id, as "<hf-username>/<space-name>"
+# Needs three repo secrets - see DEPLOY.md's VPS section for where these
+# came from:
+#   VPS_HOST     - the VPS's public IP
+#   VPS_USER     - the SSH username (a dedicated non-root "deploy" user,
+#                  created during initial setup - root SSH login is
+#                  disabled on this box)
+#   VPS_SSH_KEY  - the private half of the key pair generated for this
+#                  deploy user, so this can SSH in as it
 
 on:
   push:
@@ -34,27 +37,47 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # A Space's git history is its own, separate from this repo's -
-      # nothing here needs (or wants) this project's full commit history,
-      # secrets, or unrelated folders (deploy/ is Oracle/Pi-specific
-      # setup scripts, meaningless inside a Space container). Building a
-      # fresh throwaway repo and force-pushing keeps the Space's content
-      # exactly equal to discord_bot/ on every deploy, nothing more.
-      - name: Mirror discord_bot/ into a fresh repo
+      - name: Set up SSH
         run: |
-          rm -rf /tmp/hf-space
-          mkdir -p /tmp/hf-space
-          cp -r discord_bot/. /tmp/hf-space/
-          rm -rf /tmp/hf-space/deploy /tmp/hf-space/__pycache__ /tmp/hf-space/Procfile
-          cd /tmp/hf-space
-          git init -q -b main
-          git config user.email "ci@roboknights.local"
-          git config user.name "RoboKnights CI"
-          git add -A
-          git commit -q -m "Deploy ${{ github.sha }}"
+          mkdir -p ~/.ssh
+          echo "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H "${{ secrets.VPS_HOST }}" >> ~/.ssh/known_hosts
 
-      - name: Push to the Hugging Face Space
+      # --exclude='.env': the VPS's real secrets live only in
+      # ~/roboknights-bot/.env, created once by hand and never checked
+      # into this repo. --delete would normally remove anything on the
+      # VPS missing from this sync, but an *excluded* file is left alone
+      # unless --delete-excluded is also passed, which it deliberately
+      # isn't - so .env survives every deploy untouched.
+      - name: Sync bot code to the VPS
         run: |
-          cd /tmp/hf-space
-          git remote add space "https://ci:${{ secrets.HF_TOKEN }}@huggingface.co/spaces/${{ secrets.HF_SPACE }}"
-          git push --force space main
+          rsync -avz --delete \
+            -e "ssh -i ~/.ssh/deploy_key -o UserKnownHostsFile=~/.ssh/known_hosts" \
+            --exclude='.env' --exclude='__pycache__' --exclude='deploy/' --exclude='Dockerfile' \
+            discord_bot/ "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:~/roboknights-bot/"
+
+      # XDG_RUNTIME_DIR is set automatically in a real login shell but not
+      # always in a non-interactive SSH command - exported explicitly so
+      # `systemctl --user` can find the running user session that
+      # `loginctl enable-linger` (done once during initial setup) keeps
+      # alive.
+      - name: Install requirements and restart the bot
+        run: |
+          ssh -i ~/.ssh/deploy_key -o UserKnownHostsFile=~/.ssh/known_hosts \
+            "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" '
+              export XDG_RUNTIME_DIR=/run/user/$(id -u)
+              cd ~/roboknights-bot &&
+              source venv/bin/activate &&
+              pip install -q -r requirements.txt &&
+              systemctl --user restart roboknights-bot
+            '
+
+      - name: Confirm it is live
+        run: |
+          sleep 5
+          ssh -i ~/.ssh/deploy_key -o UserKnownHostsFile=~/.ssh/known_hosts \
+            "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" '
+              export XDG_RUNTIME_DIR=/run/user/$(id -u)
+              systemctl --user is-active roboknights-bot
+            '

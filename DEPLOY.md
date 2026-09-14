@@ -242,81 +242,91 @@ It replies whenever @mentioned in a server channel or DMed directly, using
 the same free Groq model (`llama-3.3-70b-versatile`) the dashboard-update
 summaries already use — no new AI account needed.
 
-### Deploying it (Hugging Face Spaces, free, no card)
+### Deploying it (a real VPS, 2026-09-14)
 
-**Moved off Railway 2026-09-09, then off an Oracle Cloud plan
-2026-09-15** — Railway's free trial was expiring (its GitHub integration
-never worked either, see the git history for that saga), and a full
-survey of alternatives (see the discussion in this project's session
-history — Render, Koyeb, Fly, Back4App, Azure/GitHub student credits, a
-handful of small free Discord-bot-specific hosts, a spare Pi or Android
-phone) found Oracle Cloud's Always Free tier was the best *hosted* option
-but still asks for a card for identity verification, which the student
-doesn't have. **Hugging Face Spaces' free Docker tier needs no card at
-all** — email signup only, 2 vCPU / 16 GB RAM, more than this bot needs.
+**Third mover in less than a week.** Railway's free trial ran out
+(2026-09-09), Oracle Cloud wanted a card for identity verification the
+student didn't have, and Hugging Face Spaces — free and card-free when
+first tried — turned out to have locked its free Docker tier behind a
+paid plan back in July 2026, discovered live when the Space-creation
+screen showed Docker greyed out as "Paid." See CLAUDE.md's Discord bot
+hosting section for the full blow-by-blow. What actually settled it: a
+friend who runs his own small VPS hosting company (Cloud on Fire) set up
+a real Ubuntu box for the club — ₹149–249/month, genuinely paid, but a
+predictable flat cost instead of another free tier that could vanish
+overnight, and full root access instead of a platform's constraints.
 
-Two things had to change for this specific host, both already done:
-`bot.py` now starts a tiny background HTTP server
-(`_start_keepalive_server()`) on the port HF expects, since a free Space
-sleeps after **48 hours with no HTTP traffic** — Discord activity doesn't
-count, only requests to that port do, so an external uptime pinger
-(UptimeRobot's free tier, hitting the Space's URL every 5 minutes) is
-what actually keeps it running 24/7. And `discord_bot/Dockerfile` +
-`discord_bot/README.md` (the latter's YAML frontmatter is what tells HF
-this is a Docker Space) exist because Spaces build from a Dockerfile, not
-a plain `pip install && python bot.py`.
+This is the same shape as the Oracle Cloud plan that was drafted but
+never provisioned (`discord_bot/deploy/`'s systemd `--user` unit and
+setup script), just carried out for real on a box that actually exists.
+One thing done differently from how that plan was written: **the VPS
+only ever offered root + password login at creation, with no SSH-key
+field.** So initial setup connected once over password auth (via
+`paramiko`, since this box has no `sshpass` installed), and in that same
+session: created a dedicated non-root `deploy` user, installed a fresh
+SSH key for it, disabled `PasswordAuthentication` and `PermitRootLogin`
+in `sshd_config`, and verified the lockout took effect — all before the
+session doing that hardening even closed, so a mistake mid-script
+couldn't strand the box. The original root password is now provably
+useless over SSH; only the `deploy` user's key works.
 
-Honest tradeoff, not hidden: this is off-label use of Spaces (built for ML
-demos, not bots calling Groq/Gemini) and the sleep-prevention setup relies
-on an external pinger that could silently stop working with no alert —
-weighed against Oracle's card requirement, DPSRKP club members' actual
-comfort level won this one. If a spare Raspberry Pi, old laptop, or
-Android phone becomes available, that stays the *better* long-term home
-(no off-label risk, no dependency on an external pinger, credentials never
-leave a device you own) — this section exists because it's what's usable
-right now.
+`_start_keepalive_server()` in `bot.py` (added for the Hugging Face
+attempt) is harmless-but-unused here — a real VPS never sleeps, so
+nothing ever hits that port. Left in rather than ripped out, on the same
+"don't delete what a future pivot might need again" reasoning as the
+untouched Oracle files. `discord_bot/Dockerfile` and
+`discord_bot/README.md` are HF-specific and equally inert now, also left
+in place.
 
-**One-time setup (needs your own free Hugging Face account — this part
-can't be done for you):**
+**One-time setup, for reference if this VPS is ever rebuilt from
+scratch** (the box already exists and is live — this is documentation of
+what was done, not a to-do list to repeat):
 
-1. Sign up at [huggingface.co](https://huggingface.co/join) — email only,
-   no card.
-2. **New → Space** (top-right, or
-   [huggingface.co/new-space](https://huggingface.co/new-space)).
-   - Owner: your account.
-   - Space name: anything, e.g. `roboknights-discord-bot`.
-   - **SDK: Docker** (not Gradio/Streamlit/static — this bot isn't a web
-     UI, it's a background process, and Docker is the only SDK that lets
-     a Space just run arbitrary code).
-   - Visibility: **Private** — this bot's secrets ultimately grant access
-     to real club member data (phone numbers, admission numbers), most of
-     them minors.
-3. Once created, go to the Space's **Settings** tab and add each secret
-   under **Repository secrets** — see the shared list below for what each
-   one is. `PORT` does NOT need to be set — HF sets it automatically and
-   `bot.py` reads it.
-4. Get a Hugging Face access token: **profile icon → Settings → Access
-   Tokens → New token**, type **Write** (needs push access to the Space).
-5. Back on GitHub: **Settings → Secrets and variables → Actions → New
-   repository secret**, add two:
-   - `HF_TOKEN` — the token from step 4.
-   - `HF_SPACE` — `<your-hf-username>/<space-name>` from step 2, e.g.
-     `yourname/roboknights-discord-bot`.
+1. Get a fresh Ubuntu 24.04 VPS from whoever's providing it — 1 vCPU /
+   1 GB RAM is comfortably enough (the bot idles around 70 MB), root
+   access, an IP, and either an SSH key at creation or a root password to
+   bootstrap from.
+2. If only a root password was given (no SSH key option): connect once
+   with it — from a machine with Python, `pip install paramiko` and
+   script the session rather than typing commands by hand over a
+   password-only connection repeatedly — and in that one session:
+   - `useradd -m -s /bin/bash deploy && usermod -aG sudo deploy`
+   - Generate a fresh local key pair (`ssh-keygen -t ed25519`), install
+     its public half into `/home/deploy/.ssh/authorized_keys`.
+   - Install system packages: `apt-get install -y python3 python3-venv
+     python3-pip rsync sudo`.
+   - Create `/home/deploy/roboknights-bot`, a venv inside it, and the
+     systemd `--user` unit (`discord_bot/deploy/roboknights-bot.service`
+     works as-is — it was written for Oracle but is host-agnostic).
+     `loginctl enable-linger deploy` so the `--user` service survives
+     after the SSH session ends.
+   - **Last**, so a mistake earlier can't lock the session out before it
+     finishes: set `PermitRootLogin no` and `PasswordAuthentication no`
+     in `/etc/ssh/sshd_config`, `systemctl restart ssh`, then verify a
+     NEW connection works with the key as `deploy` and that root/password
+     login is now rejected.
+3. `scp` `discord_bot/bot.py`, `discord_bot/requirements.txt`, and a
+   `.env` holding exactly the secrets `bot.py` reads (see the shared list
+   below — NOT the dashboard's full `.env`, which also has SMTP/WhatsApp/
+   Clio credentials this bot has no business holding) to
+   `~/roboknights-bot/` on the box.
+4. `pip install -r requirements.txt` inside that venv, then
+   `systemctl --user start roboknights-bot`. Confirm via
+   `journalctl --user -u roboknights-bot -f` — same `Running build: ...`
+   check as every other host here.
+5. On GitHub: **Settings → Secrets and variables → Actions**, add three
+   (already done for the live box — `gh secret set NAME --repo
+   roboknights-afk/roboknights-inventory < file` avoids ever putting a
+   secret directly in a shell command, which auto mode's own credential-
+   leak check will otherwise correctly refuse):
+   - `VPS_HOST` — the box's public IP.
+   - `VPS_USER` — `deploy`.
+   - `VPS_SSH_KEY` — the **private** half of the key pair from step 2.
 6. Push to `master` (touching anything under `discord_bot/`), or trigger
-   **Deploy Discord bot** by hand from the Actions tab. This mirrors
-   `discord_bot/` into the Space via a plain `git push` — HF builds the
-   Dockerfile and starts the container automatically, no separate deploy
-   step.
-7. **Set up the uptime pinger, or the bot sleeps after 48h idle:** sign up
-   free at [uptimerobot.com](https://uptimerobot.com), add an HTTP(s)
-   monitor pointed at the Space's URL
-   (`https://<username>-<space-name>.hf.space`), interval 5 minutes.
-   Skipping this step is the single most likely way this quietly stops
-   working — worth actually doing before calling this done.
-8. Confirm it's live: the Space's **Logs** tab shows the same
-   `Running build: ...` line from `BOT_BUILD` at the top of `bot.py` that
-   every other deploy path here checks — if it doesn't match what's in
-   the file, the deploy didn't land.
+   **Deploy Discord bot** by hand from the Actions tab. `deploy-bot.yml`
+   rsyncs the code over, reinstalls requirements, and restarts the
+   service — genuinely fires on every push, unlike Railway's broken
+   integration.
 
 **The secrets** (same list, same values, regardless of which platform
 holds them):
@@ -389,11 +399,12 @@ holds them):
      ID** and set the variable to that number.
 **It DOES auto-deploy on push now** — unlike Railway (see the note at the
 top of this section), `deploy-bot.yml` actually fires on every push
-touching `discord_bot/**` and finishes the job itself: `git push` the
-code to the Space, which HF then rebuilds and restarts on its own.
-Confirm a deploy landed via the Space's **Logs** tab, same
+touching `discord_bot/**` and finishes the job itself: rsync the code to
+the VPS, reinstall requirements, restart the service. Confirm a deploy
+landed via `journalctl --user -u roboknights-bot -f` on the box, same
 `Running build: ...` check as before (`BOT_BUILD` at the top of
-`bot.py`) — or just watch the workflow run go green in the Actions tab.
+`bot.py`) — or just watch the workflow run go green in the Actions tab,
+since its last step checks the service actually came back up.
 
 To test on your own laptop first: put all the variables above in a
 `.env` file inside `discord_bot/` (or run from the repo root, which
@@ -421,15 +432,15 @@ from our side alone.
    other channel of theirs, denying View Channel at the category or server
    level and allowing it on the one channel is the clean way.
 3. Get that channel's ID (right-click → **Copy Channel ID**, with
-   Developer Mode on) and add it to `DISCORD_GUEST_CHANNEL_IDS` in the
-   Space's **Settings → Repository secrets** (edit the existing secret
-   there directly), comma-separated if there's more than one. **Until
-   this is set the bot stays silent there** — that's deliberate: joining
-   a server should not by itself let anyone in it start querying our club
-   data.
-4. Restart the bot so it picks up the new secret: the Space's **Settings**
-   page has a **Restart this Space** button (editing a secret doesn't
-   restart it automatically). Confirm via the **Logs** tab.
+   Developer Mode on) and add it to `DISCORD_GUEST_CHANNEL_IDS` in
+   `~/roboknights-bot/.env` on the VPS (SSH in as `deploy` and edit it
+   directly), comma-separated if there's more than one. **Until this is
+   set the bot stays silent there** — that's deliberate: joining a server
+   should not by itself let anyone in it start querying our club data.
+4. Restart the bot so it picks up the new `.env` value: SSH in and run
+   `systemctl --user restart roboknights-bot` (the deploy workflow only
+   restarts on a code push, and this was an `.env` edit, not a push).
+   Confirm with `journalctl --user -u roboknights-bot -f`.
 
 What the bot will and won't tell them: it answers from the same club data
 it already has — every member's name, grade, section and standing
