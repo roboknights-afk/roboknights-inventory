@@ -84,7 +84,7 @@ supabase = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
 # Hugging Face Space's Logs tab - the way to tell whether the running bot
 # is the current code. Unlike Railway, deploy-bot.yml really does
 # redeploy on every push now, but this is still worth checking after one.
-BOT_BUILD = "2026-08-25 gpt-oss models (llama retired by Groq)"
+BOT_BUILD = "2026-09-03 arbiter mode for Naitik's mentions"
 
 # The bot now lives in a SECOND server it doesn't own — the Exun clan's,
 # in their RoboKnights channel, so their side can ask it about
@@ -122,6 +122,17 @@ def _is_home_guild(channel):
 
 def _channel_allowed(channel):
     return _is_home_guild(channel) or str(channel.id) in DISCORD_GUEST_CHANNEL_IDS
+
+
+# The channel a deleted message gets reported to (2026-09-01). This is a
+# real channel ID, not a webhook — unlike shared.py's send_discord_message
+# (which the Streamlit side uses, since it has no gateway connection), this
+# bot already holds a live connection and can just post to a channel it can
+# see, using its own identity (the blue APP badge), no separate webhook
+# secret needed. Silently no-ops if unset, same best-effort spirit as every
+# other notification in this project — safe to leave wired in before the
+# channel exists.
+DISCORD_LOGS_CHANNEL_ID = os.environ.get("DISCORD_LOGS_CHANNEL_ID", "").strip()
 
 # Plain model - handles every reply's actual thinking, whether or not a
 # search happened. Same one send_dashboard_update.py uses for its
@@ -172,6 +183,40 @@ GROQ_SMALL_MODEL = "openai/gpt-oss-20b"
 AI_ASSISTANT_BANNED_DISCORD_IDS = {
     "1289252405812400169",  # Lav Singh and Kush Singh share this Discord account
 }
+
+# Naitik-requested (2026-09-03): when one of these IDs @mentions/DMs/replies
+# to the bot, every reply argues its case with evidence instead of the
+# normal even-handed answer - meant for stepping into an active argument
+# and settling it, not just answering a question. Deliberately its own
+# standalone list, NOT tied to the dashboard's HOST_EMAILS: none of those
+# accounts (Vice Principal, HOD Computer Science, Robotics In-Charge, the
+# shared roboknights@dpsrkp.net) have a Discord account linked at all
+# (confirmed live), so gating on host status would never have fired for
+# anyone. This file can't import shared.py either way (see the top-of-file
+# comment on why), so a standalone set matches how AI_ASSISTANT_BANNED_
+# DISCORD_IDS above already has to work.
+ARBITER_DISCORD_IDS = {
+    "1427126687014981723",  # Naitik Jindal
+}
+
+# Appended to the system prompt for ARBITER_DISCORD_IDS. Deliberately still
+# bound by the standing no-roasting/no-disrespect rule (SYSTEM_PROMPT_
+# TEMPLATE already carries that, this doesn't relax it) - "decisive" means
+# backed by real evidence, not license to mock whoever's wrong.
+ARBITER_NOTE = (
+    "\n\nThe person talking to you right now settles arguments with "
+    "evidence, and wants you to actually do that here rather than staying "
+    "neutral or hedging. Look at RECENT CHANNEL ACTIVITY below to see what's "
+    "being discussed or disputed. If it's a factual question you can "
+    "verify - use get_club_data, search_chat_history, and/or web_search as "
+    "needed, then state a clear, direct verdict backed by what you found, "
+    "citing the specific fact or message that settles it. If there's "
+    "nothing to actually verify (a matter of opinion, taste, or something "
+    "with no real evidence either way), say plainly that there's no "
+    "evidence to settle it rather than inventing a side. Stay factual and "
+    "respectful either way - a confident answer is not license to mock "
+    "whoever was wrong."
+)
 
 # Tavily: purpose-built for feeding LLMs search results (not a general
 # search engine API) - 1,000 free searches/month, no card. This is the
@@ -1054,6 +1099,27 @@ def _log_channel_message(message, linked_user_id, is_edit=False):
         pass
 
 
+def _find_logged_message(message_id):
+    # discord.py only hands on_raw_message_delete the deleted message's
+    # CONTENT if it happened to still be in the bot's own short-lived
+    # in-memory cache (cached_message) — gone if the bot restarted since,
+    # or never cached at all. discord_channel_log already has a durable
+    # copy of every message this bot has ever seen, keyed by
+    # discord_message_id, so that's the fallback source of truth.
+    try:
+        rows = (
+            supabase.table("discord_channel_log")
+            .select("discord_display_name,content")
+            .eq("discord_message_id", str(message_id))
+            .limit(1)
+            .execute()
+            .data
+        )
+        return rows[0] if rows else None
+    except Exception:
+        return None
+
+
 # Passive per-channel activity — EVERY message the bot can see (not just
 # ones it replies to), so it has real context on what's being discussed
 # when it IS asked something, the same way a person reading the channel
@@ -1109,6 +1175,38 @@ _last_provider_error = {
     "small_groq": "not attempted",
     "openrouter": "not attempted",
 }
+
+
+def _is_transient(exc) -> bool:
+    # 429 (rate limit) or 503 (server overloaded) are usually gone within
+    # a couple of seconds - Groq's own error text on the incident that
+    # prompted this said "Please try again in 1.776s." Anything else
+    # (empty response, a bad key, a 400) won't be fixed by waiting, so
+    # only these two are worth retrying at all.
+    status = getattr(exc, "status_code", None)
+    if status in (429, 503):
+        return True
+    text = str(exc)
+    return any(marker in text for marker in ("429", "503", "UNAVAILABLE", "rate_limit"))
+
+
+def _call_with_retry(fn, retries=1, delay=2.0):
+    # One short retry on a transient error before this provider tier is
+    # given up on and the whole chain falls through to the next, weaker
+    # one. Added 2026-09-03 after a real incident where Groq compound,
+    # Gemini, and OpenRouter all failed inside the same few seconds - a
+    # genuine spike each was likely to recover from on its own, not a
+    # real outage. Runs on a background thread already (see
+    # asyncio.to_thread near the bottom of this file), so a blocking
+    # sleep here doesn't stall the bot's event loop.
+    for attempt in range(retries + 1):
+        try:
+            return fn()
+        except Exception as e:
+            if attempt < retries and _is_transient(e):
+                time.sleep(delay)
+                continue
+            raise
 
 
 def _ask_with_gemini(messages, channel_id=None):
@@ -1184,7 +1282,7 @@ def _ask_with_gemini(messages, channel_id=None):
 
             tools.append(web_search)
 
-        response = gemini_client.models.generate_content(
+        response = _call_with_retry(lambda: gemini_client.models.generate_content(
             model=GEMINI_MODEL, contents=contents,
             config=genai_types.GenerateContentConfig(
                 system_instruction=system_instruction, tools=tools or None,
@@ -1196,7 +1294,7 @@ def _ask_with_gemini(messages, channel_id=None):
                 # "I'm maxed out" instead of silence.
                 http_options=genai_types.HttpOptions(timeout=GEMINI_TIMEOUT_MS),
             ),
-        )
+        ))
         # None, not a placeholder string - an empty answer here should let
         # the caller fall through to its real error message rather than
         # dead-end a member with "try asking again" (which is what
@@ -1374,15 +1472,23 @@ def _ask_with_openrouter(messages):
         ),
     }]
     try:
-        r = requests.post(
-            "https://openrouter.ai/api/v1/chat/completions",
-            headers={"Authorization": f"Bearer {OPENROUTER_API_KEY}"},
-            json={
-                "model": OPENROUTER_MODEL, "messages": messages,
-                "max_tokens": MAX_REPLY_TOKENS,
-            },
-            timeout=30,
-        )
+        # Manual retry, not _call_with_retry - this call reports failure
+        # via status code, not an exception, so the transient check is
+        # just the status itself.
+        for attempt in range(2):
+            r = requests.post(
+                "https://openrouter.ai/api/v1/chat/completions",
+                headers={"Authorization": f"Bearer {OPENROUTER_API_KEY}"},
+                json={
+                    "model": OPENROUTER_MODEL, "messages": messages,
+                    "max_tokens": MAX_REPLY_TOKENS,
+                },
+                timeout=30,
+            )
+            if attempt == 0 and r.status_code in (429, 503):
+                time.sleep(2.0)
+                continue
+            break
         if r.status_code >= 300:
             # The body matters more than the status here: a free model
             # that's been retired 404s, and a daily cap 429s, and those
@@ -1411,9 +1517,9 @@ def _ask_with_small_groq(no_tools_messages):
     # Same "record why, don't fail silently" contract as the other two
     # fallbacks - see _last_provider_error.
     try:
-        response = groq_client.chat.completions.create(
+        response = _call_with_retry(lambda: groq_client.chat.completions.create(
             model=GROQ_SMALL_MODEL, messages=no_tools_messages, max_tokens=MAX_REPLY_TOKENS,
-        )
+        ))
         reply = response.choices[0].message.content
         if not reply:
             _last_provider_error["small_groq"] = "empty response"
@@ -1450,20 +1556,20 @@ def _ask_with_compound(messages, channel_id=None):
         gemini="not attempted", small_groq="not attempted", openrouter="not attempted"
     )
     try:
-        response = groq_client.chat.completions.create(
+        response = _call_with_retry(lambda: groq_client.chat.completions.create(
             model=COMPOUND_MODEL, messages=no_tools_messages,
             compound_custom={"tools": {"enabled_tools": ["web_search", "visit_website"]}},
             max_tokens=MAX_REPLY_TOKENS,
-        )
+        ))
         reply = response.choices[0].message.content
         if not reply:
             raise ValueError("empty compound response")
         return reply, _extract_sources(response)
     except Exception as compound_error:
         try:
-            response = groq_client.chat.completions.create(
+            response = _call_with_retry(lambda: groq_client.chat.completions.create(
                 model=GROQ_MODEL, messages=no_tools_messages, max_tokens=MAX_REPLY_TOKENS,
-            )
+            ))
             plain_reply = response.choices[0].message.content
             if not plain_reply:
                 raise ValueError("empty plain response")
@@ -1544,10 +1650,10 @@ def _ask_with_tools(messages, channel_id):
     original_messages = list(messages)
     tools = [CLUB_DATA_TOOL, CHAT_HISTORY_TOOL] + ([WEB_SEARCH_TOOL] if TAVILY_API_KEY else [])
     try:
-        response = groq_client.chat.completions.create(
+        response = _call_with_retry(lambda: groq_client.chat.completions.create(
             model=GROQ_MODEL, messages=messages, tools=tools, tool_choice="auto",
             max_tokens=MAX_REPLY_TOKENS,
-        )
+        ))
         msg = response.choices[0].message
         if not msg.tool_calls:
             if msg.content:
@@ -1578,9 +1684,9 @@ def _ask_with_tools(messages, channel_id):
                 all_sources.extend(result_sources)
             messages.append({"role": "tool", "tool_call_id": tc.id, "content": result_text})
 
-        final = groq_client.chat.completions.create(
+        final = _call_with_retry(lambda: groq_client.chat.completions.create(
             model=GROQ_MODEL, messages=messages, max_tokens=MAX_REPLY_TOKENS,
-        )
+        ))
         reply = final.choices[0].message.content
         if not reply:
             # Same reasoning as above - an empty final response (seen
@@ -1616,7 +1722,7 @@ def _tidy_truncation(reply):
     return reply
 
 
-def _ask_llm(conversation_key, channel_id, user_text, asker_name=None):
+def _ask_llm(conversation_key, channel_id, user_text, asker_name=None, is_arbiter=False):
     history[conversation_key].append({"role": "user", "content": user_text})
     # Club data is NOT pasted in here anymore - it's the get_club_data
     # tool now, fetched only when a question actually needs it. See
@@ -1660,6 +1766,8 @@ def _ask_llm(conversation_key, channel_id, user_text, asker_name=None):
             "answer normally from the club data - never say you can't see the "
             "data when the tool gave it to you."
         )
+    if is_arbiter:
+        system_content += ARBITER_NOTE
     system_content += (
         "\n\nRECENT CHANNEL ACTIVITY (for context only - only reply to the "
         "actual message you're being asked to respond to, don't address "
@@ -1717,11 +1825,24 @@ async def on_ready():
             perms = channel.permissions_for(guild.me)
             if not (perms.view_channel and perms.read_message_history):
                 continue
+            is_home = _is_home_guild(channel)
             try:
                 async for msg in channel.history(limit=BACKFILL_LIMIT, oldest_first=True):
                     if msg.author.bot:
                         continue
                     channel_log[channel.id].append({"author": msg.author.display_name, "content": msg.content})
+                    # Home-server only (see the guest-server comment above) -
+                    # without this, a message deleted before the bot's NEXT
+                    # restart has no durable record at all: discord.py's own
+                    # in-memory cache is gone too, so on_raw_message_delete
+                    # falls back to "unknown"/"no text on file" for anything
+                    # that predates this process's uptime (confirmed live,
+                    # 2026-09-03 - a message deleted right after a redeploy
+                    # showed up exactly that way). Backfilling into the same
+                    # table live messages use closes that gap.
+                    if is_home:
+                        linked_user_id, _ = _linked_user(str(msg.author.id))
+                        _log_channel_message(msg, linked_user_id)
             except Exception as e:
                 print(f"Backfill skipped for #{channel.name}: {e}")
     print("Backfill complete.")
@@ -1855,7 +1976,8 @@ async def _handle_incoming(message, is_edit=False):
     # and other members' messages while this one waits.
     async with message.channel.typing():
         reply = await asyncio.to_thread(
-            _ask_llm, conversation_key, message.channel.id, text, linked_name
+            _ask_llm, conversation_key, message.channel.id, text, linked_name,
+            discord_user_id in ARBITER_DISCORD_IDS,
         )
     _log_chat("assistant", reply, discord_user_id, discord_channel_id, linked_user_id)
 
@@ -1879,6 +2001,64 @@ async def on_message_edit(before, after):
     # answer, not to be silently ignored because the bot already saw an
     # earlier, different version of this message.
     await _handle_incoming(after, is_edit=True)
+
+
+@client.event
+async def on_raw_message_delete(payload):
+    # RAW, not on_message_delete: the plain event only fires when the
+    # deleted message was already sitting in discord.py's in-memory
+    # cache, which is exactly the case that's least interesting (a
+    # message deleted seconds after posting). The raw event fires for
+    # every deletion the bot can see, cached or not — content, when it's
+    # not in the live cache either, is recovered from discord_channel_log
+    # instead (see _find_logged_message).
+    if not DISCORD_LOGS_CHANNEL_ID:
+        return
+
+    # Home-server only, same reasoning as discord_channel_log itself
+    # (see the guest-server comment near DISCORD_HOME_GUILD_ID above) —
+    # this is a moderation tool for OUR server, not something to run
+    # against a server we're only a guest in. No guild at all means a DM,
+    # which is between the asker and the bot and not this channel's
+    # business either.
+    if payload.guild_id is None:
+        return
+    if DISCORD_HOME_GUILD_ID and str(payload.guild_id) != DISCORD_HOME_GUILD_ID:
+        return
+
+    # Don't report a deletion happening IN the logs channel itself —
+    # otherwise cleaning up the log ever (or the bot's own log messages
+    # eventually scrolling off and getting pruned) reports on itself.
+    if str(payload.channel_id) == DISCORD_LOGS_CHANNEL_ID:
+        return
+
+    author = None
+    content = None
+    if payload.cached_message is not None:
+        if payload.cached_message.author.bot:
+            return
+        author = payload.cached_message.author.display_name
+        content = payload.cached_message.content
+    else:
+        logged = _find_logged_message(payload.message_id)
+        if logged:
+            author = logged.get("discord_display_name")
+            content = logged.get("content")
+
+    author = author or "unknown"
+    body = content if content else "*(no text on file — an attachment-only or unlogged message)*"
+
+    report = (
+        f":wastebasket: **Message deleted** in <#{payload.channel_id}>\n"
+        f"By **{author}**:\n>>> {body}"
+    )
+    try:
+        channel = client.get_channel(int(DISCORD_LOGS_CHANNEL_ID)) or await client.fetch_channel(
+            int(DISCORD_LOGS_CHANNEL_ID)
+        )
+        await _send(channel, report)
+    except Exception:
+        pass
 
 
 def _start_keepalive_server():
