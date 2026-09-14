@@ -1618,6 +1618,41 @@ run is good evidence but the running-build check is what actually proved
 Railway was stale for four days, and cheap enough to keep doing out of
 habit.
 
+**Superseded less than a week later, 2026-09-15 — Oracle asked for a card
+too.** The VM never actually got created; Oracle's Always Free signup
+wants a card for identity verification (a refundable hold, never charged
+on Always Free shapes per Oracle's own policy, but the family doesn't
+have one to use for it). A fuller survey followed — Render, Koyeb, Fly,
+Back4App, Azure-for-Students (18+ only) and the GitHub Student Pack
+(DigitalOcean's credit retired 1 Aug 2026), several small free
+Discord-bot-specific hosts, and using hardware already owned (a spare Pi
+or Android phone) — before landing on **Hugging Face Spaces**: genuinely
+free, email-signup-only, 2 vCPU/16 GB on the Docker SDK tier.
+
+What changed for this host specifically: `bot.py` gained
+`_start_keepalive_server()`, a stdlib-only background HTTP server on
+`PORT` (HF sets this; defaults to 7860) — a free Space sleeps after 48h
+with **no HTTP traffic** (Discord activity doesn't count), so an external
+pinger (UptimeRobot, free, 5-minute interval) hitting that port is what
+actually keeps it running 24/7. `discord_bot/Dockerfile` and
+`discord_bot/README.md` (its YAML frontmatter is what tells HF this is a
+Docker Space, not a plain readme) are new. `deploy-bot.yml` now mirrors
+`discord_bot/` into a throwaway git repo and force-pushes it to the Space
+(a Space is itself a git remote) instead of rsyncing over SSH — needs
+`HF_TOKEN` + `HF_SPACE` repo secrets, replacing `ORACLE_*`.
+
+**Said plainly, not hidden:** this is off-label use of Spaces (built for
+ML demos, not a Discord bot calling Groq/Gemini) and the sleep-prevention
+setup depends on an external pinger that could silently stop working with
+no alert — the same "swallowed failure" failure mode this project has
+been bitten by four times already (Clio sync, `TAVILY_API_KEY`,
+`notify_if_roster_complete`, the hardcoded fallback-error strings). Chose
+it anyway because it was the best *card-free* option surveyed. The
+Oracle deploy files (`discord_bot/deploy/`) and DEPLOY.md section are
+left in place, not deleted — if a spare Pi/laptop/phone or a
+card-holding adult's willingness ever changes the calculus, either is a
+strictly better long-term home than a Space.
+
 ## Explicitly NOT in v1
 
 No PDF-to-spreadsheet feature. (WhatsApp notifications used to be listed

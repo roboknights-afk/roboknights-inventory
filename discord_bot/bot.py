@@ -4,8 +4,9 @@
 # things up ("what is a p219 motor") instead of only answering from
 # training data.
 #
-# This runs as its own always-on process (an Oracle Cloud Always Free VM,
-# moved off Railway 2026-09-09 when Railway's trial ran out - see
+# This runs as its own always-on process (a Hugging Face Space, moved off
+# Railway 2026-09-09 when its trial ran out, then off a planned Oracle
+# Cloud VM 2026-09-15 when that turned out to want a card - see
 # DEPLOY.md), separate from the Streamlit app and from the GitHub Actions
 # scripts. A real bot connection needs a persistent gateway link held open
 # 24/7 - neither Streamlit Cloud (only runs while serving the app) nor
@@ -44,9 +45,11 @@ import asyncio
 import json
 import os
 import re
+import threading
 import time
 from collections import defaultdict, deque
 from datetime import datetime, timedelta, timezone
+from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import discord
 import requests
@@ -77,11 +80,10 @@ GROQ_API_KEY = os.environ["GROQ_API_KEY"]
 supabase = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
 
 # Bumped by hand whenever this file changes in a way worth confirming is
-# actually live. Printed on startup (see on_ready) and readable via
-# `journalctl --user -u roboknights-bot` on the VM - the way to tell
-# whether the running bot is the current code. Unlike Railway, the
-# deploy-bot.yml workflow really does redeploy on every push now, but this
-# is still worth checking after one.
+# actually live. Printed on startup (see on_ready) and readable in the
+# Hugging Face Space's Logs tab - the way to tell whether the running bot
+# is the current code. Unlike Railway, deploy-bot.yml really does
+# redeploy on every push now, but this is still worth checking after one.
 BOT_BUILD = "2026-08-25 gpt-oss models (llama retired by Groq)"
 
 # The bot now lives in a SECOND server it doesn't own — the Exun clan's,
@@ -1385,7 +1387,7 @@ def _ask_with_openrouter(messages):
             # The body matters more than the status here: a free model
             # that's been retired 404s, and a daily cap 429s, and those
             # need completely different fixes (swap OPENROUTER_MODEL vs
-            # wait it out). Trimmed, since it lands in journalctl.
+            # wait it out). Trimmed, since it lands in the Space's Logs tab.
             _last_provider_error["openrouter"] = f"HTTP {r.status_code}: {r.text[:200]}"
             return None
         raw = r.json()["choices"][0]["message"]["content"]
@@ -1503,8 +1505,8 @@ def _ask_with_compound(messages, channel_id=None):
             # error. Dumping those into Discord (what this did before)
             # pasted a wall of JSON, leaked the org id, and included a
             # billing URL that Discord then turned into a big link-preview
-            # embed. The full detail still exists, in journalctl on the
-            # VM, where it's actually useful for debugging.
+            # embed. The full detail still exists, in the Space's Logs
+            # tab, where it's actually useful for debugging.
             print(f"ALL PROVIDERS FAILED - compound: {compound_error!r}; plain: {groq_error!r}; "
                   f"gemini: {_last_provider_error['gemini']}; "
                   f"small_groq: {_last_provider_error['small_groq']}; "
@@ -1694,9 +1696,9 @@ async def on_ready():
     # Which build is actually live. Kept from the Railway era (see
     # DEPLOY.md/CLAUDE.md for that story - four days of fixes sat
     # unshipped with no way to tell from Discord the running bot was
-    # stale) even though deploy-bot.yml's Oracle path actually redeploys
-    # on push now - still worth confirming after one, via
-    # `journalctl --user -u roboknights-bot` on the VM.
+    # stale) even though deploy-bot.yml really does redeploy on every
+    # push now - still worth confirming after one, via the Hugging Face
+    # Space's Logs tab.
     print(f"Running build: {BOT_BUILD}", flush=True)
 
     # Backfill: read real past messages so the bot has context from
@@ -1879,4 +1881,31 @@ async def on_message_edit(before, after):
     await _handle_incoming(after, is_edit=True)
 
 
+def _start_keepalive_server():
+    # Only matters when this runs on Hugging Face Spaces (see DEPLOY.md -
+    # moved here from Oracle Cloud, which wanted a card for identity
+    # verification even on its free tier). A Space sleeps after 48h with
+    # NO HTTP TRAFFIC - Discord activity doesn't count, only requests to
+    # this port do - so an external uptime pinger (UptimeRobot, hitting
+    # this on a 5-minute schedule) is what actually keeps it running
+    # 24/7. On any other host this is harmless and just sits unused.
+    #
+    # Deliberately Python's stdlib http.server, not a new dependency, for
+    # something whose entire job is returning 200 OK to a health check.
+    # Runs in a background thread so it can never block the real bot.
+    class _Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"ok")
+
+        def log_message(self, *args):
+            pass  # don't drown the real bot's logs in HTTP access lines
+
+    port = int(os.environ.get("PORT", "7860"))
+    server = HTTPServer(("0.0.0.0", port), _Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+
+
+_start_keepalive_server()
 client.run(DISCORD_BOT_TOKEN)

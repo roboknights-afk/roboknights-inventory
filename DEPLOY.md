@@ -242,65 +242,81 @@ It replies whenever @mentioned in a server channel or DMed directly, using
 the same free Groq model (`llama-3.3-70b-versatile`) the dashboard-update
 summaries already use — no new AI account needed.
 
-### Deploying it (Oracle Cloud, Always Free)
+### Deploying it (Hugging Face Spaces, free, no card)
 
-**Moved off Railway 2026-09-09** — Railway's free trial was expiring, and
-Railway's own GitHub integration for this service never worked in the
-first place (its "Auto deploy unavailable" bug, see the git history for
-that whole saga). Oracle Cloud's Always Free tier costs nothing,
-permanently, with no trial clock — a small VM (the "Ampere A1" shape
-below) is more than this bot needs. Unlike Railway, this deploy path
-actually works from a push: `.github/workflows/deploy-bot.yml` rsyncs
-`discord_bot/` straight to the VM and restarts it, no third-party
-integration involved.
+**Moved off Railway 2026-09-09, then off an Oracle Cloud plan
+2026-09-15** — Railway's free trial was expiring (its GitHub integration
+never worked either, see the git history for that saga), and a full
+survey of alternatives (see the discussion in this project's session
+history — Render, Koyeb, Fly, Back4App, Azure/GitHub student credits, a
+handful of small free Discord-bot-specific hosts, a spare Pi or Android
+phone) found Oracle Cloud's Always Free tier was the best *hosted* option
+but still asks for a card for identity verification, which the student
+doesn't have. **Hugging Face Spaces' free Docker tier needs no card at
+all** — email signup only, 2 vCPU / 16 GB RAM, more than this bot needs.
 
-**One-time setup (needs your own Oracle account — this part can't be done
-for you):**
+Two things had to change for this specific host, both already done:
+`bot.py` now starts a tiny background HTTP server
+(`_start_keepalive_server()`) on the port HF expects, since a free Space
+sleeps after **48 hours with no HTTP traffic** — Discord activity doesn't
+count, only requests to that port do, so an external uptime pinger
+(UptimeRobot's free tier, hitting the Space's URL every 5 minutes) is
+what actually keeps it running 24/7. And `discord_bot/Dockerfile` +
+`discord_bot/README.md` (the latter's YAML frontmatter is what tells HF
+this is a Docker Space) exist because Spaces build from a Dockerfile, not
+a plain `pip install && python bot.py`.
 
-1. Sign up at [cloud.oracle.com](https://cloud.oracle.com) for an Always
-   Free account. Oracle asks for a card to verify identity even for
-   Always Free resources — it should never actually get charged as long
-   as you stay on Always Free shapes, but that's Oracle's own policy, not
-   this project's.
-2. **Menu → Compute → Instances → Create Instance.**
-   - Image: **Canonical Ubuntu** (22.04 or newer).
-   - Shape: **Ampere** → `VM.Standard.A1.Flex`, the Always Free ARM shape
-     (up to 4 OCPUs / 24 GB total, split across up to 4 instances) — 1
-     OCPU / 6 GB is plenty for this bot. The AMD `VM.Standard.E2.1.Micro`
-     shape is the other Always Free option if you'd rather avoid ARM, but
-     it's far smaller (1/8 OCPU, 1 GB).
-   - Add your SSH public key when prompted (generate one first with
-     `ssh-keygen` if you don't already have one) — this is how you'll log
-     in; there's no password.
-3. Once it's running, note the instance's **public IP address** from the
-   instance details page.
-4. From your own machine, copy the two setup files up and run the setup
-   script (the default Ubuntu image's login user is `ubuntu`):
-   ```
-   scp discord_bot/deploy/setup_oracle_vm.sh discord_bot/deploy/roboknights-bot.service ubuntu@<public-ip>:~/
-   ssh ubuntu@<public-ip> 'bash setup_oracle_vm.sh'
-   ```
-   This installs Python, creates `~/roboknights-bot`, and installs (but
-   doesn't yet start) a systemd service for the bot. Full detail in the
-   script's own comments.
-5. While still SSHed in, create `~/roboknights-bot/.env` with the bot's
-   real secrets — same variable names as the list below, just in a plain
-   `.env` file now instead of a platform's Variables tab.
-6. Back on GitHub: **Settings → Secrets and variables → Actions → New
-   repository secret**, add three:
-   - `ORACLE_HOST` — the public IP from step 3.
-   - `ORACLE_USER` — `ubuntu`.
-   - `ORACLE_SSH_KEY` — the **private** half of the key pair from step 2
-     (the file, not the `.pub` one) — paste its full contents.
-7. Push to `master` (touching anything under `discord_bot/`), or trigger
-   **Deploy Discord bot** by hand from the Actions tab. This rsyncs the
-   code over, installs requirements in the VM's venv, and starts the
-   service for real the first time.
-8. Confirm it's live: `ssh ubuntu@<public-ip>` then
-   `journalctl --user -u roboknights-bot -f` and look for the
-   `Running build: ...` line (from `BOT_BUILD` at the top of `bot.py`) —
-   if it doesn't match what's in the file, the deploy didn't actually
-   land.
+Honest tradeoff, not hidden: this is off-label use of Spaces (built for ML
+demos, not bots calling Groq/Gemini) and the sleep-prevention setup relies
+on an external pinger that could silently stop working with no alert —
+weighed against Oracle's card requirement, DPSRKP club members' actual
+comfort level won this one. If a spare Raspberry Pi, old laptop, or
+Android phone becomes available, that stays the *better* long-term home
+(no off-label risk, no dependency on an external pinger, credentials never
+leave a device you own) — this section exists because it's what's usable
+right now.
+
+**One-time setup (needs your own free Hugging Face account — this part
+can't be done for you):**
+
+1. Sign up at [huggingface.co](https://huggingface.co/join) — email only,
+   no card.
+2. **New → Space** (top-right, or
+   [huggingface.co/new-space](https://huggingface.co/new-space)).
+   - Owner: your account.
+   - Space name: anything, e.g. `roboknights-discord-bot`.
+   - **SDK: Docker** (not Gradio/Streamlit/static — this bot isn't a web
+     UI, it's a background process, and Docker is the only SDK that lets
+     a Space just run arbitrary code).
+   - Visibility: **Private** — this bot's secrets ultimately grant access
+     to real club member data (phone numbers, admission numbers), most of
+     them minors.
+3. Once created, go to the Space's **Settings** tab and add each secret
+   under **Repository secrets** — see the shared list below for what each
+   one is. `PORT` does NOT need to be set — HF sets it automatically and
+   `bot.py` reads it.
+4. Get a Hugging Face access token: **profile icon → Settings → Access
+   Tokens → New token**, type **Write** (needs push access to the Space).
+5. Back on GitHub: **Settings → Secrets and variables → Actions → New
+   repository secret**, add two:
+   - `HF_TOKEN` — the token from step 4.
+   - `HF_SPACE` — `<your-hf-username>/<space-name>` from step 2, e.g.
+     `yourname/roboknights-discord-bot`.
+6. Push to `master` (touching anything under `discord_bot/`), or trigger
+   **Deploy Discord bot** by hand from the Actions tab. This mirrors
+   `discord_bot/` into the Space via a plain `git push` — HF builds the
+   Dockerfile and starts the container automatically, no separate deploy
+   step.
+7. **Set up the uptime pinger, or the bot sleeps after 48h idle:** sign up
+   free at [uptimerobot.com](https://uptimerobot.com), add an HTTP(s)
+   monitor pointed at the Space's URL
+   (`https://<username>-<space-name>.hf.space`), interval 5 minutes.
+   Skipping this step is the single most likely way this quietly stops
+   working — worth actually doing before calling this done.
+8. Confirm it's live: the Space's **Logs** tab shows the same
+   `Running build: ...` line from `BOT_BUILD` at the top of `bot.py` that
+   every other deploy path here checks — if it doesn't match what's in
+   the file, the deploy didn't land.
 
 **The secrets** (same list, same values, regardless of which platform
 holds them):
@@ -373,12 +389,11 @@ holds them):
      ID** and set the variable to that number.
 **It DOES auto-deploy on push now** — unlike Railway (see the note at the
 top of this section), `deploy-bot.yml` actually fires on every push
-touching `discord_bot/**` and finishes the job itself: rsync the code to
-the VM, install requirements, restart the service. Confirm a deploy
-landed via `journalctl --user -u roboknights-bot -f` on the VM, same
+touching `discord_bot/**` and finishes the job itself: `git push` the
+code to the Space, which HF then rebuilds and restarts on its own.
+Confirm a deploy landed via the Space's **Logs** tab, same
 `Running build: ...` check as before (`BOT_BUILD` at the top of
-`bot.py`) — or just watch the workflow run go green in the Actions tab,
-since its last step checks the service actually came back up.
+`bot.py`) — or just watch the workflow run go green in the Actions tab.
 
 To test on your own laptop first: put all the variables above in a
 `.env` file inside `discord_bot/` (or run from the repo root, which
@@ -406,15 +421,15 @@ from our side alone.
    other channel of theirs, denying View Channel at the category or server
    level and allowing it on the one channel is the clean way.
 3. Get that channel's ID (right-click → **Copy Channel ID**, with
-   Developer Mode on) and add it to `DISCORD_GUEST_CHANNEL_IDS` in
-   `~/roboknights-bot/.env` on the VM (SSH in and edit it directly),
-   comma-separated if there's more than one. **Until this is set the bot
-   stays silent there** — that's deliberate: joining a server should not
-   by itself let anyone in it start querying our club data.
-4. Restart the bot so it picks up the new `.env` value: SSH in and run
-   `systemctl --user restart roboknights-bot` (the deploy workflow only
-   restarts on a code push, and this was an `.env` edit, not a push).
-   Confirm with `journalctl --user -u roboknights-bot -f`.
+   Developer Mode on) and add it to `DISCORD_GUEST_CHANNEL_IDS` in the
+   Space's **Settings → Repository secrets** (edit the existing secret
+   there directly), comma-separated if there's more than one. **Until
+   this is set the bot stays silent there** — that's deliberate: joining
+   a server should not by itself let anyone in it start querying our club
+   data.
+4. Restart the bot so it picks up the new secret: the Space's **Settings**
+   page has a **Restart this Space** button (editing a secret doesn't
+   restart it automatically). Confirm via the **Logs** tab.
 
 What the bot will and won't tell them: it answers from the same club data
 it already has — every member's name, grade, section and standing

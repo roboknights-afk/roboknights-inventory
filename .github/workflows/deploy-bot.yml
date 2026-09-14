@@ -1,21 +1,21 @@
 name: Deploy Discord bot
 
-# Moved off Railway to an Oracle Cloud Always Free VM (2026-09-09) - the
-# Railway free trial was expiring, and Railway's own GitHub integration
-# never worked for this service anyway (see git history / DEPLOY.md for
-# that saga). This workflow does the whole deploy itself: rsync the bot's
-# code to the VM, install its requirements there, restart it.
+# Moved to Hugging Face Spaces (2026-09-15) - the Oracle Cloud plan
+# (previously here, see git history for that config) needed a card for
+# identity verification even on its Always Free tier, which the student
+# doesn't have. Hugging Face Spaces' free Docker tier needs no card at
+# all (2 vCPU / 16 GB RAM, email signup only) - see DEPLOY.md for the
+# full comparison of hosting options and why this one won.
 #
 # The bot is self-contained (discord_bot/ never imports shared.py), so
-# only that folder needs to reach the VM - not the whole repo, and
-# nothing here needs git installed on the VM at all.
+# only that folder needs to reach the Space - not the whole repo, and a
+# Space is itself a git repo, so this deploys with a plain git push
+# rather than needing SSH/rsync like the Oracle plan would have.
 #
-# Needs three repo secrets - see DEPLOY.md's Oracle Cloud section for how
+# Needs two repo secrets - see DEPLOY.md's Hugging Face section for how
 # to get each one:
-#   ORACLE_HOST     - the VM's public IP
-#   ORACLE_USER     - the SSH username (ubuntu, for the standard image)
-#   ORACLE_SSH_KEY  - the private half of the key pair used to create the
-#                      instance, so this can SSH in as that user
+#   HF_TOKEN  - a Hugging Face access token with WRITE access to the Space
+#   HF_SPACE  - the Space's id, as "<hf-username>/<space-name>"
 
 on:
   push:
@@ -34,48 +34,27 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up SSH
+      # A Space's git history is its own, separate from this repo's -
+      # nothing here needs (or wants) this project's full commit history,
+      # secrets, or unrelated folders (deploy/ is Oracle/Pi-specific
+      # setup scripts, meaningless inside a Space container). Building a
+      # fresh throwaway repo and force-pushing keeps the Space's content
+      # exactly equal to discord_bot/ on every deploy, nothing more.
+      - name: Mirror discord_bot/ into a fresh repo
         run: |
-          mkdir -p ~/.ssh
-          echo "${{ secrets.ORACLE_SSH_KEY }}" > ~/.ssh/deploy_key
-          chmod 600 ~/.ssh/deploy_key
-          ssh-keyscan -H "${{ secrets.ORACLE_HOST }}" >> ~/.ssh/known_hosts
+          rm -rf /tmp/hf-space
+          mkdir -p /tmp/hf-space
+          cp -r discord_bot/. /tmp/hf-space/
+          rm -rf /tmp/hf-space/deploy /tmp/hf-space/__pycache__ /tmp/hf-space/Procfile
+          cd /tmp/hf-space
+          git init -q -b main
+          git config user.email "ci@roboknights.local"
+          git config user.name "RoboKnights CI"
+          git add -A
+          git commit -q -m "Deploy ${{ github.sha }}"
 
-      # --exclude='.env': the VM's real secrets live only in
-      # ~/roboknights-bot/.env, created once by hand (see
-      # setup_oracle_vm.sh) and never checked into this repo. --delete
-      # would normally remove anything on the VM missing from this sync,
-      # but an *excluded* file is left alone unless --delete-excluded is
-      # also passed, which it deliberately isn't - so .env survives every
-      # deploy untouched.
-      - name: Sync bot code to the VM
+      - name: Push to the Hugging Face Space
         run: |
-          rsync -avz --delete \
-            -e "ssh -i ~/.ssh/deploy_key -o UserKnownHostsFile=~/.ssh/known_hosts" \
-            --exclude='.env' --exclude='__pycache__' --exclude='deploy/' \
-            discord_bot/ "${{ secrets.ORACLE_USER }}@${{ secrets.ORACLE_HOST }}:~/roboknights-bot/"
-
-      # XDG_RUNTIME_DIR is set automatically in a real login shell but not
-      # always in a non-interactive SSH command - exported explicitly so
-      # `systemctl --user` can find the running user session that
-      # `loginctl enable-linger` (done once in setup_oracle_vm.sh) keeps
-      # alive.
-      - name: Install requirements and restart the bot
-        run: |
-          ssh -i ~/.ssh/deploy_key -o UserKnownHostsFile=~/.ssh/known_hosts \
-            "${{ secrets.ORACLE_USER }}@${{ secrets.ORACLE_HOST }}" '
-              export XDG_RUNTIME_DIR=/run/user/$(id -u)
-              cd ~/roboknights-bot &&
-              source venv/bin/activate &&
-              pip install -q -r requirements.txt &&
-              systemctl --user restart roboknights-bot
-            '
-
-      - name: Confirm it is live
-        run: |
-          sleep 5
-          ssh -i ~/.ssh/deploy_key -o UserKnownHostsFile=~/.ssh/known_hosts \
-            "${{ secrets.ORACLE_USER }}@${{ secrets.ORACLE_HOST }}" '
-              export XDG_RUNTIME_DIR=/run/user/$(id -u)
-              systemctl --user is-active roboknights-bot
-            '
+          cd /tmp/hf-space
+          git remote add space "https://ci:${{ secrets.HF_TOKEN }}@huggingface.co/spaces/${{ secrets.HF_SPACE }}"
+          git push --force space main
