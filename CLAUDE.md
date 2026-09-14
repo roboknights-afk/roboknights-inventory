@@ -1718,6 +1718,27 @@ removing it. Caught before it happened, not after — but a reminder that
 apart during a long multi-session migration, and it's worth diffing them
 before trusting an automated deploy path for the first time.
 
+**The very first real run of that automated deploy then broke the live
+bot anyway, a different way.** `deploy-bot.yml`'s rsync step excluded
+`.env`, `__pycache__`, `deploy/` and `Dockerfile` from the sync — but not
+`venv/`, which also only exists on the VPS, created once by hand, never
+checked into `discord_bot/`. `rsync --delete` doesn't distinguish
+"missing because it's not tracked" from "missing because it was removed"
+— it saw `venv/` absent from the source and deleted it from the VPS,
+**while the bot was still running and using it.** The process didn't
+crash (its already-loaded Python modules stayed in memory), but every
+provider call started failing — Gemini/Groq submodule imports and,
+tellingly, `certifi`'s CA bundle, all read from disk at call time rather
+than held in memory, so this looked like a sudden simultaneous outage
+across every AI provider with no code change to explain it. Fixed by
+excluding `venv/` too and rebuilding it once by hand. **The lesson,
+generalized: any directory that exists only on the deploy target and is
+never part of what gets rsynced needs an explicit `--exclude`, or
+`--delete` will eventually remove it out from under a running
+process** — this bit `venv/` here, but the same rule would apply to any
+future runtime-created directory (a cache, a local queue file, anything
+not meant to round-trip through git).
+
 ## Explicitly NOT in v1
 
 No PDF-to-spreadsheet feature. (WhatsApp notifications used to be listed

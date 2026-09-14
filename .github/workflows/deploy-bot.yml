@@ -50,11 +50,20 @@ jobs:
       # VPS missing from this sync, but an *excluded* file is left alone
       # unless --delete-excluded is also passed, which it deliberately
       # isn't - so .env survives every deploy untouched.
+      #
+      # --exclude='venv/' is NOT optional - the venv lives only on the VPS,
+      # created once by hand, and was missing from this list on the first
+      # real deploy (2026-09-14): --delete saw it absent from discord_bot/
+      # and wiped it out from under the RUNNING bot process mid-request,
+      # breaking every AI provider call (TLS certs and dynamic imports read
+      # from disk at call time, unlike code already loaded into memory,
+      # which is why the bot didn't crash outright - just started failing
+      # everything that touched the filesystem). Never remove this exclude.
       - name: Sync bot code to the VPS
         run: |
           rsync -avz --delete \
             -e "ssh -i ~/.ssh/deploy_key -o UserKnownHostsFile=~/.ssh/known_hosts" \
-            --exclude='.env' --exclude='__pycache__' --exclude='deploy/' --exclude='Dockerfile' \
+            --exclude='.env' --exclude='__pycache__' --exclude='deploy/' --exclude='Dockerfile' --exclude='venv/' \
             discord_bot/ "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:~/roboknights-bot/"
 
       # XDG_RUNTIME_DIR is set automatically in a real login shell but not
