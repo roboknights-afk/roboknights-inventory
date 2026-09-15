@@ -1585,6 +1585,37 @@ placeholder values that don't describe them, are skipped by the
 verify-your-details popup, and show a "Staff" badge. Anything that filters
 by grade must tolerate `None`.
 
+## AI-drafted Discord messages (2026-09-15)
+
+`app_pages/discord_messages.py`'s custom-message box, on every channel,
+now has an "Or, describe what you want and let AI draft it" box above it:
+a host types a short instruction ("write a long reply to X justifying
+why message logging exists"), `draft_discord_message()` sends that to
+Groq (same `openai/gpt-oss-120b` model the AI Assistant uses, its own
+copy per this project's usual pattern — see assistant.py/bot.py/
+send_dashboard_update.py for the others), and the result fills the SAME
+text box the host would otherwise type into by hand. No new send path —
+it's still the existing Preview → Edit → Send flow underneath, so a
+draft is never one click from posting; the host reviews it exactly like
+anything typed manually.
+
+Origin: built right after actually drafting a reply for a member (Arnav,
+11I) who'd raised a fair concern about the bot's passive message logging
+feeling like "mass surveillance" — the host asked for a way to do that
+drafting step themselves next time instead of asking a session of Claude
+Code to do it by hand.
+
+`_roast_request()` (the same code-level guard from the AI safety
+hardening section above) runs on the host's PROMPT before any API call —
+a host typing "roast Arnav" gets `ROAST_REFUSAL` for free, never reaching
+the model. The system prompt separately tells the model itself to refuse
+staff/Exun/DPSRKP topics and never to insult anyone, but per this
+project's standing lesson ("a system-prompt rule is a soft guardrail"),
+that's the soft second layer, not the real enforcement — the roast check
+running first is what actually holds. Uses the same `GROQ_API_KEY` every
+other AI surface here does; shows a host-only setup message if it's
+unset, same pattern as the AI Assistant page.
+
 ## Discord bot: Railway → Oracle Cloud (2026-09-09)
 
 Railway's free trial was expiring 2026-09-11, and paying for it was never

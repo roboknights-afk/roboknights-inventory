@@ -9,12 +9,65 @@
 import os
 
 import streamlit as st
+from groq import Groq
 
 from shared import (
-    CUSTOM_DISCORD_MESSAGE_HOURLY_LIMIT, DISCORD_CHANNELS, build_vacant_events_message, cached_table,
-    custom_discord_send_allowed, delete_discord_message, discord_message_suffix, edit_discord_message,
-    format_ist, invalidate_cache, send_discord_message,
+    CUSTOM_DISCORD_MESSAGE_HOURLY_LIMIT, DISCORD_CHANNELS, ROAST_REFUSAL, _roast_request,
+    build_vacant_events_message, cached_table, custom_discord_send_allowed, delete_discord_message,
+    discord_message_suffix, edit_discord_message, format_ist, invalidate_cache, send_discord_message,
 )
+
+# Same model app_pages/assistant.py uses (each AI-having surface in this
+# project keeps its own copy of this rather than sharing one - see that
+# file, discord_bot/bot.py, and send_dashboard_update.py for the others).
+GROQ_MODEL = "openai/gpt-oss-120b"
+
+DRAFT_SYSTEM_PROMPT = """You draft a single Discord message for RoboKnights, a school robotics club, on behalf of a host who reviews and can edit every draft before it's actually sent - nothing you write goes out unseen.
+
+Write only the message itself: no meta-commentary, no "Here's a draft:", no quotation marks wrapping it, no explanation of your choices. Discord markdown (**bold**, *italic*, etc.) is fine to use.
+
+Match the tone of a real host writing to real students, aged 11-18: direct, honest, and human - not corporate, not preachy, not overly formal. Long is fine when the host's instructions call for it, short is fine too.
+
+Never insult, mock, roast, or disrespect anyone - a member, a group, staff, or an outsider - even if asked to. Never discuss school staff/administration, Exun, Domain Square, or DPSRKP by name or description. If the host's instructions ask for either of those, do not write the message - instead write only: "I can't draft that - it would roast/disrespect someone or discuss staff/off-limits topics. Write this one yourself."."""
+
+
+def draft_discord_message(prompt):
+    """Turns a host's short instruction ("write a long reply to X
+    justifying...") into a full message draft, using the same Groq model
+    the AI Assistant uses. The host still reviews it in the normal preview
+    box below before anything sends - this only saves typing the whole
+    thing by hand, the same trade a host already makes asking an assistant
+    to draft an email they'll still read before hitting send.
+
+    _roast_request() runs BEFORE any API call, same reasoning as every
+    other call site with this guard: a host typing "roast Arnav" should be
+    refused for free, not sent to a model that might comply anyway.
+    Returns (text, None) on success or (None, message) to show instead.
+    """
+    if _roast_request(prompt):
+        return None, ROAST_REFUSAL
+    api_key = os.environ.get("GROQ_API_KEY")
+    if not api_key:
+        return None, (
+            "No `GROQ_API_KEY` is set, so AI drafting can't run yet. Get a "
+            "free key (no card required) at console.groq.com/keys and add "
+            "it to `.env` as `GROQ_API_KEY=...`."
+        )
+    try:
+        client = Groq(api_key=api_key)
+        response = client.chat.completions.create(
+            model=GROQ_MODEL,
+            messages=[
+                {"role": "system", "content": DRAFT_SYSTEM_PROMPT},
+                {"role": "user", "content": prompt},
+            ],
+        )
+        text = (response.choices[0].message.content or "").strip()
+        if not text:
+            return None, "The draft came back empty — try rephrasing what you want."
+        return text, None
+    except Exception as exc:
+        return None, f"Couldn't generate a draft: {exc}"
 
 is_host = st.session_state.is_host
 
@@ -112,6 +165,32 @@ def render_custom_message_section(channel):
         )
         return
 
+    st.markdown("**Or, describe what you want and let AI draft it**")
+    st.caption(
+        "Same idea as asking an assistant to draft an email — it fills in "
+        "the box below for you to review, edit, and send yourself. Nothing "
+        "posts from this without you clicking Send."
+    )
+    draft_col, button_col = st.columns([4, 1], vertical_alignment="bottom")
+    draft_prompt = draft_col.text_input(
+        "What should the message say?", key=f"discord_draft_prompt_{channel}",
+        label_visibility="collapsed",
+        placeholder='e.g. "write a long reply to Arnav justifying why message logging exists"',
+    )
+    if button_col.button("Generate", icon=":material/auto_awesome:", key=f"gen_discord_draft_btn_{channel}"):
+        if not draft_prompt.strip():
+            st.error("Describe what you want first.")
+        else:
+            with st.spinner("Drafting…"):
+                drafted, error = draft_discord_message(draft_prompt.strip())
+            if error:
+                st.error(error)
+            else:
+                st.session_state[f"custom_discord_message_{channel}"] = drafted
+                st.toast("Draft ready below — review before sending.", icon=":material/auto_awesome:")
+                st.rerun()
+
+    st.divider()
     st.markdown("**Send a custom message**")
     st.caption(
         "Discord markdown works (**bold**, *italic*, etc.), and you can "
@@ -120,7 +199,7 @@ def render_custom_message_section(channel):
     )
     custom_message = st.text_area(
         "Message", key=f"custom_discord_message_{channel}", label_visibility="collapsed",
-        placeholder="Type your message...",
+        placeholder="Type your message, or generate a draft above...",
     )
     preview_key = f"custom_discord_preview_{channel}"
     editing_key = f"editing_custom_discord_preview_{channel}"
