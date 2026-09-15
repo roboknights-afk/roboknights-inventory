@@ -63,7 +63,7 @@ if "requesting_key" not in st.session_state:
 if "show_add_part" not in st.session_state:
     st.session_state.show_add_part = False
 
-st.title("RoboKnights Parts Inventory")
+st.title(":material/inventory_2: RoboKnights Parts Inventory")
 
 if is_read_only:
     st.info(

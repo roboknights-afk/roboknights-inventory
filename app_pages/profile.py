@@ -28,7 +28,7 @@ ALLOWED = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png"}
 MAX_MB = 5
 MAX_EDGE = 800  # px; a directory photo never needs to be bigger
 
-st.title("Your profile")
+st.title(":material/account_circle: Your profile")
 st.caption(
     "Your photo and links for the club directory and the club website. "
     "Nobody else can change these."

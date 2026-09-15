@@ -29,7 +29,7 @@ is_read_only = st.session_state.is_read_only
 current_user_id = st.session_state.current_user_id
 user_name_by_id = st.session_state.user_name_by_id
 
-st.title("Achievements")
+st.title(":material/emoji_events: Achievements")
 
 if "achievement_message" not in st.session_state:
     st.session_state.achievement_message = None

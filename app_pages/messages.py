@@ -19,7 +19,7 @@ current_user_id = st.session_state.current_user_id
 user_name_by_id = st.session_state.user_name_by_id
 is_read_only = st.session_state.is_read_only
 
-st.title("Messages")
+st.title(":material/chat: Messages")
 
 # A read-only visitor account has no business in members' private
 # conversations — same reasoning that keeps them out of Queries.

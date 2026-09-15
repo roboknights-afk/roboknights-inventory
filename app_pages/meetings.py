@@ -52,7 +52,7 @@ def _notify_meeting(meeting, invitee_ids, intro, subject):
         send_email(email, subject, body)
     return len(emails)
 
-st.title("Meetings")
+st.title(":material/event: Meetings")
 
 if "meeting_message" not in st.session_state:
     st.session_state.meeting_message = None

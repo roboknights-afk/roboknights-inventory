@@ -15,7 +15,7 @@ client = get_client()
 is_host = st.session_state.is_host
 user_email_by_id = st.session_state.user_email_by_id
 
-st.title("Announcements")
+st.title(":material/campaign: Announcements")
 
 if "announcement_message" not in st.session_state:
     st.session_state.announcement_message = None

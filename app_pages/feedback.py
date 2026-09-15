@@ -19,7 +19,7 @@ user_email_by_id = st.session_state.user_email_by_id
 STATUS_LABELS = {"open": "Open", "in_progress": "In progress", "fixed": "Fixed", "wont_fix": "Won't fix"}
 STATUS_COLORS = {"open": "orange", "in_progress": "blue", "fixed": "green", "wont_fix": "grey"}
 
-st.title("Feedback")
+st.title(":material/rate_review: Feedback")
 st.caption(
     "Everything reported through the \"Report an issue\" button in the "
     "corner of any page shows up here. Every one that gets fixed makes "

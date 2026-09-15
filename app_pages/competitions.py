@@ -75,7 +75,7 @@ def _clear_add_form_widget_state():
         del st.session_state[key]
 
 
-st.title("Competitions")
+st.title(":material/sports_score: Competitions")
 
 # --- Host-only: add a competition ------------------------------------------
 # Links and events are variable-length lists, so they're kept in

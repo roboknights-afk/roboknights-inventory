@@ -71,7 +71,7 @@ def draft_discord_message(prompt):
 
 is_host = st.session_state.is_host
 
-st.title("Discord Messages")
+st.title(":material/forum: Discord Messages")
 
 if not is_host:
     st.info(":material/lock: Host-only page.")
@@ -212,7 +212,7 @@ def render_custom_message_section(channel):
 
     with st.container(border=True):
         header_col, popover_col = st.columns([3, 1], vertical_alignment="center")
-        header_col.markdown("**Compose a message**")
+        header_col.subheader(":material/edit_note: Compose a message", anchor=False)
         with popover_col:
             render_draft_popover(channel)
 
@@ -290,7 +290,11 @@ def render_custom_message_section(channel):
                             del st.session_state[f"custom_discord_message_{channel}"]
                             st.rerun()
 
-    with st.expander("Recent messages", icon=":material/history:"):
+    sent_count = sum(
+        1 for m in cached_table("discord_messages") if m.get("channel", "competitions") == channel
+    )
+    expander_label = f"Recent messages ({sent_count})" if sent_count else "Recent messages"
+    with st.expander(expander_label, icon=":material/history:"):
         render_recent_messages(channel)
 
 
@@ -299,7 +303,7 @@ def render_vacant_events_reminder():
     # (see DEPLOY.md) once with every upcoming event, across every
     # competition, that still has open slots.
     with st.container(border=True):
-        st.markdown("**Vacant events reminder**")
+        st.subheader(":material/campaign: Vacant events reminder", anchor=False)
         webhook_configured = bool(os.environ.get(DISCORD_CHANNELS["competitions"]))
         if not webhook_configured:
             return
@@ -374,6 +378,7 @@ selected_channel = st.segmented_control(
 )
 
 st.caption(CHANNEL_INTRO[selected_channel])
+st.divider()
 if selected_channel == "competitions":
     render_vacant_events_reminder()
 render_custom_message_section(selected_channel)
