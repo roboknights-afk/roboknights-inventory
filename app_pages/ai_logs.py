@@ -29,7 +29,7 @@ from shared import IST, cached_table, format_ist, today_ist
 is_host = st.session_state.is_host
 user_name_by_id = st.session_state.user_name_by_id
 
-st.title(":material/manage_search: AI Logs")
+st.title(":material/history: AI Logs")
 
 if not is_host:
     st.info(":material/lock: Host-only page.")

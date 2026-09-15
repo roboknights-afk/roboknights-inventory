@@ -28,7 +28,7 @@ PRIVATE_COLUMNS = ("Section", "Admission no.", "Phone no.")
 
 client = get_client()
 
-st.title(":material/group: Members")
+st.title(":material/badge: Members")
 
 if "member_edit_message" not in st.session_state:
     st.session_state.member_edit_message = None

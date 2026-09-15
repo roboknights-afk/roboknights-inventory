@@ -23,7 +23,7 @@ current_user_name = st.session_state.current_user_name
 user_name_by_id = st.session_state.user_name_by_id
 user_email_by_id = st.session_state.user_email_by_id
 
-st.title(":material/help: Queries")
+st.title(":material/quiz: Queries")
 
 if "query_message" not in st.session_state:
     st.session_state.query_message = None

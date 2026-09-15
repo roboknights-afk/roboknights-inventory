@@ -28,7 +28,7 @@ client = get_client()
 storage = get_storage_client()
 BUCKET = "member-photos"
 
-st.title("Website: Members")
+st.title(":material/badge: Website: Members")
 st.caption(
     "Every member who has asked to be shown on roboknights.in — their "
     "photo and social handles, waiting for a yes or no."

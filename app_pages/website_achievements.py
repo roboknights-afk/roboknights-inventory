@@ -20,7 +20,7 @@ if not is_host:
 client = get_client()
 LEVEL_OPTIONS = ["Interschool", "National", "International", "Regional"]
 
-st.title("Website: Results")
+st.title(":material/emoji_events: Website: Results")
 st.caption(
     "Every result a member has logged, waiting on a level, position and a "
     "yes or no before it can reach roboknights.in."

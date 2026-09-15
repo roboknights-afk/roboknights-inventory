@@ -1581,16 +1581,37 @@ if st.session_state.feedback_message:
 
 # --- Navigation ------------------------------------------------------------
 
-pages = [st.Page("app_pages/home.py", title="Home", icon=":material/home:")]
-# Exun only gets an allowlist of specific pages (Competitions, Meetings,
-# Achievements, Members — each enforcing view-only for Exun internally),
-# not the full nav — Inventory, Announcements, and Queries aren't part of
-# what Exun was actually given access to.
+# Grouped into labeled sections (native st.navigation dict form, no custom
+# CSS) instead of one flat 17-item list — the sidebar was hard to scan
+# before this, since nothing distinguished "browse club info" from "host
+# management tools" except item order. Every conditional below is
+# unchanged from the old flat-list version; only the grouping is new.
+home_pages = [st.Page("app_pages/home.py", title="Home", icon=":material/home:")]
+
+# "Club": day-to-day club info and the member directory. Exun only gets an
+# allowlist of specific pages (Competitions, Meetings, Achievements,
+# Members — each enforcing view-only for Exun internally), not the full
+# nav — Inventory and Announcements aren't part of what Exun was actually
+# given access to.
+club_pages = []
 if not st.session_state.is_exun:
-    pages.append(st.Page("app_pages/inventory.py", title="Inventory", icon=":material/inventory_2:"))
-pages.append(st.Page("app_pages/competitions.py", title="Competitions", icon=":material/emoji_events:"))
+    club_pages.append(st.Page("app_pages/inventory.py", title="Inventory", icon=":material/inventory_2:"))
+club_pages.append(st.Page("app_pages/competitions.py", title="Competitions", icon=":material/emoji_events:"))
 if not st.session_state.is_exun:
-    pages.append(st.Page("app_pages/announcements.py", title="Announcements", icon=":material/campaign:"))
+    club_pages.append(st.Page("app_pages/announcements.py", title="Announcements", icon=":material/campaign:"))
+club_pages.append(st.Page("app_pages/meetings.py", title="Meetings", icon=":material/groups:"))
+club_pages.append(st.Page("app_pages/achievements.py", title="Achievements", icon=":material/military_tech:"))
+# Host-only elsewhere, but Members is also opened up to Exun (full
+# details, per an explicit call — Exun just can't edit it, unlike a host)
+# and to the read-only viewer account (which additionally has the
+# private phone/admission columns hidden — see members.py).
+if st.session_state.is_host or st.session_state.is_exun or st.session_state.is_viewer:
+    club_pages.append(st.Page("app_pages/members.py", title="Members", icon=":material/badge:"))
+
+# "Talk": every two-way conversation surface — with hosts, with other
+# members, or with the AI.
+talk_pages = []
+if not st.session_state.is_exun:
     # 🔵 dot mirrors the same "unread" badge queries.py already puts on
     # individual threads for the host — same visual language, just at the
     # nav level so it's visible from anywhere in the app, not only once
@@ -1608,7 +1629,7 @@ if not st.session_state.is_exun:
     # Queries are private student<>host threads, so the read-only viewer
     # account is kept out of them the same way Exun is.
     if not st.session_state.is_viewer:
-        pages.append(st.Page("app_pages/queries.py", title=queries_title, icon=":material/quiz:"))
+        talk_pages.append(st.Page("app_pages/queries.py", title=queries_title, icon=":material/quiz:"))
 # Member-to-member DMs and group chats. Read-only tiers (Exun, viewer) are
 # kept out of members' private conversations the same way Queries keeps
 # them out — the page itself re-checks too, since the nav list alone
@@ -1623,47 +1644,44 @@ if not st.session_state.is_read_only:
             messages_title += " 🔵"
     except Exception:
         pass
-    pages.append(st.Page("app_pages/messages.py", title=messages_title, icon=":material/chat:"))
-pages.append(st.Page("app_pages/meetings.py", title="Meetings", icon=":material/groups:"))
-pages.append(st.Page("app_pages/achievements.py", title="Achievements", icon=":material/military_tech:"))
-pages.append(st.Page("app_pages/assistant.py", title="AI Assistant", icon=":material/smart_toy:"))
-pages.append(st.Page("app_pages/feedback.py", title="Feedback", icon=":material/feedback:"))
-# Your own photo and links. Restricted to real members (users.role in
-# "member"/"core_member"), not adhocs and not hosts/staff/Exun/viewer -
-# the student asked for this explicitly: adhocs are a looser, unconfirmed
-# tier, and this is about being listed on the public website, not about
-# using the dashboard. Hosts/Exun/staff have role=None (checked directly
-# against the data, not assumed), so this check alone already excludes
-# them without needing to repeat the is_read_only check too.
+    talk_pages.append(st.Page("app_pages/messages.py", title=messages_title, icon=":material/chat:"))
+talk_pages.append(st.Page("app_pages/assistant.py", title="AI Assistant", icon=":material/smart_toy:"))
+talk_pages.append(st.Page("app_pages/feedback.py", title="Feedback", icon=":material/feedback:"))
+
+# "You": just the member's own public-facing profile. Restricted to real
+# members (users.role in "member"/"core_member"), not adhocs and not
+# hosts/staff/Exun/viewer - the student asked for this explicitly: adhocs
+# are a looser, unconfirmed tier, and this is about being listed on the
+# public website, not about using the dashboard. Hosts/Exun/staff have
+# role=None (checked directly against the data, not assumed), so this
+# check alone already excludes them without needing to repeat the
+# is_read_only check too.
+you_pages = []
 if current_user_row and current_user_row.get("role") in ("member", "core_member"):
-    pages.append(st.Page("app_pages/profile.py", title="Your profile", icon=":material/account_circle:"))
+    you_pages.append(st.Page("app_pages/profile.py", title="Your profile", icon=":material/account_circle:"))
 
-# Host-only elsewhere, but Members is also opened up to Exun (full
-# details, per an explicit call — Exun just can't edit it, unlike a host)
-# and to the read-only viewer account (which additionally has the
-# private phone/admission columns hidden — see members.py).
-if st.session_state.is_host or st.session_state.is_exun or st.session_state.is_viewer:
-    pages.append(st.Page("app_pages/members.py", title="Members", icon=":material/badge:"))
-
-# Host-only: approve/decline what members have submitted for the public
-# website — results, photos, social handles — before any of it reaches
-# roboknights.in. Two pages, not one: reviewing results and reviewing
-# member profiles are different tasks and don't need to share a page.
+# "Host tools": strictly host-only management pages.
+host_pages = []
 if st.session_state.is_host:
-    pages.append(st.Page("app_pages/website_achievements.py", title="Website: Results", icon=":material/emoji_events:"))
-    pages.append(st.Page("app_pages/website_members.py", title="Website: Members", icon=":material/badge:"))
-
-# Host-only: everything this app sends to Discord, across both the
-# competitions channel and the private Exun<>RK channel.
-if st.session_state.is_host:
-    pages.append(st.Page("app_pages/discord_messages.py", title="Discord Messages", icon=":material/forum:"))
+    # Approve/decline what members have submitted for the public website —
+    # results, photos, social handles — before any of it reaches
+    # roboknights.in. Two pages, not one: reviewing results and reviewing
+    # member profiles are different tasks and don't need to share a page.
+    host_pages.append(st.Page("app_pages/website_achievements.py", title="Website: Results", icon=":material/emoji_events:"))
+    host_pages.append(st.Page("app_pages/website_members.py", title="Website: Members", icon=":material/badge:"))
+    # Everything this app sends to Discord, across both the competitions
+    # channel and the private Exun<>RK channel.
+    host_pages.append(st.Page("app_pages/discord_messages.py", title="Discord Messages", icon=":material/forum:"))
     # Read-only viewer for what the AI actually said (Discord bot + AI
     # Assistant page), so a bad answer can be looked at without opening
     # Supabase directly.
-    pages.append(st.Page("app_pages/ai_logs.py", title="AI Logs", icon=":material/history:"))
+    host_pages.append(st.Page("app_pages/ai_logs.py", title="AI Logs", icon=":material/history:"))
 
-# The private RoboKnights <> Exun channel — only the specific hand-picked
-# people in EXUN_CHANNEL_MEMBERS ever see this page exists at all.
+# "Exun Channel": the private RoboKnights <> Exun channel — only the
+# specific hand-picked people in EXUN_CHANNEL_MEMBERS ever see this page
+# exists at all, so it stays its own section rather than folded into
+# "Talk" alongside pages most Exun members can't even see.
+exun_pages = []
 if st.session_state.auth_user["email"] in EXUN_CHANNEL_MEMBERS:
     exun_title = "Exun Channel"
     try:
@@ -1671,7 +1689,15 @@ if st.session_state.auth_user["email"] in EXUN_CHANNEL_MEMBERS:
             exun_title += " 🔵"
     except Exception:
         pass
-    pages.append(st.Page("app_pages/exun_channel.py", title=exun_title, icon=":material/handshake:"))
+    exun_pages.append(st.Page("app_pages/exun_channel.py", title=exun_title, icon=":material/handshake:"))
 
-page = st.navigation(pages)
+sections = {
+    "": home_pages,
+    "Club": club_pages,
+    "Talk": talk_pages,
+    "You": you_pages,
+    "Host tools": host_pages,
+    "Exun Channel": exun_pages,
+}
+page = st.navigation({label: pages for label, pages in sections.items() if pages})
 page.run()
