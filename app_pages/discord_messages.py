@@ -326,40 +326,42 @@ def render_vacant_events_reminder():
                     st.rerun()
 
 
-tab_competitions, tab_exun_rk, tab_dashboard, tab_announcements = st.tabs(
-    [CHANNEL_LABELS["competitions"], CHANNEL_LABELS["exun_rk"],
-     CHANNEL_LABELS["dashboard"], CHANNEL_LABELS["announcements"]]
+# A dropdown, not st.tabs(): tabs reset back to the FIRST one on any
+# rerun triggered from inside a tab's own content (confirmed live
+# 2026-09-15 — Generate/Preview/Edit/Send all call st.rerun(), so a host
+# working in, say, the Dashboard tab got silently bounced back to
+# Competitions, with their generated draft written into the tab they'd
+# left rather than the one now showing). A selectbox's choice lives in
+# session_state like any other widget, so it survives a rerun triggered
+# by anything else on the page.
+selected_label = st.selectbox(
+    "Channel", list(CHANNEL_LABELS.values()), key="discord_messages_selected_channel",
 )
+selected_channel = next(c for c, label in CHANNEL_LABELS.items() if label == selected_label)
 
-with tab_competitions:
-    st.caption(
+CHANNEL_INTRO = {
+    "competitions": (
         "New-event notifications post here automatically whenever a "
         "competition event is added — nothing to do for those."
-    )
-    render_vacant_events_reminder()
-    render_custom_message_section("competitions")
-
-with tab_exun_rk:
-    st.caption(
+    ),
+    "exun_rk": (
         "\"Team names finalized\" posts here automatically once every event "
         "under a competition has its full SELECTED roster — nothing to do "
         "for that either."
-    )
-    render_custom_message_section("exun_rk")
-
-with tab_dashboard:
-    st.caption(
+    ),
+    "dashboard": (
         "Posted automatically by GitHub every time the dashboard itself is "
         "updated — a short summary of what changed for members. That comes "
         "from send_dashboard_update.py, not from this app, so there's nothing "
         "to trigger here; the box below is only for a one-off message, and "
         "the list under it can edit or delete anything already posted."
-    )
-    render_custom_message_section("dashboard")
-
-with tab_announcements:
-    st.caption(
+    ),
+    "announcements": (
         "Nothing posts here automatically — this is the club's #announcements "
         "channel, for one-off messages a host writes by hand."
-    )
-    render_custom_message_section("announcements")
+    ),
+}
+st.caption(CHANNEL_INTRO[selected_channel])
+if selected_channel == "competitions":
+    render_vacant_events_reminder()
+render_custom_message_section(selected_channel)

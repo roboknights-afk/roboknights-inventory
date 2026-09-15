@@ -87,7 +87,7 @@ supabase = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
 # whether the running bot is the current code. Unlike Railway, deploy-
 # bot.yml really does redeploy on every push now, but this is still
 # worth checking after one.
-BOT_BUILD = "2026-09-03 arbiter mode for Naitik's mentions"
+BOT_BUILD = "2026-09-15 carry reply-target content into context"
 
 # The bot now lives in a SECOND server it doesn't own — the Exun clan's,
 # in their RoboKnights channel, so their side can ask it about
@@ -1851,33 +1851,50 @@ async def on_ready():
     print("Backfill complete.")
 
 
-async def _is_reply_to_bot(message):
+async def _reply_target(message):
     # A Discord "reply" doesn't add the bot to message.mentions unless the
     # replier also left the ping toggle on, so is_mentioned alone misses
     # plain replies - this catches those too, including replies to
     # ANNOUNCEMENT-STYLE messages, which aren't sent by the real bot
     # account at all but by an Incoming Webhook impersonating it (see
-    # send_discord_message/DISCORD_BOT_USERNAME in shared.py) - so a
-    # webhook message whose display name matches counts as "the bot" too,
-    # not just messages from client.user.id.
+    # send_discord_message/DISCORD_BOT_USERNAME in shared.py, and the
+    # Discord Messages page's AI-draft box - a host manually posting or
+    # approving a message under the bot's name) - so a webhook message
+    # whose display name matches counts as "the bot" too, not just
+    # messages from client.user.id.
+    #
+    # Returns the resolved message itself (not just True/False) - a
+    # webhook post never passes through this bot's own send path, so its
+    # content is nowhere else this process's memory reads from. Confirmed
+    # live 2026-09-15: a member replied to a host's webhook-posted answer
+    # and got a generic "what do you need help with?" - the reply WAS
+    # detected as "to the bot," but nothing carried over what the bot had
+    # supposedly just said, since that content was never actually the
+    # live process's own. The caller uses this return value to inject
+    # that content directly rather than relying on it already being in
+    # history/channel_log, which it never was for a webhook post and may
+    # not be for a real-but-stale one either (e.g. right after a restart).
     ref = message.reference
     if not ref:
-        return False
+        return None
     resolved = ref.resolved
     if resolved is None or isinstance(resolved, discord.DeletedReferencedMessage):
         try:
             resolved = await message.channel.fetch_message(ref.message_id)
         except Exception:
-            return False
+            return None
     if resolved.author.id == client.user.id:
-        return True
-    return bool(resolved.webhook_id) and resolved.author.name == "roboknightsbot"
+        return resolved
+    if resolved.webhook_id and resolved.author.name == "roboknightsbot":
+        return resolved
+    return None
 
 
 async def _handle_incoming(message, is_edit=False):
     is_dm = isinstance(message.channel, discord.DMChannel)
     is_mentioned = client.user in message.mentions
-    is_reply_to_bot = not is_dm and await _is_reply_to_bot(message)
+    reply_target = None if is_dm else await _reply_target(message)
+    is_reply_to_bot = reply_target is not None
 
     discord_user_id = str(message.author.id)
     discord_channel_id = str(message.channel.id)
@@ -1977,9 +1994,19 @@ async def _handle_incoming(message, is_edit=False):
     # gateway heartbeat for over 60 seconds and the member who asked never
     # got any reply at all. Off-thread, the loop keeps answering heartbeats
     # and other members' messages while this one waits.
+    # Only for what actually reaches the model - _log_chat/_instant_reply/
+    # _roast_request above all use the plain `text` a member typed, so the
+    # review log stays a clean record of what was actually asked. This
+    # gets baked into history[conversation_key] (see _ask_llm) once, right
+    # here, rather than needing to be re-injected on every later turn in
+    # the same conversation.
+    llm_text = text
+    if reply_target is not None and reply_target.content:
+        llm_text = f'(Replying to this message you posted: "{reply_target.content}")\n\n{text}'
+
     async with message.channel.typing():
         reply = await asyncio.to_thread(
-            _ask_llm, conversation_key, message.channel.id, text, linked_name,
+            _ask_llm, conversation_key, message.channel.id, llm_text, linked_name,
             discord_user_id in ARBITER_DISCORD_IDS,
         )
     _log_chat("assistant", reply, discord_user_id, discord_channel_id, linked_user_id)

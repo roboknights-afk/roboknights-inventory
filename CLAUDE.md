@@ -1616,6 +1616,46 @@ running first is what actually holds. Uses the same `GROQ_API_KEY` every
 other AI surface here does; shows a host-only setup message if it's
 unset, same pattern as the AI Assistant page.
 
+**Two bugs found immediately after actually using this live, same day:**
+
+1. **The bot couldn't answer follow-ups to its own webhook-posted
+   messages.** A member replied to a host's AI-drafted/manually-posted
+   answer (the Arnav privacy-logging reply above is the exact case that
+   surfaced this) and got a generic "what do you need help with?" instead
+   of anything building on what was actually said. Root cause: a webhook
+   post never goes through the live bot process's own send path, so its
+   content was never in `channel_log`, `discord_channel_log`, or the
+   per-conversation `history` dict — the only places `discord_bot/bot.py`
+   reads context from. `_is_reply_to_bot()` already correctly recognized
+   a reply to the "roboknightsbot"-branded webhook message as a trigger
+   (built for the announcement-message case, see its own comment) — it
+   just never carried the CONTENT of what was being replied to anywhere.
+   Fixed by renaming it to `_reply_target()`, returning the resolved
+   message itself instead of a bool, and injecting its `.content`
+   directly into what's sent to the model (not into what's logged to
+   `ai_chat_messages` or stored in `history` as the user's own turn —
+   only into the LLM-facing text for that one call) whenever a reply
+   resolves to something posted as "the bot," real account or webhook
+   alike. Also fixes the same failure mode for a reply to a real bot
+   message that's aged out of in-memory `history` (e.g. right after a
+   restart) — one fix, same root cause either way.
+
+2. **`st.tabs()` silently reset to the first tab on every rerun triggered
+   from inside a tab.** The AI-draft button, and every Preview/Edit/Send
+   button already on this page, calls `st.rerun()` — which snapped the
+   whole page back to the "Competitions channel" tab regardless of which
+   one a host was actually working in. A generated draft landed in the
+   right channel's session-state key and was never lost, but looked
+   exactly like it had vanished, since the host was now looking at a
+   different (empty) tab's box. Fixed by replacing the four `st.tabs()`
+   with one `st.selectbox` — a selectbox's choice lives in
+   `session_state` like any other widget and survives a rerun from
+   anywhere on the page, which `st.tabs()`'s active-tab state does not.
+   **General lesson for this app: don't use `st.tabs()` on a page where
+   anything inside a tab calls `st.rerun()`** — a dropdown or
+   `st.segmented_control` (both already used elsewhere in this app, e.g.
+   Inventory's status filter) are the safe alternatives.
+
 ## Discord bot: Railway → Oracle Cloud (2026-09-09)
 
 Railway's free trial was expiring 2026-09-11, and paying for it was never
