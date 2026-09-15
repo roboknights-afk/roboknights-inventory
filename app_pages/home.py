@@ -244,7 +244,7 @@ with feed_col:
                 if v.get("selected"):
                     badge_col.badge("Selected", color="green", icon=":material/verified:")
                 else:
-                    badge_col.badge("Volunteered", color="orange", icon=":material/front_hand:")
+                    badge_col.badge("Volunteered", color="violet", icon=":material/front_hand:")
                 comp_date = comp.get("competition_date")
                 date_label = (
                     date.fromisoformat(comp_date).strftime("%d %b %Y") if comp_date else "date TBD"
@@ -273,7 +273,7 @@ with feed_col:
                 if m["meeting_id"] in my_rsvp_ids:
                     badge_col.badge("Going", color="green", icon=":material/check:")
                 else:
-                    badge_col.badge("No RSVP", color="grey", icon=":material/help:")
+                    badge_col.badge("No RSVP", color="blue", icon=":material/help:")
                 when = date.fromisoformat(m["meeting_date"]).strftime("%d %b %Y")
                 if m.get("meeting_time"):
                     when += f" at {m['meeting_time']}"

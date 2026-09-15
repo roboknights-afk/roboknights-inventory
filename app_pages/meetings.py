@@ -157,10 +157,14 @@ if is_host:
         render_schedule_meeting()
 
 # Success pops as a toast; errors stay inline so they can't be missed.
+# "celebrate" is the same as "success" plus balloons - reserved for a
+# member's own delighted moment (RSVPing yes), not routine host edits.
 if st.session_state.meeting_message:
     kind, text = st.session_state.meeting_message
-    if kind == "success":
+    if kind in ("success", "celebrate"):
         st.toast(text, icon=":material/check_circle:")
+        if kind == "celebrate":
+            st.balloons()
     else:
         st.error(text)
     st.session_state.meeting_message = None
@@ -330,7 +334,7 @@ def render_meeting_card(m):
             elif already_rsvpd:
                 badge_col.badge("Going", color="green", icon=":material/check:")
             else:
-                badge_col.badge("Not RSVP'd", color="grey", icon=":material/help:")
+                badge_col.badge("Not RSVP'd", color="blue", icon=":material/help:")
             if is_host:
                 if edit_col.button("Edit", key=f"edit_btn_meeting_{m['meeting_id']}", icon=":material/edit:"):
                     st.session_state.editing_meeting_id = m["meeting_id"]
@@ -416,7 +420,7 @@ def render_meeting_card(m):
                                 "meeting_id": m["meeting_id"], "user_id": current_user_id,
                             }).execute()
                             invalidate_cache()
-                        st.session_state.meeting_message = ("success", "RSVP'd!")
+                        st.session_state.meeting_message = ("celebrate", "RSVP'd! See you there.")
                         st.rerun()
 
                 # Self check-in only opens up once the meeting's actually

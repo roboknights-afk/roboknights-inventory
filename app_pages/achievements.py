@@ -36,6 +36,7 @@ if "achievement_message" not in st.session_state:
 
 if st.session_state.achievement_message:
     st.toast(st.session_state.achievement_message, icon=":material/emoji_events:")
+    st.balloons()
     st.session_state.achievement_message = None
 
 # --- Add my achievement ------------------------------------------------------
