@@ -85,10 +85,33 @@ st.caption(
 )
 
 CHANNEL_LABELS = {
-    "competitions": "Competitions channel",
-    "exun_rk": "Exun RK channel",
+    "competitions": "Competitions",
+    "exun_rk": "Exun RK",
     "dashboard": "Dashboard updates",
-    "announcements": "Announcements channel",
+    "announcements": "Announcements",
+}
+
+CHANNEL_INTRO = {
+    "competitions": (
+        "New-event notifications post here automatically whenever a "
+        "competition event is added — nothing to do for those."
+    ),
+    "exun_rk": (
+        "\"Team names finalized\" posts here automatically once every event "
+        "under a competition has its full SELECTED roster — nothing to do "
+        "for that either."
+    ),
+    "dashboard": (
+        "Posted automatically by GitHub every time the dashboard itself is "
+        "updated — a short summary of what changed for members. That comes "
+        "from send_dashboard_update.py, not from this app, so there's nothing "
+        "to trigger here; the box below is only for a one-off message, and "
+        "the list under it can edit or delete anything already posted."
+    ),
+    "announcements": (
+        "Nothing posts here automatically — this is the club's #announcements "
+        "channel, for one-off messages a host writes by hand."
+    ),
 }
 
 for _channel in DISCORD_CHANNELS:
@@ -100,7 +123,6 @@ st.session_state.setdefault("editing_vacant_events_preview", False)
 
 
 def render_recent_messages(channel):
-    st.markdown("**Recent messages**")
     recent_messages = sorted(
         (m for m in cached_table("discord_messages") if m.get("channel", "competitions") == channel),
         key=lambda m: m["sent_at"], reverse=True,
@@ -132,135 +154,144 @@ def render_recent_messages(channel):
                 "Edit message", value=current_body, height=140,
                 key=f"discord_edit_box_{channel}_{m['id']}", label_visibility="collapsed",
             )
-            save_col, cancel_col = st.columns([1, 1])
-            if save_col.button(
-                "Save changes", key=f"save_discord_edit_{channel}_{m['id']}",
-                icon=":material/check:", type="primary",
-            ):
-                if not new_body.strip():
-                    st.error("Message can't be empty.")
-                else:
-                    with st.spinner("Updating this message on Discord…"):
-                        ok = edit_discord_message(channel, m["message_id"], new_body.strip())
-                    if ok:
-                        invalidate_cache()
-                        st.session_state[editing_key] = None
-                        st.toast("Updated on Discord.", icon=":material/check_circle:")
-                        st.rerun()
+            with st.container(horizontal=True):
+                if st.button(
+                    "Save changes", key=f"save_discord_edit_{channel}_{m['id']}",
+                    icon=":material/check:", type="primary",
+                ):
+                    if not new_body.strip():
+                        st.error("Message can't be empty.")
                     else:
-                        st.error("Couldn't update that message on Discord — try again.")
-            if cancel_col.button("Cancel", key=f"cancel_discord_edit_{channel}_{m['id']}", icon=":material/close:"):
-                st.session_state[editing_key] = None
-                st.rerun()
+                        with st.spinner("Updating this message on Discord…"):
+                            ok = edit_discord_message(channel, m["message_id"], new_body.strip())
+                        if ok:
+                            invalidate_cache()
+                            st.session_state[editing_key] = None
+                            st.toast("Updated on Discord.", icon=":material/check_circle:")
+                            st.rerun()
+                        else:
+                            st.error("Couldn't update that message on Discord — try again.")
+                if st.button("Cancel", key=f"cancel_discord_edit_{channel}_{m['id']}", icon=":material/close:"):
+                    st.session_state[editing_key] = None
+                    st.rerun()
+
+
+def render_draft_popover(channel):
+    with st.popover("Draft with AI", icon=":material/auto_awesome:"):
+        st.caption(
+            "Describe what you want — it fills the message box below for "
+            "you to review and edit. Nothing posts from this on its own."
+        )
+        draft_prompt = st.text_input(
+            "What should the message say?", key=f"discord_draft_prompt_{channel}",
+            label_visibility="collapsed",
+            placeholder='e.g. "a long reply to Arnav justifying why message logging exists"',
+        )
+        if st.button("Generate draft", icon=":material/auto_awesome:", key=f"gen_discord_draft_btn_{channel}"):
+            if not draft_prompt.strip():
+                st.error("Describe what you want first.")
+            else:
+                with st.spinner("Drafting…"):
+                    drafted, error = draft_discord_message(draft_prompt.strip())
+                if error:
+                    st.error(error)
+                else:
+                    st.session_state[f"custom_discord_message_{channel}"] = drafted
+                    st.toast("Draft ready in the message box.", icon=":material/auto_awesome:")
+                    st.rerun()
 
 
 def render_custom_message_section(channel):
-    label = CHANNEL_LABELS[channel]
     webhook_configured = bool(os.environ.get(DISCORD_CHANNELS[channel]))
-    st.subheader(f":material/forum: {label}")
     if not webhook_configured:
-        st.info(
+        st.warning(
             f":material/key_off: No `{DISCORD_CHANNELS[channel]}` is set yet — "
             "see DEPLOY.md for how to create that webhook in Discord."
         )
         return
 
-    st.markdown("**Or, describe what you want and let AI draft it**")
-    st.caption(
-        "Same idea as asking an assistant to draft an email — it fills in "
-        "the box below for you to review, edit, and send yourself. Nothing "
-        "posts from this without you clicking Send."
-    )
-    draft_col, button_col = st.columns([4, 1], vertical_alignment="bottom")
-    draft_prompt = draft_col.text_input(
-        "What should the message say?", key=f"discord_draft_prompt_{channel}",
-        label_visibility="collapsed",
-        placeholder='e.g. "write a long reply to Arnav justifying why message logging exists"',
-    )
-    if button_col.button("Generate", icon=":material/auto_awesome:", key=f"gen_discord_draft_btn_{channel}"):
-        if not draft_prompt.strip():
-            st.error("Describe what you want first.")
-        else:
-            with st.spinner("Drafting…"):
-                drafted, error = draft_discord_message(draft_prompt.strip())
-            if error:
-                st.error(error)
-            else:
-                st.session_state[f"custom_discord_message_{channel}"] = drafted
-                st.toast("Draft ready below — review before sending.", icon=":material/auto_awesome:")
-                st.rerun()
+    with st.container(border=True):
+        header_col, popover_col = st.columns([3, 1], vertical_alignment="center")
+        header_col.markdown("**Compose a message**")
+        with popover_col:
+            render_draft_popover(channel)
 
-    st.divider()
-    st.markdown("**Send a custom message**")
-    st.caption(
-        "Discord markdown works (**bold**, *italic*, etc.), and you can "
-        "@mention someone by hand with `<@their_discord_user_id>` or a role "
-        "with `<@&role_id>`."
-    )
-    custom_message = st.text_area(
-        "Message", key=f"custom_discord_message_{channel}", label_visibility="collapsed",
-        placeholder="Type your message, or generate a draft above...",
-    )
-    preview_key = f"custom_discord_preview_{channel}"
-    editing_key = f"editing_custom_discord_preview_{channel}"
-    if st.button("Preview", icon=":material/visibility:", key=f"preview_custom_discord_btn_{channel}"):
-        if not custom_message.strip():
-            st.error("Message can't be empty.")
-        else:
-            st.session_state[preview_key] = custom_message.strip()
-            st.session_state[editing_key] = False
-            st.rerun()
-
-    preview = st.session_state.get(preview_key)
-    if preview:
-        footer_note = (
-            "app link + automated-message footer" if channel == "competitions"
-            else "automated-message footer (no app link on this channel)"
+        custom_message = st.text_area(
+            "Message", key=f"custom_discord_message_{channel}", label_visibility="collapsed",
+            placeholder="Type your message, or use Draft with AI above...", height=120,
         )
-        st.markdown(f"**Preview** (with the {footer_note} that gets added):")
-        if st.session_state.get(editing_key):
-            edited = st.text_area(
-                "Edit custom preview", value=preview, height=140,
-                key=f"custom_discord_edit_box_{channel}", label_visibility="collapsed",
-            )
-            save_col, cancel_col = st.columns([1, 1])
-            if save_col.button(
-                "Save edits", icon=":material/check:", type="primary", key=f"save_custom_discord_edit_btn_{channel}",
-            ):
-                st.session_state[preview_key] = edited
-                st.session_state[editing_key] = False
-                st.rerun()
-            if cancel_col.button("Cancel", icon=":material/close:", key=f"cancel_custom_discord_edit_btn_{channel}"):
-                st.session_state[editing_key] = False
-                st.rerun()
-        else:
-            st.text_area(
-                "Custom preview", value=preview + discord_message_suffix(channel), height=140,
-                key=f"custom_discord_preview_box_{channel}", label_visibility="collapsed", disabled=True,
-            )
-            edit_col, send_col = st.columns([1, 1])
-            if edit_col.button("Edit", icon=":material/edit:", key=f"edit_custom_discord_btn_{channel}"):
-                st.session_state[editing_key] = True
-                st.rerun()
-            if send_col.button(
-                "Send to Discord", icon=":material/send:", type="primary", key=f"send_custom_discord_btn_{channel}",
-            ):
-                if not custom_discord_send_allowed():
-                    st.error(
-                        f"Rate limit reached — max {CUSTOM_DISCORD_MESSAGE_HOURLY_LIMIT} custom "
-                        "messages per hour (shared across every channel/host), to stop accidental "
-                        "spam. Try again in a bit."
-                    )
-                else:
-                    send_discord_message(preview, channel=channel)
-                    invalidate_cache()
-                    st.session_state[preview_key] = None
-                    st.toast("Sent to Discord!", icon=":material/check_circle:")
-                    del st.session_state[f"custom_discord_message_{channel}"]
-                    st.rerun()
+        st.caption(
+            "Discord markdown works (**bold**, *italic*, etc.), and you can "
+            "@mention someone by hand with `<@their_discord_user_id>` or a role "
+            "with `<@&role_id>`."
+        )
 
-    st.divider()
-    render_recent_messages(channel)
+        preview_key = f"custom_discord_preview_{channel}"
+        editing_key = f"editing_custom_discord_preview_{channel}"
+        if st.button(
+            "Preview", icon=":material/visibility:", type="primary", key=f"preview_custom_discord_btn_{channel}",
+        ):
+            if not custom_message.strip():
+                st.error("Message can't be empty.")
+            else:
+                st.session_state[preview_key] = custom_message.strip()
+                st.session_state[editing_key] = False
+                st.rerun()
+
+        preview = st.session_state.get(preview_key)
+        if preview:
+            footer_note = (
+                "app link + automated-message footer" if channel == "competitions"
+                else "automated-message footer (no app link on this channel)"
+            )
+            st.markdown(f"**Preview** — exactly what posts, with the {footer_note}:")
+            if st.session_state.get(editing_key):
+                edited = st.text_area(
+                    "Edit custom preview", value=preview, height=140,
+                    key=f"custom_discord_edit_box_{channel}", label_visibility="collapsed",
+                )
+                with st.container(horizontal=True):
+                    if st.button(
+                        "Save edits", icon=":material/check:", type="primary",
+                        key=f"save_custom_discord_edit_btn_{channel}",
+                    ):
+                        st.session_state[preview_key] = edited
+                        st.session_state[editing_key] = False
+                        st.rerun()
+                    if st.button(
+                        "Cancel", icon=":material/close:", key=f"cancel_custom_discord_edit_btn_{channel}",
+                    ):
+                        st.session_state[editing_key] = False
+                        st.rerun()
+            else:
+                st.text_area(
+                    "Custom preview", value=preview + discord_message_suffix(channel), height=140,
+                    key=f"custom_discord_preview_box_{channel}", label_visibility="collapsed", disabled=True,
+                )
+                with st.container(horizontal=True):
+                    if st.button("Edit", icon=":material/edit:", key=f"edit_custom_discord_btn_{channel}"):
+                        st.session_state[editing_key] = True
+                        st.rerun()
+                    if st.button(
+                        "Send to Discord", icon=":material/send:", type="primary",
+                        key=f"send_custom_discord_btn_{channel}",
+                    ):
+                        if not custom_discord_send_allowed():
+                            st.error(
+                                f"Rate limit reached — max {CUSTOM_DISCORD_MESSAGE_HOURLY_LIMIT} custom "
+                                "messages per hour (shared across every channel/host), to stop accidental "
+                                "spam. Try again in a bit."
+                            )
+                        else:
+                            send_discord_message(preview, channel=channel)
+                            invalidate_cache()
+                            st.session_state[preview_key] = None
+                            st.toast("Sent to Discord!", icon=":material/check_circle:")
+                            del st.session_state[f"custom_discord_message_{channel}"]
+                            st.rerun()
+
+    with st.expander("Recent messages", icon=":material/history:"):
+        render_recent_messages(channel)
 
 
 def render_vacant_events_reminder():
@@ -294,73 +325,54 @@ def render_vacant_events_reminder():
                     "Edit preview", value=preview, height=220,
                     key="vacant_events_edit_box", label_visibility="collapsed",
                 )
-                save_col, cancel_col = st.columns([1, 1])
-                if save_col.button(
-                    "Save edits", icon=":material/check:", type="primary", key="save_vacant_events_edit_btn",
-                ):
-                    st.session_state.vacant_events_preview = edited
-                    st.session_state.editing_vacant_events_preview = False
-                    st.rerun()
-                if cancel_col.button("Cancel", icon=":material/close:", key="cancel_vacant_events_edit_btn"):
-                    st.session_state.editing_vacant_events_preview = False
-                    st.rerun()
+                with st.container(horizontal=True):
+                    if st.button(
+                        "Save edits", icon=":material/check:", type="primary", key="save_vacant_events_edit_btn",
+                    ):
+                        st.session_state.vacant_events_preview = edited
+                        st.session_state.editing_vacant_events_preview = False
+                        st.rerun()
+                    if st.button("Cancel", icon=":material/close:", key="cancel_vacant_events_edit_btn"):
+                        st.session_state.editing_vacant_events_preview = False
+                        st.rerun()
             else:
                 st.text_area(
                     "Preview", value=preview, height=220, key="vacant_events_preview_box",
                     label_visibility="collapsed", disabled=True,
                 )
-                edit_col, send_col, discard_col = st.columns([1, 1, 1])
-                if edit_col.button("Edit", icon=":material/edit:", key="edit_vacant_events_btn"):
-                    st.session_state.editing_vacant_events_preview = True
-                    st.rerun()
-                if send_col.button(
-                    "Send to Discord", icon=":material/send:", type="primary", key="send_vacant_events_btn",
-                ):
-                    send_discord_message(preview, channel="competitions")
-                    invalidate_cache()
-                    st.session_state.vacant_events_preview = None
-                    st.toast("Sent to Discord!", icon=":material/check_circle:")
-                    st.rerun()
-                if discard_col.button("Discard", icon=":material/close:", key="discard_vacant_events_btn"):
-                    st.session_state.vacant_events_preview = None
-                    st.rerun()
+                with st.container(horizontal=True):
+                    if st.button("Edit", icon=":material/edit:", key="edit_vacant_events_btn"):
+                        st.session_state.editing_vacant_events_preview = True
+                        st.rerun()
+                    if st.button(
+                        "Send to Discord", icon=":material/send:", type="primary", key="send_vacant_events_btn",
+                    ):
+                        send_discord_message(preview, channel="competitions")
+                        invalidate_cache()
+                        st.session_state.vacant_events_preview = None
+                        st.toast("Sent to Discord!", icon=":material/check_circle:")
+                        st.rerun()
+                    if st.button("Discard", icon=":material/close:", key="discard_vacant_events_btn"):
+                        st.session_state.vacant_events_preview = None
+                        st.rerun()
 
 
-# A dropdown, not st.tabs(): tabs reset back to the FIRST one on any
-# rerun triggered from inside a tab's own content (confirmed live
+# st.segmented_control, not st.tabs(): tabs reset back to the FIRST one on
+# any rerun triggered from inside a tab's own content (confirmed live
 # 2026-09-15 — Generate/Preview/Edit/Send all call st.rerun(), so a host
-# working in, say, the Dashboard tab got silently bounced back to
-# Competitions, with their generated draft written into the tab they'd
-# left rather than the one now showing). A selectbox's choice lives in
-# session_state like any other widget, so it survives a rerun triggered
-# by anything else on the page.
-selected_label = st.selectbox(
-    "Channel", list(CHANNEL_LABELS.values()), key="discord_messages_selected_channel",
+# working in, say, the Dashboard channel got silently bounced back to
+# Competitions, with their generated draft written into the channel
+# they'd left rather than the one now showing). segmented_control is a
+# real widget whose selection lives in session_state, so — like
+# st.selectbox, which this replaced as a first fix — it survives a rerun
+# triggered by anything else on the page. Chosen over selectbox here
+# since there are only 4 channels: seeing all of them at once and
+# switching in one click reads clearer than a dropdown for that few.
+selected_channel = st.segmented_control(
+    "Channel", list(CHANNEL_LABELS.keys()), format_func=lambda c: CHANNEL_LABELS[c],
+    default="competitions", required=True, key="discord_messages_selected_channel",
 )
-selected_channel = next(c for c, label in CHANNEL_LABELS.items() if label == selected_label)
 
-CHANNEL_INTRO = {
-    "competitions": (
-        "New-event notifications post here automatically whenever a "
-        "competition event is added — nothing to do for those."
-    ),
-    "exun_rk": (
-        "\"Team names finalized\" posts here automatically once every event "
-        "under a competition has its full SELECTED roster — nothing to do "
-        "for that either."
-    ),
-    "dashboard": (
-        "Posted automatically by GitHub every time the dashboard itself is "
-        "updated — a short summary of what changed for members. That comes "
-        "from send_dashboard_update.py, not from this app, so there's nothing "
-        "to trigger here; the box below is only for a one-off message, and "
-        "the list under it can edit or delete anything already posted."
-    ),
-    "announcements": (
-        "Nothing posts here automatically — this is the club's #announcements "
-        "channel, for one-off messages a host writes by hand."
-    ),
-}
 st.caption(CHANNEL_INTRO[selected_channel])
 if selected_channel == "competitions":
     render_vacant_events_reminder()
