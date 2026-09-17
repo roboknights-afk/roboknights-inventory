@@ -693,3 +693,26 @@ alter table achievements add column if not exists exported_at timestamptz;
 alter table users add column if not exists website_status text not null default 'pending'
     check (website_status in ('pending', 'approved', 'declined'));
 alter table users add column if not exists website_note text;
+
+-- Access-tier email allowlists (2026-09-17). These used to be hardcoded
+-- Python sets in shared.py (HOST_EMAILS, HOST_ROLES, EXUN_EMAILS,
+-- VIEWER_EMAILS, EXUN_CHANNEL_MEMBERS, AI_ASSISTANT_BANNED_EMAILS) — real
+-- staff/student email addresses (several with their real full name in a
+-- comment right next to them) sitting in plaintext in a PUBLIC GitHub
+-- repo's source AND its entire commit history. Moved here so the repo can
+-- stay public without publishing who has elevated access or who's been
+-- banned from the AI. One row per privileged/flagged email; an email with
+-- every is_*/ai_banned flag false has no reason to be in this table at
+-- all. host_title is display-only (the badge next to a host's name),
+-- never used for permissions — matches how HOST_ROLES already worked.
+-- No `users` row is implied or required by a row here — these accounts
+-- deliberately work without one (see CLAUDE.md's Access tiers section).
+create table if not exists access_roles (
+    email                  text primary key,
+    is_host                boolean not null default false,
+    host_title             text,
+    is_exun                boolean not null default false,
+    is_viewer              boolean not null default false,
+    is_exun_channel_member boolean not null default false,
+    ai_banned              boolean not null default false
+);

@@ -21,62 +21,71 @@ from supabase import create_client
 # own laptop — so deploying doesn't need a code change, just one new secret.
 APP_URL = os.environ.get("APP_URL", "http://localhost:8501")
 
-# Only these accounts can see the host-only Competitions tools (add a
-# competition, finalize volunteers, send announcements, the Members
-# directory, etc). Ordered by real-world hierarchy (Vice Principal, then
-# HOD, then the teacher in-charge) purely for readability here — the app
-# itself doesn't tier host access, every HOST_EMAILS account has
-# identical permissions regardless of title.
-HOST_EMAILS = {
-    "roboknights@dpsrkp.net",
-    "mukeshkumar@dpsrkp.net",  # Mr Mukesh Kumar, Vice Principal
-    "hemajain@dpsrkp.net",  # Ms Hema Jain, HOD Computer Science
-    "ajithkumar@dpsrkp.net",  # Mr Ajith Kumar KG, Robotics In-Charge
-}
+# Access tiers used to be hardcoded Python sets right here — real
+# staff/student emails, several with a real name in a comment right next
+# to them — which sat in plaintext in this repo's source AND its whole
+# commit history. Moved to the `access_roles` Supabase table (2026-09-17)
+# so the repo can stay public without publishing who has elevated access
+# or who's banned from the AI. Read once at import time (this module is
+# only ever imported once per process — see the top-of-file comment on
+# why shared code lives here, not in app.py) rather than re-queried every
+# rerun. Best-effort: a failed read falls back to empty sets/dict so a
+# Supabase hiccup quietly disables the extra tiers instead of crashing
+# every single page that imports this module.
+def _load_access_roles():
+    host_emails, host_roles, exun_emails, viewer_emails = set(), {}, set(), set()
+    exun_channel_members, ai_banned_emails = set(), set()
+    try:
+        client = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
+        rows = client.table("access_roles").select("*").execute().data
+    except Exception:
+        return host_emails, host_roles, exun_emails, viewer_emails, exun_channel_members, ai_banned_emails
+    for row in rows:
+        email = row["email"]
+        if row.get("is_host"):
+            host_emails.add(email)
+            if row.get("host_title"):
+                host_roles[email] = row["host_title"]
+        if row.get("is_exun"):
+            exun_emails.add(email)
+        if row.get("is_viewer"):
+            viewer_emails.add(email)
+        if row.get("is_exun_channel_member"):
+            exun_channel_members.add(email)
+        if row.get("ai_banned"):
+            ai_banned_emails.add(email)
+    return host_emails, host_roles, exun_emails, viewer_emails, exun_channel_members, ai_banned_emails
 
-# Display title shown next to a host's name (sidebar account badge). Not
-# used for permissions anywhere — every HOST_EMAILS account has identical
-# access regardless of title; this is purely who's-who for people using
-# the app, not a tiered-access system.
-HOST_ROLES = {
-    "mukeshkumar@dpsrkp.net": "Vice Principal",
-    "hemajain@dpsrkp.net": "HOD, Computer Science",
-    "ajithkumar@dpsrkp.net": "Robotics In-Charge",
-}
 
-# A limited external tier for RoboKnights' sister club, Exun — can VIEW
-# Competitions, Meetings, Achievements, and the Members directory, but
-# can't volunteer, RSVP, log an achievement, or touch anything host-only.
-# A set (not one email) since more Exun accounts may be added later, same
-# shape as HOST_EMAILS.
-EXUN_EMAILS = {
-    "exun@dpsrkp.net",
-    "official.kavyadayal@gmail.com",  # Kavya Dayal, Exun core member
-}
+# HOST_EMAILS: full access, every host-only page and control.
+# HOST_ROLES: display title shown next to a host's name (sidebar account
+#   badge) — not used for permissions anywhere, purely who's-who.
+# EXUN_EMAILS: RoboKnights' sister club — views Competitions, Meetings,
+#   Achievements, Members; never volunteers/RSVPs/logs an achievement/
+#   touches anything host-only.
+# VIEWER_EMAILS: read-only look-around account (2026-08-16) — broader
+#   page access than Exun but still excluded from private Queries
+#   threads, AI chat logs, Discord messaging tools, and members' phone/
+#   admission numbers.
+# EXUN_CHANNEL_MEMBERS: the private RoboKnights<>Exun channel allowlist,
+#   orthogonal to the other four.
+# AI_ASSISTANT_BANNED_EMAILS: host-requested kill switch (2026-08-14) on
+#   the dashboard's AI Assistant page for two specific accounts — not a
+#   moderation feature. The Discord bot has its own matching
+#   AI_ASSISTANT_BANNED_DISCORD_IDS (discord_bot/bot.py can't import this
+#   file, so it's a separate Discord-ID-keyed list there instead).
+(
+    HOST_EMAILS, HOST_ROLES, EXUN_EMAILS, VIEWER_EMAILS,
+    EXUN_CHANNEL_MEMBERS, AI_ASSISTANT_BANNED_EMAILS,
+) = _load_access_roles()
 
-# A read-only account for looking around the whole dashboard without being
-# able to change anything (2026-08-16). Broader than EXUN_EMAILS above —
-# these accounts also see Inventory, Announcements and Feedback — but
-# still strictly view-only, and still SHORT of what a host sees: the
-# private student<>host Queries threads, the AI chat logs, and the Discord
-# messaging tools are all excluded, as are members' phone numbers and
-# admission numbers on the Members page. Those belong to real students
-# (most of them minors) who never agreed to a visitor account reading
-# them, and none of it is needed to evaluate how the dashboard works.
-VIEWER_EMAILS = {
-    "r24334kiara@dpsrkp.net",  # Kiara Kapoor, test/demo account
-}
-
-# Host-requested ban (2026-08-14): these two get no reply from the
-# dashboard's AI Assistant page - not a moderation feature, just a kill
-# switch on that one page talking back to them. The Discord bot has its
-# own matching AI_ASSISTANT_BANNED_DISCORD_IDS (discord_bot/bot.py can't
-# import this file - see its own top-of-file comment on why - so it's a
-# separate, Discord-ID-keyed list there instead of email-keyed here).
-AI_ASSISTANT_BANNED_EMAILS = {
-    "e11356lav@dpsrkp.net",  # Lav Singh
-    "e11357kush@dpsrkp.net",  # Kush Singh (also fully account-disabled separately)
-}
+# Derived, not hand-maintained, so it can't drift out of sync with
+# EXUN_CHANNEL_MEMBERS: everyone in that channel who's neither a
+# host/staff account nor Exun themselves — i.e. the named RoboKnights
+# STUDENT members. Used to scope the "unread channel message" nudge to
+# students only, per the student's explicit instruction that staff never
+# get nagged about unread messages.
+EXUN_CHANNEL_STUDENT_EMAILS = EXUN_CHANNEL_MEMBERS - HOST_EMAILS - EXUN_EMAILS
 
 # Hard, code-level block on roast/insult requests, checked before any
 # model call. The no-roasting rule also lives in both system prompts, but
@@ -212,30 +221,8 @@ def _roast_request(text):
         return True
     return False
 
-# The private RoboKnights <> Exun channel is scoped to this specific,
-# hand-picked list of people (both clubs' leadership plus a few named
-# RoboKnights members), not "every host" or "every member" — matches
-# what was actually asked for, not a broader role. Anyone not in this
-# set doesn't see the channel exist at all.
-EXUN_CHANNEL_MEMBERS = {
-    "roboknights@dpsrkp.net",
-    "mukeshkumar@dpsrkp.net",
-    "hemajain@dpsrkp.net",
-    "ajithkumar@dpsrkp.net",
-    "exun@dpsrkp.net",
-    "r22639naitik@dpsrkp.net",  # Naitik Jindal
-    "r23444kyraan@dpsrkp.net",  # Kyraan Katyal
-    "v09045medhansh@dpsrkp.net",  # Medhansh Tanmay Pandya
-    "v09145aryamman@dpsrkp.net",  # Aryamman Ojha
-}
-
-# Derived, not hand-maintained, so it can't drift out of sync with
-# EXUN_CHANNEL_MEMBERS: everyone in that channel who's neither a
-# host/staff account nor Exun themselves — i.e. the named RoboKnights
-# STUDENT members. Used to scope the "unread channel message" nudge to
-# students only, per the student's explicit instruction that staff never
-# get nagged about unread messages.
-EXUN_CHANNEL_STUDENT_EMAILS = EXUN_CHANNEL_MEMBERS - HOST_EMAILS - EXUN_EMAILS
+# EXUN_CHANNEL_MEMBERS / EXUN_CHANNEL_STUDENT_EMAILS are now set above,
+# right after HOST_EMAILS/EXUN_EMAILS, since the derivation needs those.
 
 # The club's real competition-tracking sheet ("E2C"). Always this one sheet,
 # so the host scans it directly instead of pasting a link every time.
@@ -284,8 +271,10 @@ CLIO_ADHOC_GAP_ROWS = 1
 
 # A fast, live alternative to the Queries page for something urgent — a
 # plain wa.me link needs no API, unlike automated WhatsApp notifications
-# (which stay out of scope; see CLAUDE.md).
-WHATSAPP_HELP_NUMBER = "919311259439"
+# (see the WhatsApp section of CLAUDE.md for those). Moved out of source
+# (2026-09-17) — this is a real personal phone number and this repo is
+# public. Set as WHATSAPP_HELP_NUMBER in .env / Streamlit Cloud Secrets.
+WHATSAPP_HELP_NUMBER = os.environ.get("WHATSAPP_HELP_NUMBER", "")
 
 
 @st.cache_resource

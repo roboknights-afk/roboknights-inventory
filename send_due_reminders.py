@@ -22,14 +22,19 @@ load_dotenv()
 
 client = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
 
-# Duplicated from shared.py's EXUN_CHANNEL_STUDENT_EMAILS (this script
+# Same derivation as shared.py's EXUN_CHANNEL_STUDENT_EMAILS (this script
 # deliberately doesn't import shared.py — see the WhatsApp helpers below
-# for why) — keep in sync if EXUN_CHANNEL_MEMBERS ever changes there.
+# for why), now reading the access_roles table instead of a duplicated
+# hardcoded set (2026-09-17 — real student emails no longer belong in this
+# repo's source, since it's public). Best-effort: a failed read falls back
+# to an empty set, same as shared.py's loader.
+try:
+    _access_rows = client.table("access_roles").select("*").execute().data
+except Exception:
+    _access_rows = []
 EXUN_CHANNEL_STUDENT_EMAILS = {
-    "r22639naitik@dpsrkp.net",  # Naitik Jindal
-    "r23444kyraan@dpsrkp.net",  # Kyraan Katyal
-    "v09045medhansh@dpsrkp.net",  # Medhansh Tanmay Pandya
-    "v09145aryamman@dpsrkp.net",  # Aryamman Ojha
+    r["email"] for r in _access_rows
+    if r.get("is_exun_channel_member") and not r.get("is_host") and not r.get("is_exun")
 }
 
 

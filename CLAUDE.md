@@ -1810,6 +1810,48 @@ process** — this bit `venv/` here, but the same rule would apply to any
 future runtime-created directory (a cache, a local queue file, anything
 not meant to round-trip through git).
 
+## Access-tier emails moved out of source (2026-09-17)
+
+The student flagged, correctly and urgently: `HOST_EMAILS`, `HOST_ROLES`,
+`EXUN_EMAILS`, `VIEWER_EMAILS`, `EXUN_CHANNEL_MEMBERS`, and
+`AI_ASSISTANT_BANNED_EMAILS` in `shared.py` were hardcoded Python sets
+containing 13 real staff/student email addresses — several with a real
+full name right next to them in a comment (Naitik Jindal, Kyraan Katyal,
+Medhansh Tanmay Pandya, Aryamman Ojha, Lav Singh, Kush Singh) — sitting in
+plaintext in this repo's source. The repo is **public**
+(github.com/roboknights-afk/roboknights-inventory), and the student
+explicitly wants it to stay that way (portfolio/resume value), so the fix
+was to get the PII out of source rather than take the repo private.
+
+New `access_roles` Supabase table (see `supabase_schema.sql`): one row per
+privileged/flagged email, with `is_host`/`host_title`/`is_exun`/
+`is_viewer`/`is_exun_channel_member`/`ai_banned` boolean-ish columns.
+`shared.py` now populates the same-named constants by querying this table
+once at import time (best-effort — a failed read falls back to empty
+sets/dict rather than crashing every page, same as every other
+best-effort pattern in this file), so none of the ~10 other files that
+*read* these constants needed to change at all — only how they're
+populated changed. `send_due_reminders.py` (deliberately doesn't import
+`shared.py`) queries the same table directly instead of duplicating a
+hardcoded set. `WHATSAPP_HELP_NUMBER` (a real personal phone number) moved
+to an env var the same way every other secret in this app already works.
+
+**Known remaining gap, not fixed:** the old commits still have all 13
+emails in plaintext in git history — moving them out of the current files
+doesn't erase that. Scrubbing history (`git filter-repo`) is a destructive,
+force-push operation on a shared repo and wasn't done here; flagged to the
+student, his call whether it's worth it given the emails are already
+potentially seen/cloned during the period the repo was public with them in
+it.
+
+**Also flagged, not fixed (lower severity, student's call):**
+`discord_bot/bot.py`'s `AI_ASSISTANT_BANNED_DISCORD_IDS` and
+`ARBITER_DISCORD_IDS` still have real names in comments next to Discord
+snowflake IDs (Lav Singh/Kush Singh, Naitik Jindal) — a numeric platform
+ID is much less directly actionable than an email, so this wasn't folded
+into the same fix, but it's the same underlying pattern if it ever matters
+enough to move too.
+
 ## Explicitly NOT in v1
 
 No PDF-to-spreadsheet feature. (WhatsApp notifications used to be listed
