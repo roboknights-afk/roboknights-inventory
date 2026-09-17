@@ -196,7 +196,7 @@ not bundled — see house rule #1 below):
   by owner_id or requester_id — no new columns needed, and a loan drops
   off both lists automatically once "Mark as returned" flips its status.
   Verified via direct query (not full browser login — see house rule
-  about the ashish.jindal079 test inbox below) using the original seed
+  about the student's personal test inbox below) using the original seed
   accounts (Naitik/Aryamman), including a pre-existing loan from before
   due dates existed, which correctly showed "no due date set" instead
   of erroring.
@@ -1420,8 +1420,10 @@ data. Check that's still true before adding more fields.
 
 ## Read-only viewer tier (2026-08-16)
 
-`VIEWER_EMAILS` in `shared.py` — a look-around account, first used for
-Kiara Kapoor (`r24334kiara@dpsrkp.net`). Full details in "Access tiers"
+`VIEWER_EMAILS` in `shared.py` (sourced from the `access_roles` Supabase
+table, see the "Access-tier emails moved out of source" section below) —
+a look-around account, first used for Kiara Kapoor. Full details in
+"Access tiers"
 below; the short version is that it sees the club side of the app and
 none of the private side, and cannot write anything.
 
@@ -1873,7 +1875,7 @@ feature now, not ruled out.)
 5. Push back plainly when the student is wrong or overcomplicating.
 6. Never assume approval for the next chunk. Finish the current one, say
    it's done, and stop.
-7. Don't access the ashish.jindal079@gmail.com inbox (or its +testbot /
+7. Don't access the student's own personal test inbox (or its +testbot /
    +testbot2 aliases) for verification — the student asked for this
    directly. Verify features another way instead: direct database
    queries that replicate the exact app logic, or ask the student to
