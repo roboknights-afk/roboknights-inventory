@@ -2045,8 +2045,15 @@ async def on_raw_message_delete(payload):
     author = None
     content = None
     if payload.cached_message is not None:
-        if payload.cached_message.author.bot:
-            return
+        # Deliberately NOT skipped for a bot author (unlike every other
+        # "author.bot" check in this file, which exists to stop the bot
+        # reacting to/logging its OWN chatter). This is the one place
+        # that filter would be wrong: the whole point of this log is
+        # letting a host review deletions, and "a host deleted one of
+        # roboknightsbot's own bad replies" is the single most relevant
+        # case it exists for (see ARBITER_DISCORD_IDS above) — silently
+        # skipping it defeated the feature. Found 2026-09-20 when a host
+        # noticed the bot's own deleted messages never showed up here.
         author = payload.cached_message.author.display_name
         content = payload.cached_message.content
     else:
