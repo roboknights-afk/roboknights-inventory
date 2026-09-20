@@ -357,8 +357,11 @@ holds them):
      every model regardless of billing changes, on top of Cerebras
      shutting the free tier down entirely from Aug 17, 2026, so it was
      dropped in favor of Gemini, which is confirmed actually working.
-   - `TAVILY_API_KEY` — optional, but without it web search runs through
-     `groq/compound` instead, which is known to be unreliable (see
+   - `TAVILY_API_KEY` — required for web search now. It used to be
+     optional (without it, search fell back to `groq/compound`), but Groq
+     decommissioned `groq/compound` and `groq/compound-mini` on
+     2026-09-21 with no replacement model — without this key, the bot and
+     AI Assistant just answer plainly and say search isn't set up (see
      CLAUDE.md's Discord AI bot section). 1,000 free searches/month, no
      card, sign up at [tavily.com](https://tavily.com).
    - `OPENROUTER_API_KEY` — optional third and last fallback, for when

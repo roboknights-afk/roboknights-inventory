@@ -1,8 +1,9 @@
 # RoboKnights Discord AI bot: replies whenever it's @mentioned in a server
-# channel or DMed directly, using Groq's compound model (same one the
-# dashboard AI Assistant's web-search toggle uses) so it can actually look
-# things up ("what is a p219 motor") instead of only answering from
-# training data.
+# channel or DMed directly. Uses Groq's plain model with Tavily-backed
+# tool calling (see TAVILY_API_KEY below) so it can actually look things
+# up ("what is a p219 motor") instead of only answering from training
+# data - groq/compound used to do this server-side, but Groq
+# decommissioned it 2026-09-21 with no replacement.
 #
 # This runs as its own always-on process (a small VPS from a friend's
 # hosting company, moved off Railway 2026-09-09 when its trial ran out, a
@@ -223,22 +224,25 @@ ARBITER_NOTE = (
 
 # Tavily: purpose-built for feeding LLMs search results (not a general
 # search engine API) - 1,000 free searches/month, no card. This is the
-# PREFERRED search path: the model decides for itself (via a tool call)
+# ONLY search path now: the model decides for itself (via a tool call)
 # whether a question needs a search, WE run it and hand back trimmed
 # results, so WE control exactly how much text goes into the next
-# request - unlike groq/compound below, which runs the whole
-# search-and-read loop server-side with no size control on our end.
+# request.
 #
-# Why not just use groq/compound (same model the AI Assistant's
-# web-search toggle uses)? Confirmed live, with a bare prompt and zero
-# extra context, that it 413s "Request Entity Too Large" on real
-# everyday queries - "latest Arduino Uno price," "who won the last F1
-# race," "what year is it" - a query-dependent upstream bug (see
-# CLAUDE.md), not something fixable from this end. It's kept as a
-# fallback for when TAVILY_API_KEY isn't set, same best-effort spirit as
-# everything else here, but Tavily is what actually works reliably.
+# groq/compound (and groq/compound-mini) - Groq's own server-side
+# search-and-read system, formerly kept as a fallback for when
+# TAVILY_API_KEY isn't set - is GONE. Groq decommissioned both on
+# 2026-09-21 with no replacement model (confirmed directly against
+# Groq's own docs, not a search-engine snippet - one of those claimed
+# llama-3.3-70b-versatile as the replacement, which Groq itself had
+# already retired months earlier, so don't trust a stray blog/GitHub
+# hit over console.groq.com/docs/deprecations). It also had a
+# query-dependent 413 "Request Entity Too Large" bug on real everyday
+# queries even before the shutdown (see CLAUDE.md), so losing it is not
+# a regression: _ask_with_fallback_chain's job is now just "the plain model,
+# then Gemini, then small_groq, then OpenRouter" - see
+# _ask_with_fallback_chain below.
 TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY")
-COMPOUND_MODEL = "groq/compound"
 WEB_SEARCH_TOOL = {
     "type": "function",
     "function": {
@@ -1147,24 +1151,6 @@ def _format_channel_activity(channel_id):
     return "\n".join(f"- {e['author']}: {e['content']}" for e in entries if e["content"])
 
 
-def _extract_sources(response):
-    # Same defensive walk the AI Assistant page uses - the compound models
-    # run the whole "decide to search, search, read results" loop
-    # server-side, and it's undocumented exactly how the SDK exposes what
-    # it looked at, so getattr everywhere rather than let a shape mismatch
-    # break an otherwise-successful reply.
-    sources = []
-    executed_tools = getattr(response.choices[0].message, "executed_tools", None) or []
-    for tool in executed_tools:
-        search_results = getattr(tool, "search_results", None)
-        results = getattr(search_results, "results", None) or []
-        for r in results:
-            url = getattr(r, "url", None)
-            if url:
-                sources.append((getattr(r, "title", None) or url, url))
-    return sources
-
-
 # Why the last fallback attempt actually failed. The ALL PROVIDERS FAILED
 # log line used to print the literal words "gemini: no reply; openrouter:
 # no reply" no matter what happened - 429, timeout, empty text, missing
@@ -1317,8 +1303,8 @@ def _ask_with_gemini(messages, channel_id=None):
         return None
 
 
-# Appended to the system prompt on the compound/plain paths ONLY, which
-# have no tools wired up. Without it, the main system prompt still tells
+# Appended to the system prompt on the plain fallback path ONLY, which
+# has no tools wired up. Without it, the main system prompt still tells
 # the model to "call get_club_data" - and confirmed live, it then answers
 # as if it had: asked what parts the club owns, it replied "Using
 # get_club_data, I found... 5 DC motors, 2 servo motors" - completely
@@ -1542,11 +1528,16 @@ def _ask_with_small_groq(no_tools_messages):
         return None
 
 
-def _ask_with_compound(messages, channel_id=None):
-    # groq/compound: Groq's own search-and-read loop, server-side, no size
-    # control on our end - kept only as what runs when TAVILY_API_KEY isn't
-    # set. See TAVILY_API_KEY comment above for why this isn't the
-    # preferred path anymore.
+def _ask_with_fallback_chain(messages, channel_id=None):
+    # Runs when the primary tool-calling path (_ask_with_tools) fails.
+    # Used to try groq/compound first (Groq's own server-side
+    # search-and-read system) before falling through to a plain answer -
+    # removed 2026-09-20, the day before Groq decommissioned it (and
+    # groq/compound-mini) with no replacement model. This chain is now
+    # just: plain model, then Gemini, then the small Groq model, then
+    # OpenRouter. It loses the ability to search on this one reply (Tavily
+    # in _ask_with_tools is the only search path left), same tradeoff the
+    # compound step already had via its own 413 bug.
     #
     # Every step here treats an EMPTY response the same as an exception
     # (raise, don't return) so it falls through to the next fallback -
@@ -1560,78 +1551,67 @@ def _ask_with_compound(messages, channel_id=None):
     )
     try:
         response = _call_with_retry(lambda: groq_client.chat.completions.create(
-            model=COMPOUND_MODEL, messages=no_tools_messages,
-            compound_custom={"tools": {"enabled_tools": ["web_search", "visit_website"]}},
-            max_tokens=MAX_REPLY_TOKENS,
+            model=GROQ_MODEL, messages=no_tools_messages, max_tokens=MAX_REPLY_TOKENS,
         ))
-        reply = response.choices[0].message.content
-        if not reply:
-            raise ValueError("empty compound response")
-        return reply, _extract_sources(response)
-    except Exception as compound_error:
-        try:
-            response = _call_with_retry(lambda: groq_client.chat.completions.create(
-                model=GROQ_MODEL, messages=no_tools_messages, max_tokens=MAX_REPLY_TOKENS,
-            ))
-            plain_reply = response.choices[0].message.content
-            if not plain_reply:
-                raise ValueError("empty plain response")
-            # Flagged, not silent - confirmed live that the plain model
-            # will confidently guess wrong rather than admit it doesn't
-            # know (asked about "a p219 motor," a robotics part, and got
-            # back an automotive OBD-II trouble code). An unflagged wrong
-            # answer is worse than a flagged uncertain one.
-            reply = (
-                "*(Couldn't search the web for this one - answering from what I "
-                "already know instead, so double-check this.)*\n\n" + plain_reply
+        plain_reply = response.choices[0].message.content
+        if not plain_reply:
+            raise ValueError("empty plain response")
+        # Flagged, not silent - confirmed live that the plain model
+        # will confidently guess wrong rather than admit it doesn't
+        # know (asked about "a p219 motor," a robotics part, and got
+        # back an automotive OBD-II trouble code). An unflagged wrong
+        # answer is worse than a flagged uncertain one.
+        reply = (
+            "*(Couldn't search the web for this one - answering from what I "
+            "already know instead, so double-check this.)*\n\n" + plain_reply
+        )
+        return reply, []
+    except Exception as groq_error:
+        gemini_reply = _ask_with_gemini(messages, channel_id)
+        if gemini_reply is not None:
+            return gemini_reply, []
+        # Gemini's free tier is small enough to 429 under any real
+        # load, so the small Groq model - on its own, much larger
+        # daily budget - is what actually keeps the bot answering
+        # once the 70b one is spent. NOT the same no_tools_messages
+        # the plain retry above got - this model's per-minute token
+        # cap (6,000) is smaller than 70b's (12,000), and the full
+        # club context (with contact details) is big enough on its
+        # own to 413 here on a real question (confirmed live,
+        # 2026-08-16). Rebuilt without contact details or deep chat
+        # history so it actually fits.
+        small_reply = _ask_with_small_groq(
+            _with_no_tools_note(
+                messages, channel_id, include_contact=False, include_history=False
             )
-            return reply, []
-        except Exception as groq_error:
-            gemini_reply = _ask_with_gemini(messages, channel_id)
-            if gemini_reply is not None:
-                return gemini_reply, []
-            # Gemini's free tier is small enough to 429 under any real
-            # load, so the small Groq model - on its own, much larger
-            # daily budget - is what actually keeps the bot answering
-            # once the 70b one is spent. NOT the same no_tools_messages
-            # compound/plain got above - this model's per-minute token
-            # cap (6,000) is smaller than 70b's (12,000), and the full
-            # club context (with contact details) is big enough on its
-            # own to 413 here on a real question (confirmed live,
-            # 2026-08-16). Rebuilt without contact details or deep chat
-            # history so it actually fits.
-            small_reply = _ask_with_small_groq(
-                _with_no_tools_note(
-                    messages, channel_id, include_contact=False, include_history=False
-                )
-            )
-            if small_reply is not None:
-                return small_reply, []
-            openrouter_reply = _ask_with_openrouter(no_tools_messages)
-            if openrouter_reply is not None:
-                return openrouter_reply, []
-            # Members get a short, human sentence - NOT the raw provider
-            # error. Dumping those into Discord (what this did before)
-            # pasted a wall of JSON, leaked the org id, and included a
-            # billing URL that Discord then turned into a big link-preview
-            # embed. The full detail still exists, in the Space's Logs
-            # tab, where it's actually useful for debugging.
-            print(f"ALL PROVIDERS FAILED - compound: {compound_error!r}; plain: {groq_error!r}; "
-                  f"gemini: {_last_provider_error['gemini']}; "
-                  f"small_groq: {_last_provider_error['small_groq']}; "
-                  f"openrouter: {_last_provider_error['openrouter']}", flush=True)
-            # Deliberately no longer says "I'm maxed out on my daily AI
-            # usage limit". Members read that as "I asked too much" and
-            # started apologising for a one-line follow-up question, when
-            # what had actually happened was every provider failing at
-            # once - on 2026-08-25 because Groq had retired the model,
-            # nothing to do with usage at all. Say what's true: it's
-            # broken on our end, not their fault, and not their quota.
-            return (
-                "My AI service isn't responding right now, so I can't answer this one. "
-                "This isn't anything you did and it isn't a limit on your account - "
-                "try again in a bit, and tell a host if it keeps happening.", []
-            )
+        )
+        if small_reply is not None:
+            return small_reply, []
+        openrouter_reply = _ask_with_openrouter(no_tools_messages)
+        if openrouter_reply is not None:
+            return openrouter_reply, []
+        # Members get a short, human sentence - NOT the raw provider
+        # error. Dumping those into Discord (what this did before)
+        # pasted a wall of JSON, leaked the org id, and included a
+        # billing URL that Discord then turned into a big link-preview
+        # embed. The full detail still exists, in the Space's Logs
+        # tab, where it's actually useful for debugging.
+        print(f"ALL PROVIDERS FAILED - plain: {groq_error!r}; "
+              f"gemini: {_last_provider_error['gemini']}; "
+              f"small_groq: {_last_provider_error['small_groq']}; "
+              f"openrouter: {_last_provider_error['openrouter']}", flush=True)
+        # Deliberately no longer says "I'm maxed out on my daily AI
+        # usage limit". Members read that as "I asked too much" and
+        # started apologising for a one-line follow-up question, when
+        # what had actually happened was every provider failing at
+        # once - on 2026-08-25 because Groq had retired the model,
+        # nothing to do with usage at all. Say what's true: it's
+        # broken on our end, not their fault, and not their quota.
+        return (
+            "My AI service isn't responding right now, so I can't answer this one. "
+            "This isn't anything you did and it isn't a limit on your account - "
+            "try again in a bit, and tell a host if it keeps happening.", []
+        )
 
 
 def _ask_with_tools(messages, channel_id):
@@ -1646,10 +1626,10 @@ def _ask_with_tools(messages, channel_id):
     # is set, so the model can't try to call something that isn't wired up.
     # Kept separate from `messages` (which gets tool-call-shaped entries
     # appended below) so a fallback below can use the CLEAN conversation -
-    # compound/plain/Gemini don't understand this app's tool-call message
-    # shapes, and passing them a stray "tool" role or a content-less
-    # "assistant" message just confuses them further, which is exactly
-    # what produced an empty/unhelpful reply here once already.
+    # the plain/Gemini fallbacks don't understand this app's tool-call
+    # message shapes, and passing them a stray "tool" role or a
+    # content-less "assistant" message just confuses them further, which
+    # is exactly what produced an empty/unhelpful reply here once already.
     original_messages = list(messages)
     tools = [CLUB_DATA_TOOL, CHAT_HISTORY_TOOL] + ([WEB_SEARCH_TOOL] if TAVILY_API_KEY else [])
     try:
@@ -1699,13 +1679,13 @@ def _ask_with_tools(messages, channel_id):
         return reply, all_sources
     except Exception:
         # A Groq failure here (rate limit, empty response, etc.) falls
-        # through to the same compound/plain/Gemini chain as the
-        # no-Tavily path, rather than a second, different error message
-        # for what's really the same underlying problem. Loses
-        # chat-history-search ability on this one reply
-        # (compound/plain/Gemini don't have that tool), but still answers
-        # something rather than nothing.
-        return _ask_with_compound(original_messages, channel_id)
+        # through to the plain/Gemini/small_groq/OpenRouter chain rather
+        # than a second, different error message for what's really the
+        # same underlying problem. Loses chat-history-search and
+        # web-search ability on this one reply (none of those fallback
+        # providers have those tools), but still answers something
+        # rather than nothing.
+        return _ask_with_fallback_chain(original_messages, channel_id)
 
 
 def _tidy_truncation(reply):

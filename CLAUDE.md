@@ -1854,6 +1854,46 @@ ID is much less directly actionable than an email, so this wasn't folded
 into the same fix, but it's the same underlying pattern if it ever matters
 enough to move too.
 
+## groq/compound retired — Tavily is now the only search path (2026-09-20)
+
+A Groq deprecation email flagged that `groq/compound` (and, confirmed by
+reading Groq's own docs directly, `groq/compound-mini` too) was being
+decommissioned 2026-09-21 with **no replacement model** — worth noting
+that a search-engine snippet along the way claimed
+`llama-3.3-70b-versatile` as the replacement, which Groq itself had
+already retired months earlier (see the 2026-08-25 incident above), so
+that snippet was wrong and console.groq.com/docs/deprecations was
+trusted instead.
+
+Both AI surfaces had already been building toward Tavily as the
+preferred search path since 2026-08-12 (see the "Web search, take 2 —
+Tavily" section above) — `groq/compound` only remained as the fallback
+for whenever `TAVILY_API_KEY` wasn't set, which is exactly what happened
+in practice per the "Open item" note earlier in this file. With
+`groq/compound` gone entirely, that fallback had nothing left to fall
+back to, so it's removed rather than pointed at a dead model:
+
+- `discord_bot/bot.py`: `_ask_with_compound` (tried compound, then plain,
+  then Gemini, then small_groq, then OpenRouter) is now
+  `_ask_with_fallback_chain` (plain, then Gemini, then small_groq, then
+  OpenRouter) — one fewer link in a chain that already had four. Still
+  only reached when the primary Tavily tool-calling path
+  (`_ask_with_tools`) fails.
+- `app_pages/assistant.py`: the web-search toggle's "no Tavily key"
+  branch no longer calls a model that doesn't exist — it now answers
+  plainly and tells the host `TAVILY_API_KEY` needs to be set, instead of
+  silently guessing (or, after 2026-09-21, erroring) without saying why.
+- Dead code removed alongside: `_extract_sources()` (both files) and
+  `_is_request_too_large()` (assistant.py) only ever parsed/classified
+  compound responses.
+
+**`TAVILY_API_KEY` is effectively required for web search now, not
+optional.** Confirmed set in the local `.env`; not verified here whether
+it's also set on Streamlit Cloud Secrets and the VPS's own `.env` — worth
+checking given this project's repeated history of secrets existing in
+one store but not the other (see "Streamlit Cloud's Secrets are a
+completely separate store" earlier in this file).
+
 ## Explicitly NOT in v1
 
 No PDF-to-spreadsheet feature. (WhatsApp notifications used to be listed
