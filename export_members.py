@@ -90,14 +90,32 @@ def tidy_name(raw):
     return " ".join(fix(w) for w in name.split(" ") if w)
 
 
-def socials_for(row):
+# A real handle is short and has no spaces. The host review page lets a
+# host edit these before approving, but nothing stopped Advit's real
+# submission from being approved with his LinkedIn/GitHub boxes still
+# holding a paragraph of prose ("I don't have a Linkedin account. I am
+# too young for it.") instead of a handle - that text would otherwise
+# have been built straight into a broken URL and committed to the site.
+# This is the backstop: whatever a host approved, a string this shape is
+# never a handle, so it is dropped rather than turned into a dead link.
+HANDLE_RE = re.compile(r"^[A-Za-z0-9_.\-]{1,30}$")
+
+
+def socials_for(row, warnings=None):
     out = []
-    if row.get("instagram"):
-        out.append(("instagram", f"https://www.instagram.com/{row['instagram']}"))
-    if row.get("linkedin"):
-        out.append(("linkedin", f"https://www.linkedin.com/in/{row['linkedin']}"))
-    if row.get("github"):
-        out.append(("github", f"https://github.com/{row['github']}"))
+    for kind, url_fmt in (
+        ("instagram", "https://www.instagram.com/{}"),
+        ("linkedin", "https://www.linkedin.com/in/{}"),
+        ("github", "https://github.com/{}"),
+    ):
+        value = (row.get(kind) or "").strip()
+        if not value:
+            continue
+        if not HANDLE_RE.match(value):
+            if warnings is not None:
+                warnings.append((row.get("name", "?"), kind, value))
+            continue
+        out.append((kind, url_fmt.format(value)))
     return out
 
 
@@ -163,7 +181,7 @@ def main():
         print("      correct either way.\n")
         rows = client.table("users").select(base).execute().data
 
-    people, skipped = [], []
+    people, skipped, bad_handles = [], [], []
     seen = set()
     for row in rows:
         raw = (row.get("name") or "").strip()
@@ -206,7 +224,7 @@ def main():
             "name": name,
             "role": role_label,
             "photo_path": row.get("photo_path") if approved else None,
-            "socials": socials_for(row) if approved else [],
+            "socials": socials_for(row, bad_handles) if approved else [],
             "src": "",
         })
 
@@ -231,6 +249,11 @@ def main():
         print("\nnot listed:")
         for name, why in skipped:
             print(f"   {name:<32} {why}")
+    if bad_handles:
+        print("\nhandle doesn't look real, dropped rather than linked:")
+        for name, kind, value in bad_handles:
+            print(f"   {name:<20} {kind:<10} {value[:60]!r}")
+        print("   (fix it on the Website: Members review page, then re-run this)")
 
     if args.dry_run:
         print("\n--dry-run: nothing written")

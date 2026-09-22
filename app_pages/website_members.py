@@ -10,7 +10,7 @@
 
 import streamlit as st
 
-from shared import cached_table, get_client, get_storage_client, invalidate_cache, safe_write
+from shared import cached_table, get_client, get_storage_client, invalidate_cache, safe_write, send_email
 
 is_host = st.session_state.is_host
 if not is_host:
@@ -118,6 +118,19 @@ else:
                             "website_note": note.strip() or None,
                         }).eq("user_id", u["user_id"]).execute()
                         invalidate_cache()
+                        # Until now a decline only showed up if the member
+                        # happened to come back and check Your Profile —
+                        # this is the actual notification, best-effort like
+                        # every other email in this app.
+                        if u.get("email"):
+                            send_email(
+                                u["email"],
+                                "Your website photo wasn't approved",
+                                "A host didn't approve your photo/links for roboknights.in"
+                                + (f":\n\n{note.strip()}\n\n" if note.strip() else ".\n\n")
+                                + "You can fix it and tick the box again on Your Profile to "
+                                "ask for another review.",
+                            )
                     st.session_state.website_review_message = f"Declined {u['name']}."
                     st.rerun()
             else:

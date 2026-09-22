@@ -1894,6 +1894,79 @@ checking given this project's repeated history of secrets existing in
 one store but not the other (see "Streamlit Cloud's Secrets are a
 completely separate store" earlier in this file).
 
+## Website: Results — a host can now add/edit/delete achievements directly (2026-09-22)
+
+The public website (`RoboKnights-Clan.github.io`, sibling repo) has no
+backend of its own — every page is static, generated from either a
+hand-maintained TypeScript file or an export script run from here. Until
+now, achievements were the worst-served: `data/achievements.ts` held 189
+hand-compiled historical results going back to 2002, and the only host
+workflow that existed (`export_achievements.py`) could ONLY append newer,
+member-self-reported results onto the end of that file — never edit or
+remove anything, on either side. Asked directly for a way to "add
+achievements, manually edit every detail on the site" — this is the first
+piece of that, covering achievements specifically. The rest (Alumni,
+About, Contact, Resources, Videos, FAQs, Socials — none of which have any
+host workflow at all today) is deliberately deferred to its own later
+chunk rather than attempted in the same pass.
+
+New Supabase table `public_achievements` (migration at the end of
+`supabase_schema.sql`, not yet run at time of writing — see below): one
+flat row per website entry (competition, level, year, prize, members),
+free-text and NOT tied to the competitions/competition_events system,
+since most of the 189 historical results predate this dashboard entirely
+and were never real "competitions" in this app's sense. This table is now
+the single source of truth `data/achievements.ts` is generated from.
+
+- **Website: Results** (`app_pages/website_achievements.py`) gained two
+  new sections below the existing review queue: "Add a result directly"
+  (free-text form, no competition/event record needed — for backfilling
+  history or logging something a host heard about secondhand) and "All
+  public achievements" (every row in `public_achievements`, inline-
+  editable via `st.data_editor` with a search box, plus a delete picker).
+  Approving a member's self-reported result now ALSO inserts straight
+  into `public_achievements`, instead of leaving that for an export
+  script to notice later.
+- `export_achievements.py` is **deleted** — its append-only job is fully
+  superseded. `export_public_achievements.py` replaces it: a full rewrite
+  of `data/achievements.ts` from `public_achievements`, same shape as
+  `export_members.py` already uses for `data/members.ts`. Still manual on
+  purpose (`--dry-run` first, look at the diff, commit it).
+- `import_public_achievements.py` — one-time migration, run once right
+  after the new table exists, to seed it with the 189 (well, 201 by now)
+  existing entries already in `data/achievements.ts`. Parses the file
+  with a real Node `eval()` of its array literal rather than regex — one
+  entry has escaped quotes INSIDE a string
+  (`"\"Technovanza\" event of \"ATAL Tinkering Fest\"..."`), exactly the
+  kind of thing a hand-rolled parser gets subtly wrong. Verified with a
+  full render→re-parse round-trip test before trusting it on real data.
+
+**Caught before it shipped, not after:** the real historical `level`
+values are messy — `"Naitonal"` (a typo), `"Inter-School"`, trailing
+spaces (`"National "`), and `"Regional (Delhi)"` as its own level
+genuinely distinct from plain `"Regional"`. Streamlit's
+`SelectboxColumn` requires an exact match against its options list, so
+loading these 201 real rows into the new editable table as-is would have
+broken the whole editor the first time a host opened it — checked this
+directly against the real data before calling it done, not assumed.
+Fixed by reusing `pages/achievements.tsx`'s own existing `LEVEL_LABEL`
+normalization map (the site's own established canonical spellings, not a
+second one invented here) inside the import script, and adding "Regional
+(Delhi)" as its own real fifth option in `LEVEL_OPTIONS` rather than
+merging it into "Regional" and losing the distinction. Confirmed all 201
+real entries normalize cleanly with no stragglers left over.
+
+**Not done yet — needs the student's own hands, same as every other
+schema change in this project:** the `public_achievements` migration at
+the end of `supabase_schema.sql` needs to be run in Supabase's SQL
+editor, then `python import_public_achievements.py` run once to seed it,
+before this page is usable. `export_public_achievements.py` should then
+be run once as a sanity check (`--dry-run` first) to confirm it
+regenerates a `data/achievements.ts` that's byte-for-byte close to what's
+already there (formatting will differ — the original file's whitespace
+was never consistent — but no entries should be gained, lost, or
+reworded).
+
 ## Explicitly NOT in v1
 
 No PDF-to-spreadsheet feature. (WhatsApp notifications used to be listed
