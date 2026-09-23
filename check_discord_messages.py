@@ -111,6 +111,15 @@ MAX_WARNINGS_PER_RUN = 3
 
 DISCORD_GENERAL_WEBHOOK = os.environ.get("DISCORD_GENERAL_WEBHOOK_URL")
 DISCORD_AUTOMATED_MARKER = "\n\n***This is automated message***"
+# Same values as DISCORD_BOT_USERNAME/DISCORD_BOT_AVATAR_URL in shared.py -
+# kept in sync by hand since this script deliberately doesn't import that
+# module (see post_to_general()'s own comment). Without these, a webhook
+# post carries whatever name/avatar that webhook happens to be configured
+# with by default (seen live: "Captain Hook", not the bot's own identity),
+# same "wrong identity on a webhook post" gotcha CLAUDE.md already
+# documents once for a different channel.
+DISCORD_BOT_USERNAME = "roboknightsbot"
+DISCORD_BOT_AVATAR_URL = "https://cdn.discordapp.com/avatars/1536836032329416724/5ebc6d79217e395322b1faf5107e095f.png"
 DISCORD_MESSAGE_LIMIT = 2000
 
 # The length the warnings are meant to be. Enforced in code, not by asking
@@ -369,8 +378,15 @@ def post_to_general(text):
 
     first_id = None
     for chunk in chunks:
-        r = requests.post(f"{DISCORD_GENERAL_WEBHOOK}?wait=true",
-                          json={"content": chunk}, timeout=20)
+        r = requests.post(
+            f"{DISCORD_GENERAL_WEBHOOK}?wait=true",
+            json={
+                "content": chunk,
+                "username": DISCORD_BOT_USERNAME,
+                "avatar_url": DISCORD_BOT_AVATAR_URL,
+            },
+            timeout=20,
+        )
         if r.status_code >= 300:
             print(f"   posting failed: HTTP {r.status_code} {r.text[:200]}", flush=True)
             return first_id

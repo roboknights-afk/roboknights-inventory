@@ -11,16 +11,29 @@ import streamlit.components.v1 as components
 from dotenv import load_dotenv
 from supabase_auth.helpers import generate_pkce_challenge, generate_pkce_verifier
 
+# Secrets (the Supabase URL and key) live in a local .env file, not in this
+# file, so they never get accidentally shared or committed. MUST run before
+# `from shared import (...)` below, not after — found 2026-09-22 the hard
+# way: a Python `from X import Y` statement runs X's entire module body
+# immediately, and shared.py's access-role constants (HOST_EMAILS etc.)
+# are read from Supabase at that same module-load time. With load_dotenv()
+# called only afterward, SUPABASE_URL/SUPABASE_KEY don't exist in
+# os.environ yet when shared.py needs them, the read throws, and
+# _load_access_roles()'s own best-effort try/except quietly falls back to
+# empty sets — meaning HOST_EMAILS was empty on EVERY local run since the
+# access_roles migration (2026-09-17), and every host account has been
+# hitting the verify-your-details popup meant only for students, locally
+# only. Never surfaced on Streamlit Cloud because its secrets are injected
+# as real environment variables at process start, not read from a .env
+# file — so this ordering never mattered there.
+load_dotenv()
+
 from shared import (
     APP_URL, EXUN_CHANNEL_MEMBERS, EXUN_EMAILS, HOST_EMAILS, HOST_ROLES, VIEWER_EMAILS, cached_table,
     get_client, has_unread_chats, has_unread_exun_channel, has_unread_queries, invalidate_cache,
     safe_write, send_email,
     sync_member_to_clio_sheet,
 )
-
-# Secrets (the Supabase URL and key) live in a local .env file, not in this
-# file, so they never get accidentally shared or committed.
-load_dotenv()
 
 # Must be the first Streamlit call in the script. "wide" gives the
 # multi-column parts table room to breathe instead of squeezing everything
@@ -1663,12 +1676,11 @@ if current_user_row and current_user_row.get("role") in ("member", "core_member"
 # "Host tools": strictly host-only management pages.
 host_pages = []
 if st.session_state.is_host:
-    # Approve/decline what members have submitted for the public website —
-    # results, photos, social handles — before any of it reaches
-    # roboknights.in. Two pages, not one: reviewing results and reviewing
-    # member profiles are different tasks and don't need to share a page.
-    host_pages.append(st.Page("app_pages/website_achievements.py", title="Website: Results", icon=":material/emoji_events:"))
-    host_pages.append(st.Page("app_pages/website_members.py", title="Website: Members", icon=":material/badge:"))
+    # Everything that publishes to roboknights.in, one page (2026-09-22)
+    # — used to be two separate pages (website_achievements.py,
+    # website_members.py, both deleted), now one, with a top switcher
+    # inside the page itself for Achievements/Members/Alumni.
+    host_pages.append(st.Page("app_pages/website.py", title="Website", icon=":material/language:"))
     # Everything this app sends to Discord, across both the competitions
     # channel and the private Exun<>RK channel.
     host_pages.append(st.Page("app_pages/discord_messages.py", title="Discord Messages", icon=":material/forum:"))

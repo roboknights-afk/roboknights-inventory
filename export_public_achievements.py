@@ -69,7 +69,11 @@ def main():
     try:
         rows = client.table("public_achievements").select("*").execute().data
     except Exception as error:
-        if "does not exist" not in str(error):
+        # PostgREST's real wording for a missing table is "Could not
+        # find the table ... in the schema cache" (code PGRST205), not
+        # "does not exist" - checking only the latter meant this never
+        # actually caught anything.
+        if "does not exist" not in str(error) and "PGRST205" not in str(error):
             raise
         print("NOTE: public_achievements doesn't exist yet - run the migration at")
         print("      the end of supabase_schema.sql in Supabase's SQL editor, then")
