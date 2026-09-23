@@ -122,8 +122,15 @@ def render_schedule_meeting():
                 }).execute()
                 if invitees:
                     new_id = created.data[0]["meeting_id"]
-                    client.table("meeting_invitees").insert(
-                        [{"meeting_id": new_id, "user_id": uid} for uid in invitees]
+                    # upsert + ignore_duplicates, not insert - a double
+                    # click on Schedule (this dialog has no debounce) can
+                    # fire this twice before the first request's row
+                    # exists to be deduped against, which hit the
+                    # (meeting_id, user_id) unique constraint and crashed
+                    # the whole save on a genuinely brand-new meeting.
+                    client.table("meeting_invitees").upsert(
+                        [{"meeting_id": new_id, "user_id": uid} for uid in invitees],
+                        on_conflict="meeting_id,user_id", ignore_duplicates=True,
                     ).execute()
                 invalidate_cache()
             # Meetings never emailed anyone before this - every other part
@@ -273,12 +280,22 @@ def render_meeting_card(m):
                         # Only the difference is written, so re-saving a
                         # meeting without touching this list doesn't churn
                         # rows (and an unchanged list costs no writes).
+                        # invited_by_meeting comes from cached_table(),
+                        # up to 8s stale - a double click on Save changes
+                        # within that window (or two hosts editing the
+                        # same meeting close together) can compute the
+                        # same "add this uid" diff twice, and the second
+                        # insert then hit the (meeting_id, user_id)
+                        # unique constraint before its own row existed to
+                        # be diffed against. upsert + ignore_duplicates
+                        # makes a repeat add a harmless no-op instead of
+                        # crashing the whole save.
                         was_invited = invited_by_meeting.get(m["meeting_id"], set())
                         now_invited = set(edit_invitees)
                         for uid in now_invited - was_invited:
-                            client.table("meeting_invitees").insert({
+                            client.table("meeting_invitees").upsert({
                                 "meeting_id": m["meeting_id"], "user_id": uid,
-                            }).execute()
+                            }, on_conflict="meeting_id,user_id", ignore_duplicates=True).execute()
                         for uid in was_invited - now_invited:
                             client.table("meeting_invitees").delete().eq(
                                 "meeting_id", m["meeting_id"]
