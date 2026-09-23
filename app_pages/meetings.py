@@ -16,7 +16,7 @@ import streamlit as st
 from shared import (
     EXUN_EMAILS, MEETING_EXCLUDED_STAFF_EMAILS, cached_table, get_client, google_calendar_link,
     invalidate_cache, is_meeting_visible, meeting_email_body, meeting_invited_ids,
-    meeting_invitee_rows, safe_write, send_email, today_ist,
+    meeting_invitee_rows, notify_meeting_discord, safe_write, send_email, today_ist,
 )
 
 client = get_client()
@@ -171,6 +171,13 @@ def render_schedule_meeting():
                 f"A meeting has been scheduled{' for you' if invitees else ''}.",
                 f"Meeting: {title.strip()}",
             )
+            # Discord: the whole club gets pinged in #announcements, or
+            # (for a named-invitee meeting) each invited person with a
+            # linked Discord account gets a DM instead — never both, and
+            # never the join link either way. Best-effort inside
+            # notify_meeting_discord itself, so a Discord hiccup can't
+            # turn a successful "Schedule" into an error.
+            notify_meeting_discord(created.data[0], invitees, "new")
             st.session_state.meeting_message = (
                 "success", f"Scheduled {title.strip()} — emailed {sent_to} member(s)."
             )
@@ -303,6 +310,16 @@ def render_meeting_card(m):
                     link = edit_link.strip()
                     if link and not link.startswith(("http://", "https://")):
                         link = "https://" + link
+                    # Computed before the write so it can also decide
+                    # whether to reset the 24h/1h reminder flags below —
+                    # a rescheduled meeting whose reminders already fired
+                    # for the OLD time needs a clean slate for the new one,
+                    # same idea as the "moved" re-email a few lines down.
+                    old_time = (m.get("meeting_time") or "")[:5]
+                    new_time = edit_time.strftime("%H:%M") if edit_time else ""
+                    moved = (
+                        m["meeting_date"] != edit_date.isoformat() or old_time != new_time
+                    )
                     with safe_write(f"update {edit_title.strip()}"):
                         client.table("meetings").update({
                             "title": edit_title.strip(),
@@ -313,6 +330,10 @@ def render_meeting_card(m):
                             "meeting_id_code": edit_id_code.strip() or None,
                             "meeting_password": edit_password.strip() or None,
                             "include_exun_staff": edit_include_exun_staff,
+                            **(
+                                {"reminder_24h_sent": False, "reminder_1h_sent": False}
+                                if moved else {}
+                            ),
                         }).eq("meeting_id", m["meeting_id"]).execute()
                         # Only the difference is written, so re-saving a
                         # meeting without touching this list doesn't churn
@@ -343,11 +364,7 @@ def render_meeting_card(m):
                     # but a changed date or time is exactly the thing
                     # people need to be told about - same rule the
                     # Competitions page already uses for date changes.
-                    old_time = (m.get("meeting_time") or "")[:5]
-                    new_time = edit_time.strftime("%H:%M") if edit_time else ""
-                    moved = (
-                        m["meeting_date"] != edit_date.isoformat() or old_time != new_time
-                    )
+                    # (moved was computed above, before the write.)
                     msg = f"Updated {edit_title.strip()}."
                     if moved:
                         updated = dict(m)

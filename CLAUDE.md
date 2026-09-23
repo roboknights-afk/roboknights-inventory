@@ -2013,6 +2013,72 @@ shouldn't" needs to be an automatically-flaggable category too, that's a
 real, separate addition to that script's `PROMPT`, not something this fix
 touches.
 
+## Meeting Discord announcements + 24h/1h reminders (2026-09-23)
+
+The feature described right after the Exun/staff-exclusion toggle above:
+"whenever a new meeting is created, make roboknights bot announce it in
+Discord (tagging the club roles, date/time, no join link — that's
+dashboard-only), and remind again 24 hours and 1 hour before; a private
+(named-invitee) meeting should DM those people instead of posting to the
+shared channel, same rule, no link either way."
+
+**The new-meeting announcement is synchronous**, in
+`app_pages/meetings.py`'s "Schedule a meeting" flow itself — right after
+the existing email notification, calling `notify_meeting_discord()`
+(new, in `shared.py`). No cron needed for this part since it only ever
+fires once, right when Schedule is clicked.
+
+**The 24h/1h reminders need real cron precision**, which the existing
+`due-reminders.yml` (four fixed times a day) can't give — a "1 hour
+before" reminder needs polling far tighter than once a day. New
+`.github/workflows/meeting-reminders.yml` runs the new
+`send_meeting_reminders.py` every 15 minutes. Two new boolean columns,
+`meetings.reminder_24h_sent`/`reminder_1h_sent` (migration in
+`supabase_schema.sql`, **not yet run** at time of writing — same
+not-my-hands-to-run-it rule as every other schema change here), same
+"stops the same reminder firing twice" idiom as
+`requests.reminder_2day_sent`/`reminder_1day_sent`. Editing a meeting's
+date/time resets both flags, so a rescheduled meeting's reminders
+recompute against the NEW time instead of staying stuck "already sent"
+for a moment that no longer happens.
+
+**Private vs. open meeting decides channel vs. DM**, same "named list =
+only them" rule `is_meeting_visible` already applies to who can even see
+a meeting in the app: an empty invitee list posts once to
+`#announcements` (pinging `@member`/`@adhoc` via the existing
+`discord_role_tags()`); a named list DMs each invited person who has
+linked their Discord account (`users.discord_user_id`, the same
+self-reported field from the Home page) — people with no linked account
+just don't get a DM, no error, nothing else changes for them. **Neither
+path ever includes the join link, meeting ID, or password** — Discord is
+a much less access-controlled surface than the dashboard's own
+per-meeting visibility, so the actual call details stay dashboard-only,
+same reasoning `_notify_meeting`'s emails already follow structurally
+(though those DO include the link — only the Discord side needed this).
+
+**DMing needed a new capability this app never had: talking to Discord
+as the real bot, not a webhook.** A webhook can only ever post into the
+one channel it was created for — there's no such thing as a webhook DM.
+New `send_discord_dm()` in `shared.py` calls Discord's REST API directly
+with `Authorization: Bot {DISCORD_BOT_TOKEN}` (the same token
+`discord_bot/bot.py` already holds) to open a DM channel
+(`POST /users/@me/channels`) and post to it
+(`POST /channels/{id}/messages`). Confirmed this needs no persistent
+gateway connection — both are one-off REST calls — so the dashboard (and
+the new cron script) can send a DM on their own; the always-on bot
+process on the VPS doesn't need to be involved or even running.
+`DISCORD_BOT_TOKEN` therefore needs to be added to Streamlit Cloud's
+Secrets AND to this new workflow's GitHub repo secrets, separately from
+wherever the bot itself already has it — the fourth+ time this project's
+"secrets don't sync between stores" lesson has come up.
+
+`send_meeting_reminders.py` deliberately doesn't import `shared.py`
+(same reasoning as `send_due_reminders.py`/`send_dashboard_update.py` —
+no Streamlit dependency needed for a cron job), so `send_discord_dm()`,
+`discord_role_tags()`, and the meeting-message wording are duplicated
+there in trimmed form. Keep the two copies in sync if the wording or the
+DM mechanics ever change.
+
 ## Explicitly NOT in v1
 
 No PDF-to-spreadsheet feature. (WhatsApp notifications used to be listed

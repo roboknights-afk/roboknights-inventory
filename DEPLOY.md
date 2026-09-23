@@ -36,6 +36,7 @@ file or from a hosting platform's secrets manager.
    DISCORD_ANNOUNCEMENTS_WEBHOOK_URL = "..."
    DISCORD_MEMBER_ROLE_ID = "..."
    DISCORD_ADHOC_ROLE_ID = "..."
+   DISCORD_BOT_TOKEN = "..."
    GOOGLE_SERVICE_ACCOUNT_JSON_B64 = "..."
    ```
 
@@ -80,7 +81,23 @@ file or from a hosting platform's secrets manager.
    from that channel's Settings → Integrations → Webhooks. Unlike #general,
    this one DOES have its own tab on the Discord Messages page, so a host
    can write, preview, edit and delete announcements without touching code.
-   Nothing posts here automatically.
+   **Since 2026-09-23 this also gets automatic posts**: a new open (whole-club)
+   meeting, plus its 24h/1h-before reminders, are posted here automatically,
+   pinging `DISCORD_MEMBER_ROLE_ID`/`DISCORD_ADHOC_ROLE_ID` — see "Meeting
+   Discord announcements + reminders" below. A PRIVATE (named-invitee)
+   meeting never posts here at all; those people get a DM instead.
+
+   `DISCORD_BOT_TOKEN` — the same token discord_bot/bot.py already uses (see
+   its own deploy section further down) — is ALSO needed here now, for
+   sending those meeting DMs. It's a REST-only use (opening a DM channel and
+   posting to it), not a live gateway connection, so the always-on bot
+   process on the VPS doesn't need to be running for this to work; the
+   dashboard/cron script send the DM directly. Optional in the sense that
+   nothing crashes without it — meeting DMs just silently don't go out,
+   same best-effort spirit as every other notification here — but it does
+   need to be added to Streamlit Cloud's Secrets separately from wherever
+   the bot itself already has it (yet another instance of this project's
+   "four separate secret stores" rule — see CLAUDE.md).
 
    `DISCORD_MEMBER_ROLE_ID` and `DISCORD_ADHOC_ROLE_ID` are also optional —
    every Discord notification (new event, vacant-events reminder) pings
@@ -226,6 +243,53 @@ To test it: **Actions → Due date reminders → Run workflow**. A manual run
 executes all three steps, this one included. Locally,
 `python check_discord_messages.py --dry-run` prints the report instead of
 emailing it.
+
+## Meeting Discord announcements + reminders (2026-09-23)
+
+`.github/workflows/meeting-reminders.yml` runs `send_meeting_reminders.py`
+every 15 minutes — its own workflow, separate from `due-reminders.yml`,
+because a "24 hours before" / "1 hour before" reminder needs far tighter
+polling than once a day.
+
+What happens, end to end:
+
+- **The moment a meeting is scheduled** (`app_pages/meetings.py`, not this
+  cron job): if it's open to the whole club, a post goes to
+  `#announcements` pinging the `@member`/`@adhoc` roles. If it names
+  specific invitees, each invited person who has linked their Discord
+  account (Home page → "Your Discord ID") gets a DM instead — never the
+  shared channel. Neither ever includes the join link, meeting ID, or
+  password — those stay on the dashboard.
+- **24 hours before, and again 1 hour before**, this script sends the same
+  kind of reminder (channel post for an open meeting, DM per invitee for a
+  private one), tracked by `meetings.reminder_24h_sent`/`reminder_1h_sent`
+  so the same reminder never goes out twice. A meeting with no time set
+  (date only) gets no timed reminder — there's nothing to be "N hours
+  before" of.
+- Rescheduling a meeting (host edits date/time) resets both flags, so the
+  reminders fire relative to the NEW time instead of staying stuck as
+  "already sent" for a moment that no longer happens.
+
+Add these as **GitHub repo secrets** (Settings → Secrets and variables →
+Actions) — `SUPABASE_URL`/`SUPABASE_KEY` are already set for the other
+workflows:
+
+- `DISCORD_BOT_TOKEN` — required for the DM path (private meetings).
+  Without it, DMs silently don't send but the channel-post path for open
+  meetings still works. Same token `discord_bot/bot.py` uses — see its own
+  section below for where to get it — but this needs to be added here
+  SEPARATELY (yet another instance of "four separate secret stores"; see
+  CLAUDE.md), since this workflow doesn't read the bot's own environment.
+- `DISCORD_ANNOUNCEMENTS_WEBHOOK_URL` — required for the channel-post path
+  (open meetings). Without it, reminders for open meetings silently don't
+  post, but private-meeting DMs still work.
+- `DISCORD_MEMBER_ROLE_ID` / `DISCORD_ADHOC_ROLE_ID` — optional; without
+  either, the channel post still goes out, just without pinging that role.
+
+To test it: **Actions → Meeting reminders → Run workflow**. A manual run
+only sends reminders that are actually due right now (based on real
+meeting times in the database) — it won't fire early just because you
+triggered it by hand.
 
 ## Discord AI bot (auto-replies to @mentions and DMs)
 

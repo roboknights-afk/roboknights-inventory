@@ -1368,3 +1368,93 @@ def notify_if_roster_complete(competition_id):
             ).execute()
     except Exception:
         pass
+
+
+def send_discord_dm(discord_user_id, content):
+    # A DM channel can't be reached by any webhook — a webhook only ever
+    # posts into the one channel it was created for. This uses the bot's
+    # own token directly over plain REST instead. Opening a DM channel and
+    # posting to it are both one-off HTTP calls, neither needing the
+    # always-on gateway connection discord_bot/bot.py holds open, so the
+    # dashboard can send a DM by itself without that separate process
+    # being involved at all. Silently no-ops (same best-effort spirit as
+    # send_email/send_discord_message) if the token isn't configured here
+    # or the recipient has no linked Discord account.
+    token = os.environ.get("DISCORD_BOT_TOKEN")
+    if not token or not discord_user_id:
+        return False
+    headers = {"Authorization": f"Bot {token}"}
+    try:
+        channel_resp = requests.post(
+            "https://discord.com/api/v10/users/@me/channels",
+            headers=headers, json={"recipient_id": str(discord_user_id)}, timeout=10,
+        )
+        channel_id = channel_resp.json().get("id")
+        if not channel_id:
+            return False
+        message_resp = requests.post(
+            f"https://discord.com/api/v10/channels/{channel_id}/messages",
+            headers=headers, json={"content": content}, timeout=10,
+        )
+        return message_resp.status_code < 400
+    except Exception:
+        return False
+
+
+def _meeting_discord_body(meeting, kind, is_private):
+    # Never includes the join link, meeting ID, or password — on the
+    # public channel OR in a DM. "Accessible on the dashboard instead" is
+    # the whole point of this feature (2026-09-23 request): Discord is a
+    # much less access-controlled surface than the dashboard's own
+    # per-meeting visibility rules, so the actual call details stay there.
+    when = date.fromisoformat(meeting["meeting_date"]).strftime("%A, %d %b %Y")
+    if meeting.get("meeting_time"):
+        when += f" at {meeting['meeting_time'][:5]} IST"
+    if kind == "new":
+        headline = (
+            f":lock: **You're invited: {meeting['title']}**" if is_private
+            else f":calendar_spiral: **New meeting: {meeting['title']}**"
+        )
+    elif kind == "reminder_24h":
+        headline = f":alarm_clock: **Reminder — {meeting['title']} is about 24 hours away**"
+    else:  # reminder_1h
+        headline = f":alarm_clock: **Starting soon — {meeting['title']} is about 1 hour away**"
+    body = f"{headline}\n:date: {when}"
+    if meeting.get("agenda"):
+        body += f"\n{meeting['agenda']}"
+    body += "\n\nFull details, the join link and RSVP are on the dashboard — not posted here."
+    return body
+
+
+def notify_meeting_discord(meeting, invitee_ids, kind):
+    # kind is "new" (right when it's scheduled — called from meetings.py
+    # itself) or "reminder_24h"/"reminder_1h" (called from
+    # send_meeting_reminders.py, a separate cron script — see its own
+    # header comment for why a 24h/1h-before reminder can't just be a page
+    # load check). A non-empty invitee_ids means this is a private
+    # meeting: those specific people get a DM each, never the shared
+    # channel — the same "named list = only them" rule is_meeting_visible
+    # already applies to who can even see the meeting in the app. An empty
+    # list means the whole club, posted once to the announcements channel
+    # and pinging the @member/@adhoc roles instead of naming anyone.
+    #
+    # Best-effort, same spirit as every other Discord sender here — a
+    # missing DISCORD_BOT_TOKEN/DISCORD_ANNOUNCEMENTS_WEBHOOK_URL, or a
+    # Supabase hiccup looking up who's linked, should never take down the
+    # scheduling/edit save this rides along with.
+    try:
+        is_private = bool(invitee_ids)
+        body = _meeting_discord_body(meeting, kind, is_private)
+        if is_private:
+            rows = get_client().table("users").select("user_id, discord_user_id").in_(
+                "user_id", list(invitee_ids)
+            ).execute().data
+            for row in rows:
+                if row.get("discord_user_id"):
+                    send_discord_dm(row["discord_user_id"], body)
+        else:
+            tags = discord_role_tags()
+            message = body + (f"\n{tags}" if tags else "")
+            send_discord_message(message, channel="announcements")
+    except Exception:
+        pass

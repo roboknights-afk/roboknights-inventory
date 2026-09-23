@@ -1,0 +1,31 @@
+name: Meeting reminders
+
+# A 24h/1h-before reminder needs much tighter polling than the once-a-day
+# schedule everything else in due-reminders.yml runs on, so this is its
+# own workflow rather than a fifth step tacked onto that one. GitHub
+# Actions cron can drift a few minutes under load - fine here, since
+# send_meeting_reminders.py's window logic (target <= now < meeting_dt)
+# just means "fires on the next run after the moment arrives", not to the
+# exact minute.
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch: # lets us trigger it manually from the Actions tab, for testing
+
+jobs:
+  send-meeting-reminders:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install supabase python-dotenv requests
+      - run: python send_meeting_reminders.py
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
+          DISCORD_ANNOUNCEMENTS_WEBHOOK_URL: ${{ secrets.DISCORD_ANNOUNCEMENTS_WEBHOOK_URL }}
+          DISCORD_MEMBER_ROLE_ID: ${{ secrets.DISCORD_MEMBER_ROLE_ID }}
+          DISCORD_ADHOC_ROLE_ID: ${{ secrets.DISCORD_ADHOC_ROLE_ID }}

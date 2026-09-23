@@ -787,3 +787,17 @@ create table if not exists public_alumni (
 -- when scheduling ("also include Exun & specific staff") only for the
 -- meetings that actually need them there.
 alter table meetings add column if not exists include_exun_staff boolean not null default false;
+
+-- Meeting Discord announcements + 24h/1h-before reminders (2026-09-23).
+-- The "new meeting" post fires synchronously from meetings.py at
+-- scheduling time (no flag needed - it only ever happens once, right
+-- there). These two flags are for send_meeting_reminders.py, a separate
+-- cron script polled every 15 minutes (see its own header comment for
+-- why this can't just be a page-load check) - same
+-- reminder_2day_sent/reminder_1day_sent idiom requests already uses,
+-- just for a meeting instead of a loan. Reset back to false when a
+-- meeting is moved (see meetings.py's edit-save "moved" branch), so a
+-- rescheduled meeting's reminders fire relative to its NEW time instead
+-- of staying stuck "already sent" for a moment that no longer happens.
+alter table meetings add column if not exists reminder_24h_sent boolean not null default false;
+alter table meetings add column if not exists reminder_1h_sent boolean not null default false;
