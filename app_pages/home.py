@@ -100,7 +100,7 @@ upcoming_meetings = sorted(
         if m["meeting_date"] >= today_iso
         # Same visibility rule the Meetings page uses - a host-only
         # meeting shouldn't surface here either.
-        and is_meeting_visible(m, _invited_by_meeting, current_user_id, is_host)
+        and is_meeting_visible(m, _invited_by_meeting, current_user_id, is_host, is_exun)
     ),
     key=lambda m: (m["meeting_date"], m["meeting_id"]),
 )

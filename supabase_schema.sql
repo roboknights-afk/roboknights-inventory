@@ -774,3 +774,16 @@ create table if not exists public_alumni (
     created_at        timestamptz not null default now(),
     updated_at        timestamptz not null default now()
 );
+
+-- A general (no named invitees) meeting used to be visible/emailed to
+-- literally everyone with a reason to see the Meetings page - including
+-- Exun (view-only guests, not club members) and staff/host accounts like
+-- Hema Jain (HOD, Computer Science) and Ajith Kumar (Robotics In-Charge),
+-- neither of whom should be swept into a routine club meeting by
+-- default. _notify_meeting() already excluded Exun from EMAILS, but
+-- nothing excluded them from seeing the meeting on the page, and nothing
+-- excluded the two staff accounts from either. This column is the
+-- explicit opt-in for both at once, per meeting - a host ticks a box
+-- when scheduling ("also include Exun & specific staff") only for the
+-- meetings that actually need them there.
+alter table meetings add column if not exists include_exun_staff boolean not null default false;

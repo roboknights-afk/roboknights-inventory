@@ -155,7 +155,10 @@ def _build_context_text():
     upcoming_meetings = [
         m for m in meetings
         if m["meeting_date"] >= today.isoformat()
-        and is_meeting_visible(m, invited_by_meeting, current_user_id, st.session_state.is_host)
+        and is_meeting_visible(
+            m, invited_by_meeting, current_user_id,
+            st.session_state.is_host, st.session_state.is_exun,
+        )
     ]
 
     lines = [f"Today's date: {today.isoformat()}.", f"You are talking to: {current_user_name}.", ""]

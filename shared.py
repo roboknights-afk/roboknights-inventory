@@ -87,6 +87,18 @@ def _load_access_roles():
 # get nagged about unread messages.
 EXUN_CHANNEL_STUDENT_EMAILS = EXUN_CHANNEL_MEMBERS - HOST_EMAILS - EXUN_EMAILS
 
+# The two staff/host accounts that shouldn't be swept into a routine,
+# club-wide meeting by default (2026-09-23) - matched by their HOST_ROLES
+# display TITLE, not a hardcoded email, so this file never goes back to
+# holding a real person's email address directly (see the access_roles
+# migration above for exactly why that was moved out of source once
+# already). If either title is ever renamed in access_roles, update the
+# strings here to match - there is no other link between the two.
+MEETING_EXCLUDED_STAFF_TITLES = {"Robotics In-Charge", "HOD, Computer Science"}
+MEETING_EXCLUDED_STAFF_EMAILS = {
+    email for email, title in HOST_ROLES.items() if title in MEETING_EXCLUDED_STAFF_TITLES
+}
+
 # Hard, code-level block on roast/insult requests, checked before any
 # model call. The no-roasting rule also lives in both system prompts, but
 # a prompt rule is only an instruction a model can choose to ignore -
@@ -852,7 +864,7 @@ def meeting_invited_ids(invitee_rows):
     return invited
 
 
-def is_meeting_visible(meeting, invited_by_meeting, user_id, is_host=False):
+def is_meeting_visible(meeting, invited_by_meeting, user_id, is_host=False, is_exun=False):
     # ONE definition of who can see a meeting, shared by the Meetings page,
     # the Home page's next-meeting nudge, and the AI Assistant's context —
     # three separate readers that would otherwise drift apart and leak a
@@ -863,6 +875,17 @@ def is_meeting_visible(meeting, invited_by_meeting, user_id, is_host=False):
     # those people, plus hosts, who schedule and run them.
     invited = invited_by_meeting.get(meeting["meeting_id"])
     if not invited:
+        # Exun are view-only guests, not club members - a routine
+        # meeting isn't theirs to see unless a host explicitly opted
+        # them in for this one (include_exun_staff, 2026-09-23). is_host
+        # is checked FIRST and unconditionally - the two are mutually
+        # exclusive in practice, but a host must never be hidden from a
+        # meeting no matter what other flags happen to be set, the same
+        # guarantee the named-invitee branch below already gives hosts.
+        if is_host:
+            return True
+        if is_exun and not meeting.get("include_exun_staff"):
+            return False
         return True
     return is_host or user_id in invited
 

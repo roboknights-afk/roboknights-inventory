@@ -14,9 +14,9 @@ from datetime import date, time
 import streamlit as st
 
 from shared import (
-    EXUN_EMAILS, cached_table, get_client, google_calendar_link, invalidate_cache,
-    is_meeting_visible, meeting_email_body, meeting_invited_ids, meeting_invitee_rows,
-    safe_write, send_email, today_ist,
+    EXUN_EMAILS, MEETING_EXCLUDED_STAFF_EMAILS, cached_table, get_client, google_calendar_link,
+    invalidate_cache, is_meeting_visible, meeting_email_body, meeting_invited_ids,
+    meeting_invitee_rows, safe_write, send_email, today_ist,
 )
 
 client = get_client()
@@ -30,13 +30,29 @@ user_email_by_id = st.session_state.user_email_by_id
 
 def _notify_meeting(meeting, invitee_ids, intro, subject):
     # Who gets told: exactly the named people if it's a private meeting,
-    # otherwise the whole club. Exun is excluded either way - they can
-    # view meetings in the app but aren't part of the club's mailing.
+    # otherwise the whole club. Exun and the two staff/host accounts
+    # (Hema Jain - HOD, Computer Science; Ajith Kumar - Robotics
+    # In-Charge, though he currently has no users row to even be in
+    # user_email_by_id) are excluded from a general meeting's mailing
+    # UNLESS this specific meeting opted them in (meetings.include_exun_staff,
+    # 2026-09-23) - they can view meetings in the app but aren't part of
+    # the club's routine mailing by default. Read straight off the
+    # meeting row rather than taking this as a separate argument, so a
+    # caller can never pass a value that disagrees with what was actually
+    # saved. A NAMED invitee list always means exactly those people
+    # regardless of this flag - opting someone in by name is a stronger
+    # signal than the blanket toggle.
+    include_exun_staff = bool(meeting.get("include_exun_staff"))
     if invitee_ids:
         emails = [user_email_by_id.get(uid) for uid in invitee_ids]
     else:
         emails = list(user_email_by_id.values())
-    emails = [e for e in emails if e and e not in EXUN_EMAILS]
+        if not include_exun_staff:
+            emails = [e for e in emails if e not in MEETING_EXCLUDED_STAFF_EMAILS]
+    if not include_exun_staff:
+        emails = [e for e in emails if e and e not in EXUN_EMAILS]
+    else:
+        emails = [e for e in emails if e]
 
     link = google_calendar_link(
         title=meeting["title"],
@@ -75,6 +91,18 @@ def _open_schedule_meeting():
 
 @st.dialog("Schedule a meeting", on_dismiss=_close_schedule_meeting)
 def render_schedule_meeting():
+    # At the top, on purpose - this is a decision about who a general
+    # meeting reaches at all, not a detail to bury next to the invitee
+    # picker below. Off by default: Exun and these two staff accounts
+    # aren't part of the club's routine meetings unless a host says so
+    # for this specific one.
+    include_exun_staff = st.toggle(
+        "Also include Exun & specific staff (Ajith Kumar, Hema Jain)",
+        key="new_meeting_include_exun_staff",
+        help="Off by default — a routine club meeting doesn't reach Exun or "
+             "these two staff accounts unless you turn this on for this "
+             "specific meeting.",
+    )
     title = st.text_input("Title", key="new_meeting_title")
     agenda = st.text_area("Agenda", key="new_meeting_agenda")
     mcol1, mcol2 = st.columns(2)
@@ -119,6 +147,7 @@ def render_schedule_meeting():
                     "join_link": link or None,
                     "meeting_id_code": meeting_id_code.strip() or None,
                     "meeting_password": meeting_password.strip() or None,
+                    "include_exun_staff": include_exun_staff,
                 }).execute()
                 if invitees:
                     new_id = created.data[0]["meeting_id"]
@@ -186,7 +215,7 @@ invited_by_meeting = meeting_invited_ids(all_invitees)
 meetings = sorted(
     (
         m for m in cached_table("meetings")
-        if is_meeting_visible(m, invited_by_meeting, current_user_id, is_host)
+        if is_meeting_visible(m, invited_by_meeting, current_user_id, is_host, is_exun)
     ),
     key=lambda m: (m["meeting_date"], m["meeting_id"]),
 )
@@ -224,6 +253,13 @@ def render_meeting_card(m):
     with st.container(border=True, key=f"rkcard_meeting_{m['meeting_id']}"):
         if editing_this:
             # --- Host: edit this meeting ------------------------------
+            # Same toggle as the Schedule dialog, top of the form for the
+            # same reason - see the comment there.
+            edit_include_exun_staff = st.toggle(
+                "Also include Exun & specific staff (Ajith Kumar, Hema Jain)",
+                value=bool(m.get("include_exun_staff")),
+                key=f"edit_include_exun_staff_{m['meeting_id']}",
+            )
             edit_title = st.text_input("Title", value=m["title"], key=f"edit_title_{m['meeting_id']}")
             edit_agenda = st.text_area(
                 "Agenda", value=m.get("agenda") or "", key=f"edit_agenda_{m['meeting_id']}"
@@ -276,6 +312,7 @@ def render_meeting_card(m):
                             "join_link": link or None,
                             "meeting_id_code": edit_id_code.strip() or None,
                             "meeting_password": edit_password.strip() or None,
+                            "include_exun_staff": edit_include_exun_staff,
                         }).eq("meeting_id", m["meeting_id"]).execute()
                         # Only the difference is written, so re-saving a
                         # meeting without touching this list doesn't churn
@@ -322,6 +359,7 @@ def render_meeting_card(m):
                             "join_link": link or None,
                             "meeting_id_code": edit_id_code.strip() or None,
                             "meeting_password": edit_password.strip() or None,
+                            "include_exun_staff": edit_include_exun_staff,
                         })
                         sent_to = _notify_meeting(
                             updated, list(now_invited),
