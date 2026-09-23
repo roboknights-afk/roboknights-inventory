@@ -1967,6 +1967,52 @@ already there (formatting will differ — the original file's whitespace
 was never consistent — but no entries should be gained, lost, or
 reworded).
 
+## The bot approving things it has no authority over (2026-09-23)
+
+A new instance of the same underlying failure the "AI is READ-ONLY"
+section above already documents — this time about a FUTURE action
+instead of a past one. Advit Gupta (8-I) asked the Discord bot "can I
+post an invite for a different Discord server here?" and the bot
+answered "Sure, you can drop the invite here as long as it's relevant to
+robotics... Happy sharing!" — a real permission it has no authority to
+grant. He posted the invite, other members joined the other server
+through it, a host had a strict warning posted about it (a webhook post
+in `#general`, since deleted and reposted once to fix its identity — see
+below), and when Advit asked the bot again afterward whether it was
+fine, the bot repeated the identical answer, directly contradicting a
+warning that had already gone out. Caught live, not from a report.
+
+`SYSTEM_PROMPT_TEMPLATE` in `discord_bot/bot.py` already told the bot it
+can't say it has TAKEN a moderation action ("I've removed that for you")
+— it never told the bot it can't GRANT one going forward ("sure, that's
+fine to post"). Both are the same root problem — answering as if it has
+authority it doesn't have — so the fix sits right next to the existing
+READ-ONLY paragraph: the bot now says plainly it can't approve things
+like that and a host needs to answer, and is told explicitly not to
+treat "you said yes before" as a reason to repeat a wrong answer.
+
+**Also fixed while investigating:** `check_discord_messages.py`'s
+`post_to_general()` (used for the evening-check's own automated
+warnings, and reused here for the manual one) never set `username`/
+`avatar_url` on its webhook POST, so warnings went out under whatever
+identity that webhook defaults to ("Captain Hook", not the club's bot) —
+noticed live on the manual warning above. Now matches
+`DISCORD_BOT_USERNAME`/`DISCORD_BOT_AVATAR_URL` from `shared.py` exactly,
+same values, kept in sync by hand since this script deliberately doesn't
+import `shared.py` (pulls in Streamlit).
+
+**Worth knowing if this comes up again:** the evening-check system
+(`check_discord_messages.py`) was already running correctly and `AUTO_WARN`
+has been armed (GitHub Actions repo variable, not `.env`) since
+2026-08-26 — the reason it never caught this is scope, not a bug. It is
+deliberately built to flag only personal attacks/insults/slurs/threats/
+sexual content directed at a member (see its own `PROMPT` constant) — it
+was never designed to catch promotional/self-promotion content at all,
+and nothing here changes that. If "someone is promoting something they
+shouldn't" needs to be an automatically-flaggable category too, that's a
+real, separate addition to that script's `PROMPT`, not something this fix
+touches.
+
 ## Explicitly NOT in v1
 
 No PDF-to-spreadsheet feature. (WhatsApp notifications used to be listed
