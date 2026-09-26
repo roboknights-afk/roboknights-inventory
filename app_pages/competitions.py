@@ -532,7 +532,10 @@ def _send_selected_email(user_id, event_name, comp_name):
     )
     phone = user_phone_by_id.get(user_id)
     if phone:
-        send_whatsapp(phone, COMPETITION_SELECTED_WHATSAPP_TEMPLATE, [event_name, comp_name])
+        send_whatsapp(
+            phone, COMPETITION_SELECTED_WHATSAPP_TEMPLATE,
+            named_params={"event_name": event_name, "comp_name": comp_name},
+        )
 
 
 def _send_unselected_email(user_id, event_name, comp_name):

@@ -90,12 +90,14 @@ def _notify_meeting(meeting, invitee_ids, intro, subject, whatsapp_label):
 
     when = date.fromisoformat(meeting["meeting_date"]).strftime("%d %b %Y")
     when_time = meeting["meeting_time"][:5] if meeting.get("meeting_time") else "time TBA"
+    whatsapp_named_params = {
+        "label": whatsapp_label, "title": meeting["title"],
+        "meeting_date": when, "meeting_time": when_time,
+    }
     for uid in recipient_uids:
         phone = user_phone_by_id.get(uid)
         if phone:
-            send_whatsapp(
-                phone, MEETING_WHATSAPP_TEMPLATE, [whatsapp_label, meeting["title"], when, when_time],
-            )
+            send_whatsapp(phone, MEETING_WHATSAPP_TEMPLATE, named_params=whatsapp_named_params)
     return len(emails)
 
 st.title(":material/groups: Meetings")

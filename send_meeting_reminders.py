@@ -78,7 +78,11 @@ def _normalize_india_phone(raw):
     return None
 
 
-def send_whatsapp(to_phone, template_name, params=None):
+def send_whatsapp(to_phone, template_name, params=None, named_params=None):
+    # named_params: same as shared.py's send_whatsapp — Meta's template
+    # editor now requires named variables for any newly created template
+    # (confirmed live creating meeting_notice), so this needs to send
+    # {"parameter_name": ..., "text": ...} instead of a bare ordered list.
     phone_number_id = os.environ.get("WHATSAPP_PHONE_NUMBER_ID")
     access_token = os.environ.get("WHATSAPP_ACCESS_TOKEN")
     if not phone_number_id or not access_token:
@@ -93,7 +97,14 @@ def send_whatsapp(to_phone, template_name, params=None):
         "type": "template",
         "template": {"name": template_name, "language": {"code": "en_US"}},
     }
-    if params:
+    if named_params:
+        payload["template"]["components"] = [
+            {"type": "body", "parameters": [
+                {"type": "text", "parameter_name": name, "text": str(value)}
+                for name, value in named_params.items()
+            ]}
+        ]
+    elif params:
         payload["template"]["components"] = [
             {"type": "body", "parameters": [{"type": "text", "text": str(p)} for p in params]}
         ]
@@ -193,7 +204,10 @@ def notify_meeting(meeting, invitee_ids, kind):
     whatsapp_label = "Reminder — 24 hours away" if kind == "reminder_24h" else "Starting soon — 1 hour away"
     when = date.fromisoformat(meeting["meeting_date"]).strftime("%d %b %Y")
     when_time = meeting["meeting_time"][:5] if meeting.get("meeting_time") else "time TBA"
-    whatsapp_params = [whatsapp_label, meeting["title"], when, when_time]
+    whatsapp_named_params = {
+        "label": whatsapp_label, "title": meeting["title"],
+        "meeting_date": when, "meeting_time": when_time,
+    }
 
     if is_private:
         rows = client.table("users").select("user_id, discord_user_id, phone_no").in_(
@@ -203,7 +217,7 @@ def notify_meeting(meeting, invitee_ids, kind):
             if row.get("discord_user_id"):
                 send_discord_dm(row["discord_user_id"], body)
             if row.get("phone_no"):
-                send_whatsapp(row["phone_no"], MEETING_WHATSAPP_TEMPLATE, whatsapp_params)
+                send_whatsapp(row["phone_no"], MEETING_WHATSAPP_TEMPLATE, named_params=whatsapp_named_params)
     else:
         tags = discord_role_tags()
         message = body + (f"\n{tags}" if tags else "")
@@ -216,7 +230,7 @@ def notify_meeting(meeting, invitee_ids, kind):
         rows = client.table("users").select("email, phone_no").execute().data
         for row in rows:
             if row.get("phone_no") and row.get("email") not in exclude_emails:
-                send_whatsapp(row["phone_no"], MEETING_WHATSAPP_TEMPLATE, whatsapp_params)
+                send_whatsapp(row["phone_no"], MEETING_WHATSAPP_TEMPLATE, named_params=whatsapp_named_params)
 
 
 def send_reminders_for(hours_before, sent_column, kind):

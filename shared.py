@@ -435,34 +435,37 @@ def unwrap_rich_html_for_editing(html):
     return match.group(2), label
 
 
+_rich_html_editor_component = components.declare_component(
+    "rich_html_editor",
+    path=os.path.join(os.path.dirname(os.path.abspath(__file__)), "rich_html_editor_component"),
+)
+
+
 def render_rich_html_editor(key, height=180, placeholder="Write something...", initial_html=None):
     # A real rich-text box, Bold/Italic/Underline — Streamlit has no
-    # native one. The trick: a plain contenteditable div + toolbar,
-    # rendered inside components.html (runs real JS, unlike a plain
-    # st.html block); its content is pushed into a REAL, CSS-hidden
-    # st.text_area (this function's own `key`) via the same "reach into
-    # window.parent.document" technique app.py's floating feedback pill
-    # already uses for a button — just applied to a textarea's VALUE
-    # instead of calling .click(): set it through the native property
-    # setter (a plain `element.value = x` doesn't register with React's
-    # own change-tracking) and dispatch a real 'input' event so React
-    # notices and commits it into session_state[key], same as if it had
-    # been typed there directly.
+    # native one. Built as a genuine custom component (declared via
+    # components.declare_component + a plain static index.html — no npm/
+    # build step needed) rather than a DOM hack: an EARLIER version tried
+    # faking this by reaching into window.parent.document and setting a
+    # hidden st.text_area's value directly (the same trick app.py's
+    # floating "Report an issue" pill uses for a button, just applied to a
+    # textarea's value instead). Confirmed live (2026-09-26) that doesn't
+    # work — the raw DOM value updated correctly, but Streamlit's own
+    # React state never picked it up, so a real write-up from Exun Clan
+    # went in, looked fine, and then silently vanished on submit. Verified
+    # the replacement in an isolated test app (typed text + Bold applied
+    # both showed up correctly in session_state) before touching this.
     #
-    # Bold/Italic/Underline use document.execCommand — still supported
-    # everywhere despite MDN's deprecation note, and there's no
-    # dependency-free replacement for a hand-rolled editor this small.
-    # Text SIZE is deliberately a whole-editor choice (a real
-    # st.select_slider below, not a toolbar button) rather than
-    # per-selection — execCommand('fontSize') is well-known to behave
-    # inconsistently across browsers, not worth the risk for a first
-    # version of this. Baked into the saved HTML itself (a wrapping
-    # <div style="font-size:...">), not a separate column, so "how it
-    # looked when written" travels with the content.
-    #
-    # Genuinely new, untested-in-production infrastructure for this app —
-    # verify it actually round-trips (type something, format it, reload)
-    # before trusting it live.
+    # Bold/Italic/Underline use document.execCommand inside the
+    # component's own iframe — still supported everywhere despite MDN's
+    # deprecation note, and there's no dependency-free replacement for a
+    # hand-rolled editor this small. Text SIZE is deliberately a
+    # whole-editor choice (a real st.select_slider below, not a toolbar
+    # button) rather than per-selection — execCommand('fontSize') is
+    # well-known to behave inconsistently across browsers. Baked into the
+    # saved HTML itself (a wrapping <div style="font-size:...">), not a
+    # separate column, so "how it looked when written" travels with the
+    # content.
     size_key = f"{key}_size"
     # initial_html only takes effect the FIRST time this key appears in
     # session_state — e.g. right when a host opens "Edit" on something
@@ -479,107 +482,17 @@ def render_rich_html_editor(key, height=180, placeholder="Write something...", i
     chosen_size = st.select_slider("Text size", options=list(_SIZE_PX), key=size_key)
     px = _SIZE_PX[chosen_size]
 
-    with st.container(key=f"rk_rich_hidden_{key}"):
-        st.text_area("Rich content (hidden)", key=key, label_visibility="collapsed")
-
     current_html = sanitize_rich_html(st.session_state.get(key, ""))
-
-    components.html(f"""
-        <style>
-            body {{ margin: 0; background: transparent; font-family: 'Source Sans Pro', sans-serif; }}
-            .rk-rt-toolbar {{ display: flex; gap: 4px; margin-bottom: 6px; }}
-            .rk-rt-btn {{
-                background: #2A2A2A; border: 1px solid rgba(232, 179, 61, 0.35); color: #F0C55B;
-                border-radius: 6px; padding: 4px 12px; font-weight: 700; cursor: pointer;
-                font-size: 0.9rem;
-            }}
-            .rk-rt-btn:hover {{ background: #3A3A3A; }}
-            /* Reflects the FORMATTING STATE AT THE CURSOR right now, not
-               just "was this button clicked" — same as Google Docs/Word:
-               click Bold with nothing selected and it lights up immediately
-               (queryCommandState is true the instant execCommand toggles
-               it, even with a collapsed selection), and stays lit for as
-               long as whatever gets typed next would come out bold, so it
-               un-lights the moment the cursor moves into plain text too. */
-            .rk-rt-btn.active {{
-                background: #F0C55B; color: #1E1E1E; border-color: #F0C55B;
-            }}
-            .rk-rt-editor {{
-                min-height: {height}px; max-height: {height * 2}px; overflow-y: auto;
-                background: #1B1B1B; border: 1px solid rgba(232, 179, 61, 0.3); border-radius: 8px;
-                padding: 10px 12px; color: #EAEAEA; font-size: {px}px; line-height: 1.4;
-                outline: none;
-            }}
-            .rk-rt-editor:empty:before {{ content: attr(data-placeholder); color: #7A7A7A; }}
-        </style>
-        <div class="rk-rt-toolbar">
-            <button type="button" class="rk-rt-btn" id="rk-rt-bold-{key}"><b>B</b></button>
-            <button type="button" class="rk-rt-btn" id="rk-rt-italic-{key}"><i>I</i></button>
-            <button type="button" class="rk-rt-btn" id="rk-rt-underline-{key}"><u>U</u></button>
-        </div>
-        <div class="rk-rt-editor" id="rk-rt-editor-{key}" contenteditable="true"
-             data-placeholder="{placeholder}"></div>
-        <script>
-        (function() {{
-            const parentDoc = window.parent.document;
-            const editor = document.getElementById('rk-rt-editor-{key}');
-            editor.innerHTML = {json.dumps(current_html)};
-
-            if (!parentDoc.getElementById('rk-rt-hide-{key}')) {{
-                const hide = parentDoc.createElement('style');
-                hide.id = 'rk-rt-hide-{key}';
-                hide.textContent = '.st-key-rk_rich_hidden_{key} {{ display: none !important; }}';
-                parentDoc.head.appendChild(hide);
-            }}
-
-            function syncToStreamlit() {{
-                const ta = parentDoc.querySelector('.st-key-rk_rich_hidden_{key} textarea');
-                if (!ta) return;
-                const setter = Object.getOwnPropertyDescriptor(
-                    window.parent.HTMLTextAreaElement.prototype, 'value'
-                ).set;
-                setter.call(ta, editor.innerHTML);
-                ta.dispatchEvent(new Event('input', {{ bubbles: true }}));
-            }}
-
-            const buttons = {{
-                bold: document.getElementById('rk-rt-bold-{key}'),
-                italic: document.getElementById('rk-rt-italic-{key}'),
-                underline: document.getElementById('rk-rt-underline-{key}'),
-            }};
-
-            function updateToolbarState() {{
-                for (const cmd in buttons) {{
-                    let on = false;
-                    try {{ on = document.queryCommandState(cmd); }} catch (err) {{ on = false; }}
-                    buttons[cmd].classList.toggle('active', on);
-                }}
-            }}
-
-            editor.addEventListener('input', function() {{
-                syncToStreamlit();
-                updateToolbarState();
-            }});
-            editor.addEventListener('keyup', updateToolbarState);
-            editor.addEventListener('mouseup', updateToolbarState);
-            editor.addEventListener('focus', updateToolbarState);
-            document.addEventListener('selectionchange', updateToolbarState);
-
-            function applyCommand(cmd) {{
-                return function(e) {{
-                    e.preventDefault();
-                    editor.focus();
-                    document.execCommand(cmd, false, null);
-                    syncToStreamlit();
-                    updateToolbarState();
-                }};
-            }}
-            buttons.bold.addEventListener('mousedown', applyCommand('bold'));
-            buttons.italic.addEventListener('mousedown', applyCommand('italic'));
-            buttons.underline.addEventListener('mousedown', applyCommand('underline'));
-        }})();
-        </script>
-    """, height=height + 80)
+    # A keyed widget's session_state entry can be READ freely but not
+    # WRITTEN once instantiated (Streamlit raises StreamlitAPIException —
+    # confirmed live) — Streamlit already stores this component's return
+    # value in session_state[key] on its own, same as any other keyed
+    # widget; nothing else to do here. wrap_rich_html_for_storage()
+    # re-sanitizes when it actually reads the value back out.
+    _rich_html_editor_component(
+        initial_html=current_html, placeholder=placeholder, font_size=px,
+        key=key, default=current_html,
+    )
 
 
 def wrap_rich_html_for_storage(key):
@@ -1303,7 +1216,7 @@ def _normalize_india_phone(raw):
     return None  # not a recognizable Indian mobile number — don't guess
 
 
-def send_whatsapp(to_phone, template_name, params=None, language_code="en_US"):
+def send_whatsapp(to_phone, template_name, params=None, named_params=None, language_code="en_US"):
     # WhatsApp Cloud API, template-based (the only kind Meta allows for a
     # message the business sends first, rather than a reply). Silently does
     # nothing — same best-effort spirit as send_email — if the WhatsApp
@@ -1311,6 +1224,15 @@ def send_whatsapp(to_phone, template_name, params=None, language_code="en_US"):
     # Meta's own console; see CLAUDE.md) or the recipient has no usable
     # phone number on file, so this can be wired in everywhere before the
     # Meta side is finished without breaking anything.
+    #
+    # named_params (2026-09-26): Meta's template editor now REQUIRES named
+    # variables ({{label}}, not {{1}}) for any newly created template —
+    # confirmed live creating meeting_notice. The API call has to match
+    # however the template was actually registered, so this supports both:
+    # `params` (a plain positional list) for part_due_reminder, the one
+    # existing template that predates this and still uses {{1}}/{{2}}/
+    # {{3}}; `named_params` (a dict) for every template created from here
+    # on. Never mix both on the same call.
     phone_number_id = os.environ.get("WHATSAPP_PHONE_NUMBER_ID")
     access_token = os.environ.get("WHATSAPP_ACCESS_TOKEN")
     if not phone_number_id or not access_token:
@@ -1327,7 +1249,14 @@ def send_whatsapp(to_phone, template_name, params=None, language_code="en_US"):
         "type": "template",
         "template": {"name": template_name, "language": {"code": language_code}},
     }
-    if params:
+    if named_params:
+        payload["template"]["components"] = [
+            {"type": "body", "parameters": [
+                {"type": "text", "parameter_name": name, "text": str(value)}
+                for name, value in named_params.items()
+            ]}
+        ]
+    elif params:
         payload["template"]["components"] = [
             {"type": "body", "parameters": [{"type": "text", "text": str(p)} for p in params]}
         ]
@@ -1768,7 +1697,8 @@ def notify_exun_task_assigned(task, assignee_ids):
                 # due_date_display always has real text (never blank) —
                 # a WhatsApp template placeholder can't be sent empty.
                 send_whatsapp(
-                    row["phone_no"], "exun_task_assigned", [task["title"], due_date_display],
+                    row["phone_no"], "exun_task_assigned",
+                    named_params={"task_title": task["title"], "task_due": due_date_display},
                 )
     except Exception:
         pass

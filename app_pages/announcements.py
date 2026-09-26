@@ -73,7 +73,10 @@ def render_send_announcement():
                     if phone:
                         # WhatsApp template body text is short by design —
                         # the subject carries the gist, not the full body.
-                        send_whatsapp(phone, "club_announcement", [announcement_subject.strip()])
+                        send_whatsapp(
+                            phone, "club_announcement",
+                            named_params={"subject": announcement_subject.strip()},
+                        )
                 st.session_state.announcement_message = (
                     "success", f"Sent to {len(recipient_uids)} member(s)."
                 )

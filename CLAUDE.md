@@ -2420,6 +2420,65 @@ Utility / language English (US):
 | `exun_task_assigned` | `You've been assigned an Exun task: {{1}}, due {{2}}. Check the dashboard for details.` |
 | `club_announcement` | `New announcement: {{1}}. Check the dashboard for details.` |
 
+## Rich-text editor rebuilt as a real custom component — the DOM hack lost a real write-up (2026-09-26)
+
+**What happened:** Exun Clan typed a real, multi-line write-up into the
+Exun 2026 hub's write-up box, clicked Post, and got "Add a write-up, a
+link, or a file before posting" — their content was silently gone.
+Screenshot confirmed the text was genuinely visible in the box when they
+clicked Post.
+
+**Root cause, confirmed by direct testing, not guessed at.** The
+original `render_rich_html_editor()` (documented earlier in this file)
+pushed the contenteditable div's content into a hidden `st.text_area` by
+reaching into `window.parent.document`, setting the textarea's `.value`
+via the native property setter, and dispatching a synthetic `'input'`
+event — the same DOM-reach-through category of trick as `app.py`'s
+floating "Report an issue" pill, just applied to a value instead of a
+click. Built two isolated test Streamlit apps (bypassing the real app's
+login entirely, so this needed no real credentials) to test the OLD
+mechanism head to head against a replacement: typed text via
+`document.execCommand('insertText', ...)` inside the iframe (the same
+event path real typing produces), confirmed the hidden textarea's raw
+`.value` updated correctly, but `st.session_state[key]` after a rerun
+came back **empty** — proof that Streamlit's own frontend state never
+picked up the synthetic event, even though the DOM looked right. The
+"dispatch more events (`change`, `blur`, a 1-second interval poll)"
+patch tried first (see the superseded comments in git history) was
+strengthening the wrong mechanism — it never had a chance of working.
+
+**The fix: a real Streamlit custom component**, declared via
+`components.v1.declare_component("rich_html_editor", path=...)` pointing
+at a plain static `rich_html_editor_component/index.html` — no npm/React
+build step, just the documented `postMessage` protocol implemented by
+hand (`streamlit:componentReady`, `streamlit:setComponentValue`,
+`streamlit:setFrameHeight`, receiving `streamlit:render` for the
+`initial_html`/`placeholder`/`font_size` args). This is the sanctioned,
+guaranteed-correct channel for JS-to-Python communication in Streamlit —
+unlike the old hack, `setComponentValue` is Streamlit's own real API, not
+something bolted on from outside. Re-tested the same way (isolated app,
+`execCommand('insertText')`, check the value survives a rerun) and
+confirmed it works before touching the real app.
+
+**Second bug found immediately while fixing the first**:
+`st.session_state[key] = ...` right after calling the component raised
+`StreamlitAPIException: ... cannot be modified after the widget with key
+... is instantiated` — a keyed widget's session_state entry can be READ
+before it's declared but never WRITTEN after, custom components
+included. Removed that line entirely: Streamlit already populates
+`session_state[key]` from the component's return value on its own, the
+same as any other keyed widget — nothing else needed to do.
+
+**`render_rich_html_editor()` and `wrap_rich_html_for_storage()` keep the
+exact same signatures and call sites** — every page that already uses
+them (Exun 2026 hub, Announcements, Meetings' agenda, Exun Tasks'
+description) needed zero changes; only the internals of
+`render_rich_html_editor()` changed. Toolbar active-state
+(`document.queryCommandState`), the text-size `st.select_slider`, and the
+`wrap_rich_html_for_storage()`/`unwrap_rich_html_for_editing()` size-div
+round-trip are all unchanged, just now living inside the component's own
+`index.html` instead of an inline `components.html()` block.
+
 ## Explicitly NOT in v1
 
 No PDF-to-spreadsheet feature. (WhatsApp notifications used to be listed

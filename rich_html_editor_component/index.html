@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<!--
+Real Streamlit custom component (declared via components.v1.declare_component
+with path=, no npm/build step needed — this is a plain static HTML file
+Streamlit serves as-is) for the app's rich-text write-up box.
+
+This REPLACES an earlier version that faked bidirectional communication by
+reaching into window.parent.document and setting a hidden st.text_area's
+value via the native property setter + a dispatched 'input' event (the same
+trick app.py's floating "Report an issue" pill uses for a button). That
+trick is proven live (2026-09-26) NOT to work for this: the raw DOM .value
+updated correctly, but Streamlit's own React state never picked it up, so
+session_state stayed empty even though the box visibly had text in it — a
+real write-up from Exun Clan was silently lost this way. Confirmed the fix
+by testing both versions side by side in an isolated test app before
+touching the real one: this version's postMessage protocol delivers the
+value correctly every time, the old hack didn't.
+
+Protocol (Streamlit's own, documented, implemented here by hand rather than
+via the streamlit-component-lib CDN bundle, to avoid an external dependency
+for something this small):
+- streamlit:componentReady  - sent once on load
+- streamlit:setFrameHeight  - keeps the iframe sized to its content
+- streamlit:setComponentValue - this is what actually lands in
+  st.session_state[key] / the Python call's return value
+- streamlit:render (received) - carries `args`, the kwargs passed from
+  Python (initial_html, placeholder, font_size), on every rerun
+-->
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+    body { margin: 0; background: transparent; font-family: 'Source Sans Pro', sans-serif; }
+    .rk-rt-toolbar { display: flex; gap: 4px; margin-bottom: 6px; }
+    .rk-rt-btn {
+        background: #2A2A2A; border: 1px solid rgba(232, 179, 61, 0.35); color: #F0C55B;
+        border-radius: 6px; padding: 4px 12px; font-weight: 700; cursor: pointer; font-size: 0.9rem;
+    }
+    .rk-rt-btn:hover { background: #3A3A3A; }
+    /* Reflects the FORMATTING STATE AT THE CURSOR right now, same as
+       Google Docs/Word - see updateToolbarState below. */
+    .rk-rt-btn.active { background: #F0C55B; color: #1E1E1E; border-color: #F0C55B; }
+    .rk-rt-editor {
+        min-height: 180px; overflow-y: auto;
+        background: #1B1B1B; border: 1px solid rgba(232, 179, 61, 0.3); border-radius: 8px;
+        padding: 10px 12px; color: #EAEAEA; line-height: 1.4; outline: none;
+    }
+    .rk-rt-editor:empty:before { content: attr(data-placeholder); color: #7A7A7A; }
+</style>
+</head>
+<body>
+    <div class="rk-rt-toolbar">
+        <button type="button" class="rk-rt-btn" id="rk-rt-bold"><b>B</b></button>
+        <button type="button" class="rk-rt-btn" id="rk-rt-italic"><i>I</i></button>
+        <button type="button" class="rk-rt-btn" id="rk-rt-underline"><u>U</u></button>
+    </div>
+    <div class="rk-rt-editor" id="rk-rt-editor" contenteditable="true"></div>
+
+<script>
+function sendToStreamlit(type, data) {
+    window.parent.postMessage(Object.assign({ isStreamlitMessage: true, type: type }, data), "*");
+}
+function setFrameHeight() {
+    sendToStreamlit("streamlit:setFrameHeight", { height: document.documentElement.scrollHeight });
+}
+function sendValue(value) {
+    sendToStreamlit("streamlit:setComponentValue", { value: value });
+}
+
+const editor = document.getElementById('rk-rt-editor');
+const buttons = {
+    bold: document.getElementById('rk-rt-bold'),
+    italic: document.getElementById('rk-rt-italic'),
+    underline: document.getElementById('rk-rt-underline'),
+};
+// Content is hydrated from Python exactly ONCE, on the first render this
+// component instance ever receives - every render after that (e.g. the
+// separate "Text size" slider changing) must NOT overwrite editor.innerHTML,
+// or it would fight with whatever the person is actively typing.
+let initialized = false;
+
+function updateToolbarState() {
+    for (const cmd in buttons) {
+        let on = false;
+        try { on = document.queryCommandState(cmd); } catch (err) { on = false; }
+        buttons[cmd].classList.toggle('active', on);
+    }
+}
+
+editor.addEventListener('input', function() {
+    sendValue(editor.innerHTML);
+    updateToolbarState();
+    setFrameHeight();
+});
+editor.addEventListener('keyup', updateToolbarState);
+editor.addEventListener('mouseup', updateToolbarState);
+editor.addEventListener('focus', updateToolbarState);
+document.addEventListener('selectionchange', updateToolbarState);
+
+function applyCommand(cmd) {
+    return function(e) {
+        e.preventDefault();
+        editor.focus();
+        document.execCommand(cmd, false, null);
+        sendValue(editor.innerHTML);
+        updateToolbarState();
+    };
+}
+buttons.bold.addEventListener('mousedown', applyCommand('bold'));
+buttons.italic.addEventListener('mousedown', applyCommand('italic'));
+buttons.underline.addEventListener('mousedown', applyCommand('underline'));
+
+window.addEventListener('message', function(event) {
+    if (!event.data || event.data.type !== 'streamlit:render') return;
+    const args = event.data.args || {};
+    if (!initialized) {
+        initialized = true;
+        editor.innerHTML = args.initial_html || '';
+        updateToolbarState();
+    }
+    editor.setAttribute('data-placeholder', args.placeholder || '');
+    if (args.font_size) {
+        editor.style.fontSize = args.font_size + 'px';
+    }
+    setFrameHeight();
+});
+
+sendToStreamlit('streamlit:componentReady', { apiVersion: 1 });
+setFrameHeight();
+</script>
+</body>
+</html>
