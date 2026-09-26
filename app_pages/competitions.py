@@ -16,7 +16,7 @@ import streamlit as st
 from e2c_import import find_e2c_competition, scan_e2c_sheet
 from shared import (
     EXUN_EMAILS, HOST_EMAILS, IST, cached_table, discord_role_tags, get_client, invalidate_cache,
-    notify_if_roster_complete, safe_write, send_discord_message, send_email,
+    notify_if_roster_complete, safe_write, send_discord_message, send_email, send_whatsapp,
 )
 
 # The page-local name everything below already uses — the implementation
@@ -32,6 +32,12 @@ current_user_id = st.session_state.current_user_id
 current_user_grade = st.session_state.current_user_grade
 user_name_by_id = st.session_state.user_name_by_id
 user_email_by_id = st.session_state.user_email_by_id
+# Not one of app.py's precomputed maps (only name/email/grade/is_staff
+# are) — built locally the same way any other page-local lookup already
+# is, since WhatsApp is the first thing on this page to need a phone.
+user_phone_by_id = {u["user_id"]: u.get("phone_no") for u in cached_table("users")}
+
+COMPETITION_SELECTED_WHATSAPP_TEMPLATE = "competition_selected"
 
 GRADES = [6, 7, 8, 9, 10, 11, 12]  # 6 included since E2C-imported events can genuinely be 6th-grade eligible
 BLANK_LINK = {"label": "", "url": ""}
@@ -524,6 +530,9 @@ def _send_selected_email(user_id, event_name, comp_name):
         f"{event_name} at {comp_name}.\n\n"
         f"Log in to the app for full details.",
     )
+    phone = user_phone_by_id.get(user_id)
+    if phone:
+        send_whatsapp(phone, COMPETITION_SELECTED_WHATSAPP_TEMPLATE, [event_name, comp_name])
 
 
 def _send_unselected_email(user_id, event_name, comp_name):

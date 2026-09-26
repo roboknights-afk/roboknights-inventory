@@ -17,8 +17,14 @@ from shared import (
     EXUN_EMAILS, MEETING_EXCLUDED_STAFF_EMAILS, cached_table, get_client, google_calendar_link,
     invalidate_cache, is_meeting_visible, meeting_email_body, meeting_invited_ids,
     meeting_invitee_rows, notify_meeting_discord, plain_text_from_rich_html, render_rich_html_editor,
-    safe_write, sanitize_rich_html, send_email, today_ist, wrap_rich_html_for_storage,
+    safe_write, sanitize_rich_html, send_email, send_whatsapp, today_ist, wrap_rich_html_for_storage,
 )
+
+# Meta requires one pre-approved template per DISTINCT message shape, not
+# per flow - this one covers "new meeting" AND "moved", both being told
+# via the same {{1}} label placeholder, so scheduling one meeting-related
+# WhatsApp template covers both moments instead of two.
+MEETING_WHATSAPP_TEMPLATE = "meeting_notice"
 
 client = get_client()
 is_host = st.session_state.is_host
@@ -27,9 +33,14 @@ is_read_only = st.session_state.is_read_only
 current_user_id = st.session_state.current_user_id
 user_name_by_id = st.session_state.user_name_by_id
 user_email_by_id = st.session_state.user_email_by_id
+# Not one of app.py's precomputed session_state maps (only name/email/
+# grade/is_staff are) - built locally here the same way any other
+# page-local lookup already is, since WhatsApp is the first thing on this
+# page to need a phone number at all.
+user_phone_by_id = {u["user_id"]: u.get("phone_no") for u in cached_table("users")}
 
 
-def _notify_meeting(meeting, invitee_ids, intro, subject):
+def _notify_meeting(meeting, invitee_ids, intro, subject, whatsapp_label):
     # Who gets told: exactly the named people if it's a private meeting,
     # otherwise the whole club. Exun and the two staff/host accounts
     # (Hema Jain - HOD, Computer Science; Ajith Kumar - Robotics
@@ -43,17 +54,26 @@ def _notify_meeting(meeting, invitee_ids, intro, subject):
     # saved. A NAMED invitee list always means exactly those people
     # regardless of this flag - opting someone in by name is a stronger
     # signal than the blanket toggle.
+    #
+    # Computed as a set of recipient USER IDS first (not straight into an
+    # emails list, like this used to) so the exact same filtered
+    # recipient set can also drive the WhatsApp send below without
+    # re-deriving who's excluded a second time.
     include_exun_staff = bool(meeting.get("include_exun_staff"))
     if invitee_ids:
-        emails = [user_email_by_id.get(uid) for uid in invitee_ids]
+        recipient_uids = set(invitee_ids)
     else:
-        emails = list(user_email_by_id.values())
+        recipient_uids = set(user_email_by_id.keys())
         if not include_exun_staff:
-            emails = [e for e in emails if e not in MEETING_EXCLUDED_STAFF_EMAILS]
+            recipient_uids = {
+                uid for uid in recipient_uids
+                if user_email_by_id.get(uid) not in MEETING_EXCLUDED_STAFF_EMAILS
+            }
     if not include_exun_staff:
-        emails = [e for e in emails if e and e not in EXUN_EMAILS]
-    else:
-        emails = [e for e in emails if e]
+        recipient_uids = {
+            uid for uid in recipient_uids if user_email_by_id.get(uid) not in EXUN_EMAILS
+        }
+    emails = [user_email_by_id.get(uid) for uid in recipient_uids if user_email_by_id.get(uid)]
 
     link = google_calendar_link(
         title=meeting["title"],
@@ -67,6 +87,15 @@ def _notify_meeting(meeting, invitee_ids, intro, subject):
     body = meeting_email_body(meeting, link, intro)
     for email in emails:
         send_email(email, subject, body)
+
+    when = date.fromisoformat(meeting["meeting_date"]).strftime("%d %b %Y")
+    when_time = meeting["meeting_time"][:5] if meeting.get("meeting_time") else "time TBA"
+    for uid in recipient_uids:
+        phone = user_phone_by_id.get(uid)
+        if phone:
+            send_whatsapp(
+                phone, MEETING_WHATSAPP_TEMPLATE, [whatsapp_label, meeting["title"], when, when_time],
+            )
     return len(emails)
 
 st.title(":material/groups: Meetings")
@@ -171,7 +200,7 @@ def render_schedule_meeting():
             sent_to = _notify_meeting(
                 created.data[0], invitees,
                 f"A meeting has been scheduled{' for you' if invitees else ''}.",
-                f"Meeting: {title.strip()}",
+                f"Meeting: {title.strip()}", "New meeting scheduled",
             )
             # Discord: the whole club gets pinged in #announcements, or
             # (for a named-invitee meeting) each invited person with a
@@ -387,7 +416,7 @@ def render_meeting_card(m):
                         sent_to = _notify_meeting(
                             updated, list(now_invited),
                             "A meeting you're part of has been moved. The new details:",
-                            f"Meeting moved: {edit_title.strip()}",
+                            f"Meeting moved: {edit_title.strip()}", "Meeting moved",
                         )
                         msg += f" Emailed {sent_to} member(s) about the new time."
                     st.session_state.meeting_message = ("success", msg)

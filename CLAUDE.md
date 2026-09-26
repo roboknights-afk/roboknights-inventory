@@ -2363,6 +2363,63 @@ write somewhere new, this is the pattern to reuse**: a scoped
 `allow_exun`-style parameter at the specific `safe_write()` call sites
 that need it, never a change to the blanket `is_read_only` check itself.
 
+## WhatsApp, wired into four more flows (2026-09-26)
+
+`send_whatsapp()` had existed since 2026-07-31 but was only ever wired
+into one flow (the loan due-date reminder) — the original chunk was
+scoped to proving the pipeline works end to end before expanding
+(see the WhatsApp section earlier in this file). Host asked to pick up
+that deferred work; chose all four remaining candidates rather than one.
+
+**Meeting scheduled/moved/reminders** — `meetings.py`'s `_notify_meeting()`
+was rebuilt to compute a recipient USER ID set first (same
+Exun/staff-exclusion rules as the email path), then drives email AND
+WhatsApp off that same set, instead of collapsing straight to an emails
+list the way it used to. `send_meeting_reminders.py` (the 24h/1h cron
+script, doesn't import `shared.py`) got its own duplicated
+`send_whatsapp`/`_normalize_india_phone`, plus a NEW
+`_meeting_exclusion_emails()` that queries `access_roles` directly for
+the same exclusion — same pattern `send_due_reminders.py` already uses
+for `HOST_EMAILS` rather than a hardcoded set. **One template,
+`meeting_notice`, covers all three moments** (new/moved/24h/1h) via a
+`{{1}}` label placeholder ("New meeting scheduled" / "Meeting moved" /
+"Reminder — 24 hours away" / "Starting soon — 1 hour away") — Meta
+requires one approved template per message SHAPE, not per flow, so this
+keeps it to one approval instead of four.
+
+**Competition selection** — `_send_selected_email()` in `competitions.py`
+now also WhatsApps the `competition_selected` template; since all three
+call sites already funnel through that one function, no call site needed
+touching.
+
+**Exun task assigned** — `notify_exun_task_assigned()` in `shared.py`
+(already the one place email + Discord DM fire from) now also sends the
+`exun_task_assigned` template. A task with no due date sends "no due
+date set" as the placeholder — a WhatsApp template parameter can't be
+sent blank.
+
+**Announcements** — `announcements.py`'s send loop now iterates
+recipient USER IDs (was a flat list of emails, with no way to look up a
+matching phone) so it can drive email and the `club_announcement`
+template off the same filtered set. WhatsApp body is deliberately just
+the subject line, not the full text — a template parameter is meant to
+be short, and the dashboard is where the real content lives.
+
+**Every one of these four needs its own template created and approved in
+Meta's WhatsApp console** (same process as `part_due_reminder` — see the
+manual steps in the original WhatsApp section above) before it'll
+actually send anything; until approved, `send_whatsapp()`'s existing
+best-effort silence just means nothing goes out, same as it always has
+for an unconfigured/unapproved template. Templates needed, all category
+Utility / language English (US):
+
+| Template name | Body |
+| --- | --- |
+| `meeting_notice` | `{{1}}: {{2}}, on {{3}} at {{4}}. Check the dashboard for details.` |
+| `competition_selected` | `You've been selected for {{1}} at {{2}}. Check the dashboard for details.` |
+| `exun_task_assigned` | `You've been assigned an Exun task: {{1}}, due {{2}}. Check the dashboard for details.` |
+| `club_announcement` | `New announcement: {{1}}. Check the dashboard for details.` |
+
 ## Explicitly NOT in v1
 
 No PDF-to-spreadsheet feature. (WhatsApp notifications used to be listed

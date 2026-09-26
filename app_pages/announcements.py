@@ -9,12 +9,16 @@ import streamlit as st
 from shared import (
     EXUN_EMAILS, cached_table, format_ist, format_relative, get_client, invalidate_cache,
     plain_text_from_rich_html, render_rich_html_editor, safe_write, sanitize_rich_html, send_email,
-    wrap_rich_html_for_storage,
+    send_whatsapp, wrap_rich_html_for_storage,
 )
 
 client = get_client()
 is_host = st.session_state.is_host
 user_email_by_id = st.session_state.user_email_by_id
+# Not one of app.py's precomputed maps (only name/email/grade/is_staff
+# are) — built locally the same way any other page-local lookup already
+# is, since WhatsApp is the first thing on this page to need a phone.
+user_phone_by_id = {u["user_id"]: u.get("phone_no") for u in cached_table("users")}
 
 st.title(":material/campaign: Announcements")
 
@@ -56,16 +60,23 @@ def render_send_announcement():
                 # Exun deliberately excluded: announcements are an
                 # internal RoboKnights channel they don't have access to
                 # in the app, so they shouldn't get the emails either.
-                all_emails = [
-                    email for email in user_email_by_id.values()
+                recipient_uids = [
+                    uid for uid, email in user_email_by_id.items()
                     if email and email not in EXUN_EMAILS
                 ]
-                # Plain-text email — the rich formatting only means
-                # something rendered on this page itself.
+                # Plain-text email/WhatsApp — the rich formatting only
+                # means something rendered on this page itself.
                 plain_body = plain_text_from_rich_html(body_html)
-                for email in all_emails:
-                    send_email(email, announcement_subject.strip(), plain_body)
-                st.session_state.announcement_message = ("success", f"Sent to {len(all_emails)} member(s).")
+                for uid in recipient_uids:
+                    send_email(user_email_by_id[uid], announcement_subject.strip(), plain_body)
+                    phone = user_phone_by_id.get(uid)
+                    if phone:
+                        # WhatsApp template body text is short by design —
+                        # the subject carries the gist, not the full body.
+                        send_whatsapp(phone, "club_announcement", [announcement_subject.strip()])
+                st.session_state.announcement_message = (
+                    "success", f"Sent to {len(recipient_uids)} member(s)."
+                )
                 # Clear the form for next time — deleting the keys before
                 # the widgets are recreated on rerun resets them to blank.
                 st.session_state.pop("announcement_subject", None)

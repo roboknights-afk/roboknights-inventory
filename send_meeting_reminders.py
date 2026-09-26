@@ -56,6 +56,73 @@ def discord_role_tags():
     return " ".join(f"<@&{rid}>" for rid in role_ids if rid)
 
 
+# WhatsApp — same send_whatsapp/_normalize_india_phone as shared.py, kept
+# in sync by hand (this script deliberately doesn't import shared.py; see
+# the header comment). Meta needs one pre-approved template per DISTINCT
+# message shape, not per flow, so this one template covers "new meeting"
+# (meetings.py) AND both reminder moments here.
+MEETING_WHATSAPP_TEMPLATE = "meeting_notice"
+WHATSAPP_API_VERSION = "v22.0"
+
+
+def _normalize_india_phone(raw):
+    digits = re.sub(r"\D", "", raw or "")
+    if not digits:
+        return None
+    if digits.startswith("91") and len(digits) == 12:
+        return digits
+    if digits.startswith("0") and len(digits) == 11:
+        digits = digits[1:]
+    if len(digits) == 10:
+        return "91" + digits
+    return None
+
+
+def send_whatsapp(to_phone, template_name, params=None):
+    phone_number_id = os.environ.get("WHATSAPP_PHONE_NUMBER_ID")
+    access_token = os.environ.get("WHATSAPP_ACCESS_TOKEN")
+    if not phone_number_id or not access_token:
+        return
+    to = _normalize_india_phone(to_phone)
+    if not to:
+        return
+    payload = {
+        "messaging_product": "whatsapp",
+        "recipient_type": "individual",
+        "to": to,
+        "type": "template",
+        "template": {"name": template_name, "language": {"code": "en_US"}},
+    }
+    if params:
+        payload["template"]["components"] = [
+            {"type": "body", "parameters": [{"type": "text", "text": str(p)} for p in params]}
+        ]
+    try:
+        requests.post(
+            f"https://graph.facebook.com/{WHATSAPP_API_VERSION}/{phone_number_id}/messages",
+            headers={"Authorization": f"Bearer {access_token}"},
+            json=payload, timeout=10,
+        )
+    except Exception as e:
+        print(f"Couldn't WhatsApp {to_phone} ({e}).")
+
+
+def _meeting_exclusion_emails():
+    # Same exclusion the dashboard's own email path applies (see
+    # shared.py's EXUN_EMAILS / MEETING_EXCLUDED_STAFF_EMAILS) — queried
+    # directly from access_roles rather than duplicating a hardcoded set,
+    # same as send_due_reminders.py already does for HOST_EMAILS.
+    excluded_titles = {"Robotics In-Charge", "HOD, Computer Science"}
+    try:
+        rows = client.table("access_roles").select("email,is_exun,host_title").execute().data
+    except Exception:
+        return set()
+    return {
+        r["email"] for r in rows
+        if r.get("is_exun") or r.get("host_title") in excluded_titles
+    }
+
+
 def send_discord_channel_message(content):
     webhook_url = os.environ.get("DISCORD_ANNOUNCEMENTS_WEBHOOK_URL")
     if not webhook_url:
@@ -123,17 +190,33 @@ def meeting_body(meeting, kind, is_private):
 def notify_meeting(meeting, invitee_ids, kind):
     is_private = bool(invitee_ids)
     body = meeting_body(meeting, kind, is_private)
+    whatsapp_label = "Reminder — 24 hours away" if kind == "reminder_24h" else "Starting soon — 1 hour away"
+    when = date.fromisoformat(meeting["meeting_date"]).strftime("%d %b %Y")
+    when_time = meeting["meeting_time"][:5] if meeting.get("meeting_time") else "time TBA"
+    whatsapp_params = [whatsapp_label, meeting["title"], when, when_time]
+
     if is_private:
-        rows = client.table("users").select("user_id, discord_user_id").in_(
+        rows = client.table("users").select("user_id, discord_user_id, phone_no").in_(
             "user_id", list(invitee_ids)
         ).execute().data
         for row in rows:
             if row.get("discord_user_id"):
                 send_discord_dm(row["discord_user_id"], body)
+            if row.get("phone_no"):
+                send_whatsapp(row["phone_no"], MEETING_WHATSAPP_TEMPLATE, whatsapp_params)
     else:
         tags = discord_role_tags()
         message = body + (f"\n{tags}" if tags else "")
         send_discord_channel_message(message)
+
+        # Same exclusion the email path applies for a routine open
+        # meeting — Exun and the two staff accounts aren't part of the
+        # club's routine pings unless this specific meeting opted them in.
+        exclude_emails = set() if meeting.get("include_exun_staff") else _meeting_exclusion_emails()
+        rows = client.table("users").select("email, phone_no").execute().data
+        for row in rows:
+            if row.get("phone_no") and row.get("email") not in exclude_emails:
+                send_whatsapp(row["phone_no"], MEETING_WHATSAPP_TEMPLATE, whatsapp_params)
 
 
 def send_reminders_for(hours_before, sent_column, kind):

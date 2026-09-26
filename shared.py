@@ -1744,12 +1744,13 @@ def notify_exun_task_assigned(task, assignee_ids):
     # meetings' "no error if not linked" rule.
     try:
         rows = get_client().table("users").select(
-            "user_id, email, discord_user_id"
+            "user_id, email, discord_user_id, phone_no"
         ).in_("user_id", list(assignee_ids)).execute().data
-        due = (
-            f" — due {date.fromisoformat(task['due_date']).strftime('%d %b %Y')}"
-            if task.get("due_date") else ""
+        due_date_display = (
+            date.fromisoformat(task["due_date"]).strftime("%d %b %Y")
+            if task.get("due_date") else "no due date set"
         )
+        due = f" — due {due_date_display}" if task.get("due_date") else ""
         email_body = f"You've been assigned an Exun task: {task['title']}{due}."
         if task.get("description"):
             email_body += f"\n\n{plain_text_from_rich_html(task['description'])}"
@@ -1763,6 +1764,12 @@ def notify_exun_task_assigned(task, assignee_ids):
                 send_email(row["email"], f"Exun task: {task['title']}", email_body)
             if row.get("discord_user_id"):
                 send_discord_dm(row["discord_user_id"], discord_body)
+            if row.get("phone_no"):
+                # due_date_display always has real text (never blank) —
+                # a WhatsApp template placeholder can't be sent empty.
+                send_whatsapp(
+                    row["phone_no"], "exun_task_assigned", [task["title"], due_date_display],
+                )
     except Exception:
         pass
 
