@@ -28,9 +28,17 @@ client = get_client()
 storage = get_storage_client()
 current_user_id = st.session_state.current_user_id
 current_user_name = st.session_state.current_user_name
-is_read_only = st.session_state.is_read_only
 user_name_by_id = st.session_state.user_name_by_id
 user_email_by_id = st.session_state.user_email_by_id
+
+# This hub is deliberately two-way (host's explicit request, 2026-09-26) —
+# unlike every other page Exun can see, where they're genuinely view-only.
+# is_read_only (is_exun or is_viewer) would hide the composer for Exun
+# too, so this page asks a narrower question instead: only VIEWER (a
+# look-around/demo account with no business writing anywhere) is excluded.
+# The actual enforcement backstop is safe_write(..., allow_exun=True)
+# below, not this — this only decides whether to show the form at all.
+can_post_here = not st.session_state.is_viewer
 
 BUCKET = "exun-event-materials"
 ALLOWED_EXTENSIONS = {
@@ -51,7 +59,7 @@ if st.session_state.hub_message:
     st.toast(st.session_state.hub_message, icon=":material/check_circle:")
     st.session_state.hub_message = None
 
-if not is_read_only:
+if can_post_here:
     with st.container(border=True):
         st.subheader("Share something")
         render_rich_html_editor("hub_new_body_rich", placeholder="Write-up (optional)...")
@@ -87,7 +95,7 @@ if not is_read_only:
                     # reasoning profile.py's photo path already follows.
                     file_path = f"{current_user_id}_{int(time.time())}.{ext}"
                     file_name = upload.name
-                    with safe_write("upload this file"):
+                    with safe_write("upload this file", allow_exun=True):
                         storage.storage.from_(BUCKET).upload(
                             file_path, raw,
                             {"content-type": upload.type or "application/octet-stream", "upsert": "true"},
@@ -95,7 +103,7 @@ if not is_read_only:
                 link_clean = link.strip()
                 if link_clean and not link_clean.startswith(("http://", "https://")):
                     link_clean = "https://" + link_clean
-                with safe_write("post this"):
+                with safe_write("post this", allow_exun=True):
                     client.table("exun_hub_posts").insert({
                         "author_id": current_user_id,
                         "body": body_html or None,

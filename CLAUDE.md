@@ -2321,6 +2321,48 @@ optional `initial_html` for exactly this — passed only on first mount
 for that key (matches every other Streamlit widget's `value=` semantics:
 it seeds once, then session_state owns it).
 
+## Exun hub: personal pings + Exun could never actually post (2026-09-26)
+
+Two fixes to the Exun 2026 hub, found the same day it shipped.
+
+**1. Personal pings when Exun posts.** Host asked directly: when Exun
+posts something, DM specific RoboKnights people (not just "post to a
+channel and hope someone's watching"). New `access_roles.is_exun_hub_ping`
+column and `EXUN_HUB_PING_EMAILS` in `shared.py` — kept in the SAME
+privacy-motivated table every other privileged/named email already lives
+in, rather than a hardcoded email list in source (this repo is public;
+see `access_roles`' own long comment for exactly why that migration
+happened in the first place). `notify_exun_hub_post()` now runs in
+whichever direction actually happened: RoboKnights posts -> DM Exun's
+account (unchanged); Exun posts -> DM everyone in `EXUN_HUB_PING_EMAILS`
+who has a linked Discord account. Matched case-insensitively on
+purpose — confirmed live that `access_roles.email` and `users.email`
+don't always agree on casing for the same real person (one had
+`v09145aryamman@...`, the other `V09145aryamman@...`); an exact match
+would have silently dropped him from every ping.
+
+**2. Exun's own account couldn't post at all — screenshot caught it
+live.** The composer was gated on `is_read_only` (`is_exun or
+is_viewer`), which is correct on every OTHER page Exun can see
+(Competitions/Meetings/Achievements are genuinely view-only for them)
+but wrong here — this hub is deliberately two-way. Hiding the composer
+wasn't even the real blocker: `safe_write()` is the actual enforcement
+backstop (see its own long comment — "the enforcement that actually
+matters is in safe_write(), not on the buttons"), and it unconditionally
+stops any `is_read_only` account regardless of what the page's UI shows.
+Fixed with a new `allow_exun` parameter on `safe_write()` — defaults
+`False`, so every other call site in the app is completely unaffected;
+only this hub's two writes (the file upload, the post insert) pass
+`allow_exun=True`. Still unconditionally blocks `VIEWER` no matter
+what — that's a look-around/demo account with no business writing
+anywhere, hub included. The page itself now shows the composer to
+anyone who isn't `is_viewer`, instead of anyone who isn't `is_read_only`.
+
+**If a future page ever needs Exun (or some other read-only tier) to
+write somewhere new, this is the pattern to reuse**: a scoped
+`allow_exun`-style parameter at the specific `safe_write()` call sites
+that need it, never a change to the blanket `is_read_only` check itself.
+
 ## Explicitly NOT in v1
 
 No PDF-to-spreadsheet feature. (WhatsApp notifications used to be listed

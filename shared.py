@@ -36,12 +36,15 @@ APP_URL = os.environ.get("APP_URL", "http://localhost:8501")
 # every single page that imports this module.
 def _load_access_roles():
     host_emails, host_roles, exun_emails, viewer_emails = set(), {}, set(), set()
-    exun_channel_members, ai_banned_emails = set(), set()
+    exun_channel_members, ai_banned_emails, exun_hub_ping_emails = set(), set(), set()
     try:
         client = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
         rows = client.table("access_roles").select("*").execute().data
     except Exception:
-        return host_emails, host_roles, exun_emails, viewer_emails, exun_channel_members, ai_banned_emails
+        return (
+            host_emails, host_roles, exun_emails, viewer_emails, exun_channel_members,
+            ai_banned_emails, exun_hub_ping_emails,
+        )
     for row in rows:
         email = row["email"]
         if row.get("is_host"):
@@ -56,7 +59,12 @@ def _load_access_roles():
             exun_channel_members.add(email)
         if row.get("ai_banned"):
             ai_banned_emails.add(email)
-    return host_emails, host_roles, exun_emails, viewer_emails, exun_channel_members, ai_banned_emails
+        if row.get("is_exun_hub_ping"):
+            exun_hub_ping_emails.add(email)
+    return (
+        host_emails, host_roles, exun_emails, viewer_emails, exun_channel_members,
+        ai_banned_emails, exun_hub_ping_emails,
+    )
 
 
 # HOST_EMAILS: full access, every host-only page and control.
@@ -76,9 +84,16 @@ def _load_access_roles():
 #   moderation feature. The Discord bot has its own matching
 #   AI_ASSISTANT_BANNED_DISCORD_IDS (discord_bot/bot.py can't import this
 #   file, so it's a separate Discord-ID-keyed list there instead).
+# EXUN_HUB_PING_EMAILS: the specific RoboKnights people who get personally
+#   DMed whenever EXUN posts something in the Exun 2026 hub (2026-09-26,
+#   host's explicit request for exactly these people) — a subset of
+#   EXUN_CHANNEL_MEMBERS, not everyone in it. Kept in access_roles rather
+#   than a hardcoded email list in source for the same reason every other
+#   privileged/named email already is (see this table's own comment
+#   below): this repo is public.
 (
     HOST_EMAILS, HOST_ROLES, EXUN_EMAILS, VIEWER_EMAILS,
-    EXUN_CHANNEL_MEMBERS, AI_ASSISTANT_BANNED_EMAILS,
+    EXUN_CHANNEL_MEMBERS, AI_ASSISTANT_BANNED_EMAILS, EXUN_HUB_PING_EMAILS,
 ) = _load_access_roles()
 
 # Derived, not hand-maintained, so it can't drift out of sync with
@@ -1190,7 +1205,7 @@ def _progressive(action_description):
 
 
 @contextmanager
-def safe_write(action_description):
+def safe_write(action_description, allow_exun=False):
     # Wraps a block of Supabase writes so a transient failure (network
     # blip, a Supabase hiccup) shows a clean inline error instead of
     # crashing the whole page for whoever's using it right then. Safe
@@ -1224,7 +1239,21 @@ def safe_write(action_description):
     # does to itself (the past-competition auto-flip, the Exun channel read
     # receipt) must therefore be guarded with `if not is_read_only:` at the
     # call site. Only writes behind a button belong in a bare safe_write.
-    if st.session_state.get("is_read_only"):
+    #
+    # allow_exun (2026-09-26): the ONE narrow, explicit exception to
+    # "is_read_only always blocks" — the Exun 2026 hub is deliberately
+    # two-way, unlike every other page Exun can see (competitions,
+    # meetings, achievements are all genuinely view-only for them). Never
+    # lifts the block for VIEWER — that's a look-around/demo account with
+    # no business writing anywhere, hub included — only for is_exun
+    # specifically, and only at call sites that pass it explicitly. Every
+    # other safe_write() call in the app is unaffected (allow_exun
+    # defaults False), so this can't silently open up a write path
+    # somewhere it wasn't meant to.
+    blocked = st.session_state.get("is_viewer") or (
+        st.session_state.get("is_exun") and not allow_exun
+    )
+    if blocked:
         st.error("This is a read-only account — it can't make changes.")
         st.stop()
     try:
@@ -1749,15 +1778,27 @@ EXUN_CLAN_DISCORD_USER_ID = "788696530781339669"
 
 
 def notify_exun_hub_post(author_email, summary):
-    # DMs Exun's own Discord account whenever the RK side posts something
-    # new in the Exun 2026 hub, so they don't have to remember to check
-    # the dashboard. Never fired for Exun's OWN post back — same "don't
-    # notify someone about their own action" rule
-    # _notify_new_chat_message already follows for ordinary chats.
-    if author_email in EXUN_EMAILS:
-        return
+    # Two directions, never both on the same post — same "don't notify
+    # someone about their own action" rule _notify_new_chat_message
+    # already follows for ordinary chats:
+    # - RoboKnights posts -> DM Exun's own Discord account, so they don't
+    #   have to remember to check the dashboard.
+    # - Exun posts -> DM the specific RoboKnights people in
+    #   EXUN_HUB_PING_EMAILS (host's explicit request, 2026-09-26), so
+    #   THEY don't have to remember to check it either.
     try:
-        send_discord_dm(EXUN_CLAN_DISCORD_USER_ID, summary)
+        if author_email in EXUN_EMAILS:
+            # Case-insensitive on purpose: confirmed live that
+            # access_roles.email and users.email don't always agree on
+            # casing for the same real person (Aryamman's is
+            # "v09145aryamman@..." in one table, "V09145aryamman@..." in
+            # the other) — an exact .in_() match would silently drop him.
+            ping_emails_lower = {e.lower() for e in EXUN_HUB_PING_EMAILS}
+            for row in get_client().table("users").select("email, discord_user_id").execute().data:
+                if (row.get("email") or "").lower() in ping_emails_lower and row.get("discord_user_id"):
+                    send_discord_dm(row["discord_user_id"], summary)
+        else:
+            send_discord_dm(EXUN_CLAN_DISCORD_USER_ID, summary)
     except Exception:
         pass
 

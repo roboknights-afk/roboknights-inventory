@@ -914,3 +914,11 @@ create table if not exists exun_hub_posts (
 --
 --     name:   exun-event-materials
 --     public: NO
+
+-- Who gets personally DMed on Discord when EXUN posts in the hub above —
+-- the host's own explicit request (2026-09-26), naming specific
+-- RoboKnights people, not "everyone in EXUN_CHANNEL_MEMBERS". Kept here
+-- rather than a hardcoded email list in shared.py for the exact same
+-- reason every other privileged/named email already is (see access_roles'
+-- own comment above): this repo is public.
+alter table access_roles add column if not exists is_exun_hub_ping boolean not null default false;
