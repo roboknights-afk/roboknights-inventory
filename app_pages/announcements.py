@@ -8,7 +8,8 @@ import streamlit as st
 
 from shared import (
     EXUN_EMAILS, cached_table, format_ist, format_relative, get_client, invalidate_cache,
-    safe_write, send_email,
+    plain_text_from_rich_html, render_rich_html_editor, safe_write, sanitize_rich_html, send_email,
+    wrap_rich_html_for_storage,
 )
 
 client = get_client()
@@ -38,16 +39,17 @@ def _open_send_announcement():
 def render_send_announcement():
     st.caption("Goes to every member's inbox as well as this page.")
     announcement_subject = st.text_input("Subject", key="announcement_subject")
-    announcement_body = st.text_area("Message", key="announcement_body")
+    render_rich_html_editor("announcement_body_rich", placeholder="Write your announcement...")
     if st.button("Send to everyone", key="send_announcement", icon=":material/send:", type="primary"):
-        if not announcement_subject.strip() or not announcement_body.strip():
+        body_html = wrap_rich_html_for_storage("announcement_body_rich")
+        if not announcement_subject.strip() or not body_html:
             # Inline, so the dialog doesn't close and discard the draft.
             st.error("Subject and message are both required.")
         else:
             with safe_write("send this announcement"):
                 client.table("announcements").insert({
                     "subject": announcement_subject.strip(),
-                    "body": announcement_body.strip(),
+                    "body": body_html,
                 }).execute()
                 invalidate_cache()
 
@@ -58,13 +60,17 @@ def render_send_announcement():
                     email for email in user_email_by_id.values()
                     if email and email not in EXUN_EMAILS
                 ]
+                # Plain-text email — the rich formatting only means
+                # something rendered on this page itself.
+                plain_body = plain_text_from_rich_html(body_html)
                 for email in all_emails:
-                    send_email(email, announcement_subject.strip(), announcement_body.strip())
+                    send_email(email, announcement_subject.strip(), plain_body)
                 st.session_state.announcement_message = ("success", f"Sent to {len(all_emails)} member(s).")
                 # Clear the form for next time — deleting the keys before
                 # the widgets are recreated on rerun resets them to blank.
                 st.session_state.pop("announcement_subject", None)
-                st.session_state.pop("announcement_body", None)
+                st.session_state.pop("announcement_body_rich", None)
+                st.session_state.pop("announcement_body_rich_size", None)
                 _close_send_announcement()
                 st.rerun()
 
@@ -130,4 +136,4 @@ else:
                 help=format_ist(a["created_at"]),
             )
 
-            st.write(a["body"])
+            st.markdown(sanitize_rich_html(a["body"]), unsafe_allow_html=True)

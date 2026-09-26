@@ -2079,6 +2079,248 @@ no Streamlit dependency needed for a cron job), so `send_discord_dm()`,
 there in trimmed form. Keep the two copies in sync if the wording or the
 DM mechanics ever change.
 
+## Exun task delegation + event countdown (2026-09-26)
+
+Two separate asks in the same request: "delegate work to volunteers about
+the Exun event ... report their due date [later corrected: the HOST sets
+it, not the volunteer], submit their work or mark it as done, report
+issues, tell if they need any help" as its own new page; and a real,
+ticking countdown to the Exun event (31 Oct 2026) on every page.
+
+**New page, `app_pages/exun_tasks.py`, own nav section "Exun Tasks"** —
+separate from the existing "Exun Channel" section (`EXUN_CHANNEL_MEMBERS`
+above): that's the sister club's own private leadership channel; this is
+about THIS club's own members volunteering for the Exun event. Reachable
+by hosts (full management) and by anyone with the new
+`users.is_exun_volunteer` flag set (their own tasks only) — same
+two-layer gating (nav list in `app.py` + a re-check on the page itself)
+every other restricted page here already uses.
+
+- **`users.is_exun_volunteer`** — a host-set flag, and deliberately THE
+  record of who's volunteering for Exun this year (the host's own
+  words: "we will have a separate column ... which would be also used as
+  a record"). Managed on the page itself via a multiselect + diff, same
+  pattern `meetings.py` already uses for invitees — not a free-text
+  import, since a picker can't typo a name into a non-match. Independent
+  of `EXUN_EMAILS`/`EXUN_CHANNEL_MEMBERS` (Exun's own staff) and of
+  `users.role` — any RoboKnights member can volunteer regardless of
+  standing.
+- **`exun_tasks`** (title, description, `due_date` — set by the HOST at
+  assignment time, not self-reported) and **`exun_task_assignees`** (one
+  row per task-per-volunteer, so two people on the same task don't have
+  to finish together; `status`: assigned → submitted → done, or straight
+  to done with no submission at all — plenty of tasks have no
+  deliverable). **`exun_task_flags`** covers both "report an issue" and
+  "need help" as one table (`kind`), same shape as the app-wide
+  `feedback` table, just scoped to a specific task.
+- **Submissions are real files, not just a pasted link** (unlike
+  Achievements/Meetings, which predate this app having any storage at
+  all) — a new private bucket, `exun-task-submissions`, same
+  `get_storage_client()` service-role pattern `profile.py`'s photo
+  upload already established, same reason (Storage RLS can't work
+  through the shared `@st.cache_resource` client — see that function's
+  own long comment). A volunteer can submit a link, a file, or both.
+- **Notifications reuse the existing exun_rk channel**, not a new
+  webhook: `notify_exun_task_assigned()` (email + Discord DM to each new
+  assignee, same shape as `notify_meeting_discord`'s "new meeting" case)
+  fires once, synchronously, right when a host assigns a task.
+  `notify_exun_task_update()` (posts to `exun_rk` + emails every host)
+  covers everything host-facing after that — a submission, a mark-done,
+  an issue, a help request — same "post to exun_rk + email every host"
+  shape `notify_if_roster_complete()` already uses. **No automated
+  due-date reminders in v1** — not asked for, and the due date is a
+  fixed host-set field a host can already see on every task card without
+  one.
+- Filtering by status/tab deliberately uses buttons with inline
+  `st.rerun()` calls directly on the page (Edit/Delete/Submit/Mark done/
+  Reopen/flag buttons, one long scrolling list), NOT `st.tabs()` — see
+  the AI-drafted-messages section above for exactly why `st.tabs()`
+  silently resets to its first tab on a rerun from inside it. If an
+  Upcoming/Past-style split is ever added here, use `st.segmented_control`
+  or a plain filter, not tabs.
+
+**Not yet run, same as every other schema change in this project**: the
+migration at the end of `supabase_schema.sql` (`is_exun_volunteer`,
+`exun_tasks`, `exun_task_assignees`, `exun_task_flags`) needs to be run
+in Supabase's SQL editor, and the `exun-task-submissions` Storage bucket
+needs to be created by hand (private, same steps as `member-photos` —
+see that bucket's own comment in `supabase_schema.sql`) before this page
+is usable.
+
+**Event countdown, app-wide** — a live, per-second-ticking countdown to
+31 Oct 2026, rendered once in `app.py` right before the navigation
+section, so it shows above every page including Home. Streamlit only
+reruns on an interaction, so a real tick needs actual client-side JS —
+`components.html` (already used for the "Report an issue" pill above)
+runs real JS in an iframe; a plain `st.html` `<style>`/text block can't
+be relied on to execute a `<script>` the same way. Unlike the feedback
+pill, this one has no need to reach into `window.parent.document` — it
+renders in the normal page flow exactly where it's placed, so a plain
+in-place iframe is enough, with the iframe's own body background set to
+transparent so the app's dark theme shows through behind it instead of a
+white box.
+
+**Bug caught live, same day: `notify_exun_task_update()` was posting to
+the wrong Discord channel.** First version reused
+`notify_if_roster_complete()`'s "post to exun_rk" shape for task
+submissions/done/issues/help — but `exun_rk`'s audience
+(`EXUN_CHANNEL_MEMBERS`) includes Exun's own leadership, and this is
+RoboKnights-internal volunteer management, nothing Exun needs to see.
+Fixed to DM every host with a linked Discord account instead (still also
+emails every host, unchanged). Three real test messages
+("... asked for help on 'Test'", "... reported an issue on 'Test'", "...
+marked 'Test' done") had already gone out to the real channel before
+this was caught — deleted via the webhook (`DELETE .../messages/{id}`)
+and their `discord_messages` log rows removed, confirmed by re-querying
+the channel afterward.
+
+**"Open" + "Download" for any shared file (2026-09-26):** a small shared
+helper, `render_file_open_and_download()` in `shared.py`, used by both
+this page and the Exun 2026 hub below — "Download" is the existing
+`storage.download()` + `st.download_button` pattern; "Open" is a new
+short-lived SIGNED url (`create_signed_url`, 5-minute expiry), never a
+permanent public link, since these buckets are private on purpose (same
+reasoning as `member-photos`). `exun_task_assignees` gained
+`submission_file_name` (the original filename — `submission_file_path`
+is keyed by task_id/user_id, not something anyone should see as a label).
+
+## Exun 2026 materials hub (2026-09-26)
+
+A SEPARATE page from the Exun Tasks page above and from the older
+private RoboKnights<>Exun channel (`exun_channel.py`) — same audience as
+that channel (`EXUN_CHANNEL_MEMBERS`; confirmed by directly querying
+`access_roles` before building this that the list already means exactly
+"RoboKnights Clan, Exun Clan, Naitik, Kyraan, Medhansh, Aryamman" plus
+the three staff/host accounts, rather than inventing a new access
+group), but a different shape of content: structured materials (a
+write-up, a link, a file — including an Excel sheet or a slide deck)
+instead of a running chat thread. Genuinely two-way — either side posts
+into the same feed, and an Exun-authored post gets a small "Exun" badge
+(checked against `EXUN_EMAILS`).
+
+New table `exun_hub_posts` (author, `body`, `link`, `file_path`/
+`file_name`) and a new private Storage bucket, `exun-event-materials` —
+same service-role-only model as `exun-task-submissions`/`member-photos`.
+
+**`notify_exun_hub_post()`** DMs Exun's own official Discord account
+(`EXUN_CLAN_DISCORD_USER_ID` in `shared.py`, a real user id — kept as a
+plain constant rather than moved to an env var, matching how
+`discord_bot/bot.py` already keeps a couple of real Discord snowflake
+ids directly in source: a numeric id is far less directly actionable
+than an email, which is why the access-roles emails were moved out of
+source and this wasn't) whenever the RoboKnights side posts something
+new — never fired for Exun's own post back, same "don't notify someone
+about their own action" rule `_notify_new_chat_message` already follows.
+
+## Real rich-text editor for the Exun 2026 hub (2026-09-26)
+
+The write-up box originally just took Markdown text (rendered correctly
+via `st.markdown`, but showing raw `**asterisks**` while typing, not
+genuine bold) — asked to make Bold/Italic/Underline actually apply live,
+Google-Docs style, plus a text-size choice, and confirmed explicitly to
+build the real thing (a JS toolbar) rather than a cheaper Markdown-preview
+workaround, understanding it's a bigger, riskier build than anything else
+in this session. Scoped deliberately to ONE place first (this hub's
+write-up box) before considering a wider rollout — genuinely new,
+never-attempted infrastructure for this app, so it needs to actually prove
+out here before spreading anywhere else.
+
+**`render_rich_html_editor(key, ...)` + `wrap_rich_html_for_storage(key)`
+in `shared.py`.** Streamlit has no native rich-text widget, so this is a
+plain `contenteditable` div + a 3-button toolbar (Bold/Italic/Underline,
+via `document.execCommand` — still supported everywhere despite MDN's
+deprecation note; there's no dependency-free replacement for something
+this small), rendered inside `components.html` (runs real JS, unlike a
+plain `st.html` block). Its content is pushed into a REAL, CSS-hidden
+`st.text_area` (this function's own `key`) via the SAME "reach into
+`window.parent.document`" trick `app.py`'s floating "Report an issue"
+pill already uses for a button — just applied to a textarea's VALUE
+instead of `.click()`: set it through the native property setter (a
+plain `element.value = x` doesn't register with React's own
+change-tracking) and dispatch a real `'input'` event so React notices
+and commits it into `session_state[key]`, same as if it had been typed
+there directly.
+
+Text SIZE is deliberately a whole-editor choice (a real
+`st.select_slider`, not a toolbar button) rather than per-selection —
+`execCommand('fontSize')` is well-known to behave inconsistently across
+browsers, not worth the risk for a first version. Baked into the saved
+HTML itself as a wrapping `<div style="font-size:...">`, not a separate
+column, so "how it looked when written" travels with the content rather
+than depending on a lookup.
+
+**`sanitize_rich_html()`** strips `<script>`/`<iframe>`/`<object>`/
+`<embed>`/`<link>`/`<meta>` tags, `on*="..."` event-handler attributes,
+and `javascript:` URIs — a best-effort regex strip, not a real HTML
+parser/allowlist, proportionate to who can actually reach this editor (a
+handful of named, access-controlled people, `EXUN_CHANNEL_MEMBERS`), not
+a public-facing input. Applied both when saving (the real defense) and
+again at render time (belt and braces, near-zero cost). `exun_hub_posts`
+now stores sanitized HTML in `body` rather than Markdown; rendering
+switched to `st.markdown(..., unsafe_allow_html=True)` accordingly.
+Discord/email notifications strip tags back down to plain text first —
+the formatting only ever meant something on the dashboard itself.
+
+**Not yet verified live** — this needs real hands-on testing (type
+something, format it, refresh, confirm it round-trips) before trusting
+it in production. If the sync from the contenteditable div into the
+hidden `st.text_area` doesn't fire reliably, that's the first thing to
+suspect: the native-setter-plus-dispatch-event trick above is standard,
+but it's the first time this app has done anything more than a button
+`.click()` through this DOM-reach-through technique.
+
+**Toolbar buttons now show live active/inactive state**, same day —
+clicking Bold with nothing selected (just a blinking cursor) already
+made the browser's own `contenteditable` typing state bold via plain
+`execCommand` (no code needed for that part, it's native behavior); what
+was missing was the button visibly lighting up to confirm it, and
+un-lighting once the cursor moves into plain text. `document.
+queryCommandState(cmd)` (wrapped in try/catch — it can throw if the
+editor isn't focused) drives a `.active` CSS class, checked on
+`selectionchange`, `keyup`, `mouseup`, and right after every toolbar
+click — so it tracks the cursor, not just clicks.
+
+**Rolled out dashboard-wide the same day**, once confirmed working:
+Announcements' body, Meetings' agenda (both the schedule dialog and the
+inline edit form), and Exun Tasks' description (both the assign dialog
+and the inline edit form) all now use `render_rich_html_editor()` /
+`wrap_rich_html_for_storage()` instead of a plain `st.text_area`, stored
+as sanitized HTML and rendered via `st.markdown(...,
+unsafe_allow_html=True)`.
+
+**Deliberately NOT converted:** the three chat-style threads (Messages,
+Queries, the Exun Channel — all built on `render_chat_thread()` in
+`shared.py`, shared by Messages and Inventory's per-request chat) stay
+plain `st.chat_input`; a full toolbar per message is a much bigger UX
+shift than "make formatting work," not something this ask covered. Nor
+the "Report an issue" dialog body or a flag's issue/help text in Exun
+Tasks — both are meant to be a quick, low-friction complaint, and
+`feedback.py`'s own design note (elsewhere in this file) is explicit that
+adding any kind of friction there defeats the point. And NOT the Discord
+Messages page's custom-message box — Discord renders its own Markdown,
+not HTML, so raw `<b>` tags would show up as literal text there instead
+of bold; converting that field would actively break it, not improve it.
+
+**New shared helper: `plain_text_from_rich_html()` in `shared.py`.**
+Every rich field now has at least one consumer that ISN'T this app's own
+markdown rendering — a plain-text email, a Discord message/DM, a
+calendar description — and all of them need tags stripped first, not
+literal `<b>` in someone's inbox. Replaces two inline regexes that had
+already been written separately (Announcements' email body, the Exun
+hub's Discord/email summary) once the same need came up a third time
+elsewhere. Also duplicated (by hand, same reasoning as every other
+duplicated helper in that file) in `send_meeting_reminders.py`, since
+that cron script still deliberately doesn't import `shared.py`.
+
+**`unwrap_rich_html_for_editing()`** is the other direction: re-opening
+something already saved (an existing meeting's agenda, an existing
+task's description) needs to seed the editor with its actual text AND
+its actual chosen size, not re-wrap it in a second size-`<div>` and lose
+track of which size was picked. `render_rich_html_editor()` takes an
+optional `initial_html` for exactly this — passed only on first mount
+for that key (matches every other Streamlit widget's `value=` semantics:
+it seeds once, then session_state owns it).
+
 ## Explicitly NOT in v1
 
 No PDF-to-spreadsheet feature. (WhatsApp notifications used to be listed

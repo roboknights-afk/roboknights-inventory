@@ -16,7 +16,8 @@ import streamlit as st
 from shared import (
     EXUN_EMAILS, MEETING_EXCLUDED_STAFF_EMAILS, cached_table, get_client, google_calendar_link,
     invalidate_cache, is_meeting_visible, meeting_email_body, meeting_invited_ids,
-    meeting_invitee_rows, notify_meeting_discord, safe_write, send_email, today_ist,
+    meeting_invitee_rows, notify_meeting_discord, plain_text_from_rich_html, render_rich_html_editor,
+    safe_write, sanitize_rich_html, send_email, today_ist, wrap_rich_html_for_storage,
 )
 
 client = get_client()
@@ -60,7 +61,7 @@ def _notify_meeting(meeting, invitee_ids, intro, subject):
         meeting_time=(
             time.fromisoformat(meeting["meeting_time"]) if meeting.get("meeting_time") else None
         ),
-        details=meeting.get("agenda") or "",
+        details=plain_text_from_rich_html(meeting.get("agenda") or ""),
         location=meeting.get("join_link") or "",
     )
     body = meeting_email_body(meeting, link, intro)
@@ -104,7 +105,8 @@ def render_schedule_meeting():
              "specific meeting.",
     )
     title = st.text_input("Title", key="new_meeting_title")
-    agenda = st.text_area("Agenda", key="new_meeting_agenda")
+    st.caption("Agenda")
+    render_rich_html_editor("new_meeting_agenda_rich", height=120, placeholder="Agenda...")
     mcol1, mcol2 = st.columns(2)
     meeting_date = mcol1.date_input("Date", key="new_meeting_date", value=None)
     meeting_time = mcol2.time_input("Time", key="new_meeting_time", value=None)
@@ -141,7 +143,7 @@ def render_schedule_meeting():
             with safe_write("schedule this meeting"):
                 created = client.table("meetings").insert({
                     "title": title.strip(),
-                    "agenda": agenda.strip(),
+                    "agenda": wrap_rich_html_for_storage("new_meeting_agenda_rich"),
                     "meeting_date": meeting_date.isoformat(),
                     "meeting_time": meeting_time.isoformat() if meeting_time else None,
                     "join_link": link or None,
@@ -183,8 +185,9 @@ def render_schedule_meeting():
             )
             # Clear the form so reopening the dialog starts blank.
             for k in (
-                "new_meeting_title", "new_meeting_agenda", "new_meeting_link",
-                "new_meeting_id_code", "new_meeting_password", "new_meeting_invitees",
+                "new_meeting_title", "new_meeting_agenda_rich", "new_meeting_agenda_rich_size",
+                "new_meeting_link", "new_meeting_id_code", "new_meeting_password",
+                "new_meeting_invitees",
             ):
                 st.session_state.pop(k, None)
             _close_schedule_meeting()
@@ -268,8 +271,10 @@ def render_meeting_card(m):
                 key=f"edit_include_exun_staff_{m['meeting_id']}",
             )
             edit_title = st.text_input("Title", value=m["title"], key=f"edit_title_{m['meeting_id']}")
-            edit_agenda = st.text_area(
-                "Agenda", value=m.get("agenda") or "", key=f"edit_agenda_{m['meeting_id']}"
+            st.caption("Agenda")
+            render_rich_html_editor(
+                f"edit_agenda_rich_{m['meeting_id']}", height=120,
+                initial_html=m.get("agenda"),
             )
             ecol1, ecol2 = st.columns(2)
             edit_date = ecol1.date_input(
@@ -304,6 +309,7 @@ def render_meeting_card(m):
             if save_col.button(
                 "Save changes", key=f"save_meeting_{m['meeting_id']}", icon=":material/check:", type="primary"
             ):
+                edit_agenda_html = wrap_rich_html_for_storage(f"edit_agenda_rich_{m['meeting_id']}")
                 if not edit_title.strip():
                     st.session_state.meeting_message = ("error", "Title is required.")
                 else:
@@ -323,7 +329,7 @@ def render_meeting_card(m):
                     with safe_write(f"update {edit_title.strip()}"):
                         client.table("meetings").update({
                             "title": edit_title.strip(),
-                            "agenda": edit_agenda.strip(),
+                            "agenda": edit_agenda_html,
                             "meeting_date": edit_date.isoformat(),
                             "meeting_time": edit_time.isoformat() if edit_time else None,
                             "join_link": link or None,
@@ -370,7 +376,7 @@ def render_meeting_card(m):
                         updated = dict(m)
                         updated.update({
                             "title": edit_title.strip(),
-                            "agenda": edit_agenda.strip(),
+                            "agenda": edit_agenda_html,
                             "meeting_date": edit_date.isoformat(),
                             "meeting_time": edit_time.isoformat() if edit_time else None,
                             "join_link": link or None,
@@ -439,7 +445,7 @@ def render_meeting_card(m):
                 st.caption(f":material/lock: Private — only for {invited_names}")
 
             if m.get("agenda"):
-                st.write(m["agenda"])
+                st.markdown(sanitize_rich_html(m["agenda"]), unsafe_allow_html=True)
 
             if m.get("join_link"):
                 # A real button, not a bare text link — this is the single

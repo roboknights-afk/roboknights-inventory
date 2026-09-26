@@ -22,6 +22,7 @@
 # DISCORD_ANNOUNCEMENTS_WEBHOOK_URL).
 
 import os
+import re
 from datetime import date, datetime, time, timedelta, timezone
 
 import requests
@@ -31,6 +32,15 @@ from supabase import create_client
 load_dotenv()
 
 client = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
+
+
+def plain_text_from_rich_html(html):
+    # Same as shared.py's plain_text_from_rich_html — kept in sync by
+    # hand, same reasoning as every other duplicated helper in this file
+    # (see the header comment): agenda is now rich HTML (2026-09-26,
+    # dashboard-wide rich-text rollout), and Discord needs plain text.
+    text = re.sub(r"<[^>]+>", " ", html or "")
+    return re.sub(r"\s+", " ", text).strip()
 
 IST = timezone(timedelta(hours=5, minutes=30))
 
@@ -105,7 +115,7 @@ def meeting_body(meeting, kind, is_private):
         headline = f":alarm_clock: **Starting soon — {meeting['title']} is about 1 hour away**"
     body = f"{headline}\n:date: {when}"
     if meeting.get("agenda"):
-        body += f"\n{meeting['agenda']}"
+        body += f"\n{plain_text_from_rich_html(meeting['agenda'])}"
     body += "\n\nFull details, the join link and RSVP are on the dashboard — not posted here."
     return body
 

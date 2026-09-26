@@ -1279,6 +1279,12 @@ st.session_state.is_read_only = st.session_state.is_exun or st.session_state.is_
 # browser session won't bring it back) — a host can reset an individual
 # member's flag by hand in Supabase if it's ever needed again.
 current_user_row = next((u for u in users if u["user_id"] == st.session_state.current_user_id), None)
+# Host-set flag on the member's own users row (not an email-set constant
+# like the tiers above) — a RoboKnights member of any standing can be an
+# Exun volunteer, set by a host on the Exun Tasks page. Stays False for
+# the tiers that have no users row at all (host/Exun/viewer accounts —
+# see the "works with no users row" note elsewhere in this file).
+st.session_state.is_exun_volunteer = bool(current_user_row and current_user_row.get("is_exun_volunteer"))
 needs_verification = bool(
     current_user_row
     and not current_user_row.get("is_staff")
@@ -1592,6 +1598,93 @@ if st.session_state.feedback_message:
     st.toast(st.session_state.feedback_message, icon=":material/check_circle:")
     st.session_state.feedback_message = None
 
+# --- Exun countdown (app-wide) ----------------------------------------------
+# A live, ticking countdown to the Exun event (31 Oct 2026), shown on every
+# page — asked for directly, not scoped to the Exun Tasks page. Streamlit
+# only reruns on an interaction, so a real per-second tick needs actual
+# client-side JS, not a server-computed string; components.html (already
+# used above for the "Report an issue" pill) runs real JS in an iframe,
+# which a plain st.html <script> block can't be relied on to do. Unlike
+# that pill, this has no need to reach into window.parent.document — it's
+# meant to render right where it's placed, in the normal page flow, so a
+# plain in-place iframe is enough; body background is set to transparent
+# so the app's own dark background shows through instead of a white box.
+EXUN_EVENT_AT_IST = "2026-10-31T00:00:00+05:30"
+components.html(f"""
+    <style>
+        .rk-countdown-wrap {{
+            display: flex; justify-content: center; align-items: center;
+            gap: 10px; font-family: 'Source Sans Pro', sans-serif;
+            padding: 8px 0 4px;
+        }}
+        .rk-countdown-label {{
+            background: linear-gradient(135deg, #F7D67A, #C9932A);
+            -webkit-background-clip: text; background-clip: text; color: transparent;
+            filter: drop-shadow(0 0 10px rgba(240, 197, 91, 0.55));
+            font-weight: 800; font-size: 1.7rem; text-transform: uppercase;
+            letter-spacing: 1.2px; margin-right: 10px;
+        }}
+        .rk-countdown-box {{
+            background: linear-gradient(160deg, #2A2A2A, #1B1B1B);
+            border: 1px solid rgba(232, 179, 61, 0.4);
+            border-radius: 12px;
+            box-shadow: 0 3px 10px rgba(0, 0, 0, 0.4), 0 0 14px rgba(232, 179, 61, 0.12);
+            min-width: 56px;
+            padding: 7px 10px 5px;
+            text-align: center;
+        }}
+        .rk-countdown-num {{
+            display: block; font-size: 1.55rem; font-weight: 800;
+            color: #F0C55B; line-height: 1.1;
+            text-shadow: 0 0 8px rgba(240, 197, 91, 0.35);
+        }}
+        .rk-countdown-unit {{
+            display: block; font-size: 0.68rem; color: #9A9A9A;
+            text-transform: uppercase; letter-spacing: 0.6px; margin-top: 2px;
+        }}
+        .rk-countdown-done {{
+            background: linear-gradient(135deg, #F7D67A, #C9932A);
+            -webkit-background-clip: text; background-clip: text; color: transparent;
+            filter: drop-shadow(0 0 10px rgba(240, 197, 91, 0.55));
+            font-weight: 800; font-size: 1.5rem;
+            text-align: center; width: 100%;
+        }}
+    </style>
+    <div id="rk-exun-countdown" class="rk-countdown-wrap">
+        <span class="rk-countdown-label">Exun 2026</span>
+        <div class="rk-countdown-box"><span id="rk-c-d" class="rk-countdown-num">–</span><span class="rk-countdown-unit">days</span></div>
+        <div class="rk-countdown-box"><span id="rk-c-h" class="rk-countdown-num">–</span><span class="rk-countdown-unit">hrs</span></div>
+        <div class="rk-countdown-box"><span id="rk-c-m" class="rk-countdown-num">–</span><span class="rk-countdown-unit">min</span></div>
+        <div class="rk-countdown-box"><span id="rk-c-s" class="rk-countdown-num">–</span><span class="rk-countdown-unit">sec</span></div>
+    </div>
+    <script>
+    (function() {{
+        document.body.style.background = 'transparent';
+        const target = new Date("{EXUN_EVENT_AT_IST}").getTime();
+        const wrap = document.getElementById('rk-exun-countdown');
+        const dEl = document.getElementById('rk-c-d');
+        const hEl = document.getElementById('rk-c-h');
+        const mEl = document.getElementById('rk-c-m');
+        const sEl = document.getElementById('rk-c-s');
+        function pad(n) {{ return String(n).padStart(2, '0'); }}
+        function tick() {{
+            const diff = target - Date.now();
+            if (diff <= 0) {{
+                wrap.innerHTML = '<span class="rk-countdown-done">Exun is here!</span>';
+                clearInterval(timer);
+                return;
+            }}
+            dEl.textContent = Math.floor(diff / 86400000);
+            hEl.textContent = pad(Math.floor(diff % 86400000 / 3600000));
+            mEl.textContent = pad(Math.floor(diff % 3600000 / 60000));
+            sEl.textContent = pad(Math.floor(diff % 60000 / 1000));
+        }}
+        tick();
+        const timer = setInterval(tick, 1000);
+    }})();
+    </script>
+""", height=86)
+
 # --- Navigation ------------------------------------------------------------
 
 # Grouped into labeled sections (native st.navigation dict form, no custom
@@ -1702,6 +1795,21 @@ if st.session_state.auth_user["email"] in EXUN_CHANNEL_MEMBERS:
     except Exception:
         pass
     exun_pages.append(st.Page("app_pages/exun_channel.py", title=exun_title, icon=":material/handshake:"))
+    # A separate page, same audience: structured Exun 2026 materials
+    # (write-ups, links, files) rather than a running chat thread.
+    exun_pages.append(
+        st.Page("app_pages/exun_event_hub.py", title="Exun 2026 Materials", icon=":material/folder_shared:")
+    )
+
+# "Exun Tasks": task delegation for the Exun event — hosts (full
+# management) and anyone flagged is_exun_volunteer (their own tasks
+# only), completely separate from EXUN_CHANNEL_MEMBERS above (that's the
+# sister club's own leadership channel, not this club's own volunteers).
+exun_task_pages = []
+if st.session_state.is_host or st.session_state.is_exun_volunteer:
+    exun_task_pages.append(
+        st.Page("app_pages/exun_tasks.py", title="Exun Tasks", icon=":material/checklist:")
+    )
 
 sections = {
     "": home_pages,
@@ -1710,6 +1818,7 @@ sections = {
     "You": you_pages,
     "Host tools": host_pages,
     "Exun Channel": exun_pages,
+    "Exun Tasks": exun_task_pages,
 }
 page = st.navigation({label: pages for label, pages in sections.items() if pages})
 page.run()

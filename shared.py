@@ -3,6 +3,7 @@
 # script — importing straight from app.py (the entry point) would re-run
 # the whole login screen, so shared code lives here instead.
 
+import json
 import os
 import re
 import smtplib
@@ -14,6 +15,7 @@ from urllib.parse import urlencode
 
 import requests
 import streamlit as st
+import streamlit.components.v1 as components
 from supabase import create_client
 
 # Where this app is running. Emails link back here. Reads from an APP_URL
@@ -331,6 +333,250 @@ def get_storage_client():
     if not key:
         return None
     return create_client(os.environ["SUPABASE_URL"], key)
+
+
+def render_file_open_and_download(storage, bucket, path, file_name, key_suffix):
+    # Shared by every page that lets someone attach a file to a private
+    # bucket (Exun task submissions, the Exun 2026 hub) — "Open" is a
+    # short-lived SIGNED url (create_signed_url, expires in 5 minutes),
+    # never a permanent public link: these buckets are private on purpose
+    # (see member-photos' own comment on why), so a link that keeps
+    # working forever would quietly defeat that. The browser decides what
+    # "open" means per file type — inline for a PDF/image, a download
+    # prompt for anything else — same as clicking any ordinary file link.
+    # "Download" stays a real download_button alongside it, since a
+    # signed link still triggers native browser handling rather than
+    # guaranteeing a save-to-disk prompt.
+    if not path:
+        return
+    if storage is None:
+        st.caption(":material/cloud_off: A file was attached, but storage isn't set up on this server.")
+        return
+    label = file_name or path
+    try:
+        signed = storage.storage.from_(bucket).create_signed_url(path, 300)
+        open_col, download_col = st.columns(2)
+        open_col.link_button(f"Open {label}", signed["signedURL"], icon=":material/open_in_new:")
+        data = storage.storage.from_(bucket).download(path)
+        download_col.download_button(
+            f"Download {label}", data=data, file_name=label,
+            icon=":material/download:", key=f"filedl_{key_suffix}",
+        )
+    except Exception:
+        st.caption(":material/error: Couldn't load this file right now.")
+
+
+# A best-effort strip, not a real HTML parser/allowlist — proportionate
+# to who can actually reach render_rich_html_editor below (a handful of
+# named, access-controlled people, e.g. EXUN_CHANNEL_MEMBERS), not a
+# public-facing input. Removes anything that could execute script or
+# escape the editor's own styling: script/iframe/object/embed/link/meta
+# tags, any on*="..." event-handler attribute, and javascript: URIs.
+# Applied both when saving (the real defense) and again at render time
+# (belt and braces, near-zero cost) — same "defense in depth" spirit as
+# every write path in this app already goes through safe_write.
+_UNSAFE_HTML_PATTERN = re.compile(
+    r"<\s*(script|iframe|object|embed|link|meta)\b.*?>.*?<\s*/\s*\1\s*>"
+    r"|<\s*(script|iframe|object|embed|link|meta)\b[^>]*/?>"
+    r"|on\w+\s*=\s*(\"[^\"]*\"|'[^']*'|[^\s>]+)"
+    r"|javascript\s*:",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def sanitize_rich_html(html):
+    return _UNSAFE_HTML_PATTERN.sub("", html or "")
+
+
+def plain_text_from_rich_html(html):
+    # Every place a rich-text field's content gets echoed somewhere that
+    # ISN'T this app's own markdown rendering — an email, a Discord
+    # message/DM, a calendar description, the AI bot's own context —
+    # needs plain text, not raw tags. Strips tags, then collapses
+    # whitespace left behind by block-level tags (a <div>/<br> becomes a
+    # run of spaces here, not a real line break — good enough for a
+    # notification, which was never meant to preserve layout anyway).
+    text = re.sub(r"<[^>]+>", " ", html or "")
+    return re.sub(r"\s+", " ", text).strip()
+
+
+_SIZE_PX = {"Small": 14, "Normal": 16, "Large": 20, "Extra large": 26}
+_SIZE_WRAP_PATTERN = re.compile(r'^<div style="font-size:(\d+)px">(.*)</div>$', re.DOTALL)
+
+
+def unwrap_rich_html_for_editing(html):
+    # Reverses wrap_rich_html_for_storage below — used to seed the editor
+    # when EDITING something already saved (a meeting's agenda, a task's
+    # description), so re-opening it shows the same text at the same size
+    # instead of nesting a second size-wrapper div around it and quietly
+    # losing track of which size was actually chosen.
+    if not html:
+        return "", "Normal"
+    match = _SIZE_WRAP_PATTERN.match(html.strip())
+    if not match:
+        return html, "Normal"
+    px = int(match.group(1))
+    label = next((lbl for lbl, val in _SIZE_PX.items() if val == px), "Normal")
+    return match.group(2), label
+
+
+def render_rich_html_editor(key, height=180, placeholder="Write something...", initial_html=None):
+    # A real rich-text box, Bold/Italic/Underline — Streamlit has no
+    # native one. The trick: a plain contenteditable div + toolbar,
+    # rendered inside components.html (runs real JS, unlike a plain
+    # st.html block); its content is pushed into a REAL, CSS-hidden
+    # st.text_area (this function's own `key`) via the same "reach into
+    # window.parent.document" technique app.py's floating feedback pill
+    # already uses for a button — just applied to a textarea's VALUE
+    # instead of calling .click(): set it through the native property
+    # setter (a plain `element.value = x` doesn't register with React's
+    # own change-tracking) and dispatch a real 'input' event so React
+    # notices and commits it into session_state[key], same as if it had
+    # been typed there directly.
+    #
+    # Bold/Italic/Underline use document.execCommand — still supported
+    # everywhere despite MDN's deprecation note, and there's no
+    # dependency-free replacement for a hand-rolled editor this small.
+    # Text SIZE is deliberately a whole-editor choice (a real
+    # st.select_slider below, not a toolbar button) rather than
+    # per-selection — execCommand('fontSize') is well-known to behave
+    # inconsistently across browsers, not worth the risk for a first
+    # version of this. Baked into the saved HTML itself (a wrapping
+    # <div style="font-size:...">), not a separate column, so "how it
+    # looked when written" travels with the content.
+    #
+    # Genuinely new, untested-in-production infrastructure for this app —
+    # verify it actually round-trips (type something, format it, reload)
+    # before trusting it live.
+    size_key = f"{key}_size"
+    # initial_html only takes effect the FIRST time this key appears in
+    # session_state — e.g. right when a host opens "Edit" on something
+    # already saved. On every later rerun (still editing, or composing
+    # something new) session_state already holds the live value, and
+    # that's what's used instead — same "value= only seeds it once"
+    # behavior every other Streamlit widget in this app already has.
+    if key not in st.session_state:
+        seeded_html, seeded_size = unwrap_rich_html_for_editing(initial_html or "")
+        st.session_state[key] = seeded_html
+        st.session_state.setdefault(size_key, seeded_size)
+    if size_key not in st.session_state:
+        st.session_state[size_key] = "Normal"
+    chosen_size = st.select_slider("Text size", options=list(_SIZE_PX), key=size_key)
+    px = _SIZE_PX[chosen_size]
+
+    with st.container(key=f"rk_rich_hidden_{key}"):
+        st.text_area("Rich content (hidden)", key=key, label_visibility="collapsed")
+
+    current_html = sanitize_rich_html(st.session_state.get(key, ""))
+
+    components.html(f"""
+        <style>
+            body {{ margin: 0; background: transparent; font-family: 'Source Sans Pro', sans-serif; }}
+            .rk-rt-toolbar {{ display: flex; gap: 4px; margin-bottom: 6px; }}
+            .rk-rt-btn {{
+                background: #2A2A2A; border: 1px solid rgba(232, 179, 61, 0.35); color: #F0C55B;
+                border-radius: 6px; padding: 4px 12px; font-weight: 700; cursor: pointer;
+                font-size: 0.9rem;
+            }}
+            .rk-rt-btn:hover {{ background: #3A3A3A; }}
+            /* Reflects the FORMATTING STATE AT THE CURSOR right now, not
+               just "was this button clicked" — same as Google Docs/Word:
+               click Bold with nothing selected and it lights up immediately
+               (queryCommandState is true the instant execCommand toggles
+               it, even with a collapsed selection), and stays lit for as
+               long as whatever gets typed next would come out bold, so it
+               un-lights the moment the cursor moves into plain text too. */
+            .rk-rt-btn.active {{
+                background: #F0C55B; color: #1E1E1E; border-color: #F0C55B;
+            }}
+            .rk-rt-editor {{
+                min-height: {height}px; max-height: {height * 2}px; overflow-y: auto;
+                background: #1B1B1B; border: 1px solid rgba(232, 179, 61, 0.3); border-radius: 8px;
+                padding: 10px 12px; color: #EAEAEA; font-size: {px}px; line-height: 1.4;
+                outline: none;
+            }}
+            .rk-rt-editor:empty:before {{ content: attr(data-placeholder); color: #7A7A7A; }}
+        </style>
+        <div class="rk-rt-toolbar">
+            <button type="button" class="rk-rt-btn" id="rk-rt-bold-{key}"><b>B</b></button>
+            <button type="button" class="rk-rt-btn" id="rk-rt-italic-{key}"><i>I</i></button>
+            <button type="button" class="rk-rt-btn" id="rk-rt-underline-{key}"><u>U</u></button>
+        </div>
+        <div class="rk-rt-editor" id="rk-rt-editor-{key}" contenteditable="true"
+             data-placeholder="{placeholder}"></div>
+        <script>
+        (function() {{
+            const parentDoc = window.parent.document;
+            const editor = document.getElementById('rk-rt-editor-{key}');
+            editor.innerHTML = {json.dumps(current_html)};
+
+            if (!parentDoc.getElementById('rk-rt-hide-{key}')) {{
+                const hide = parentDoc.createElement('style');
+                hide.id = 'rk-rt-hide-{key}';
+                hide.textContent = '.st-key-rk_rich_hidden_{key} {{ display: none !important; }}';
+                parentDoc.head.appendChild(hide);
+            }}
+
+            function syncToStreamlit() {{
+                const ta = parentDoc.querySelector('.st-key-rk_rich_hidden_{key} textarea');
+                if (!ta) return;
+                const setter = Object.getOwnPropertyDescriptor(
+                    window.parent.HTMLTextAreaElement.prototype, 'value'
+                ).set;
+                setter.call(ta, editor.innerHTML);
+                ta.dispatchEvent(new Event('input', {{ bubbles: true }}));
+            }}
+
+            const buttons = {{
+                bold: document.getElementById('rk-rt-bold-{key}'),
+                italic: document.getElementById('rk-rt-italic-{key}'),
+                underline: document.getElementById('rk-rt-underline-{key}'),
+            }};
+
+            function updateToolbarState() {{
+                for (const cmd in buttons) {{
+                    let on = false;
+                    try {{ on = document.queryCommandState(cmd); }} catch (err) {{ on = false; }}
+                    buttons[cmd].classList.toggle('active', on);
+                }}
+            }}
+
+            editor.addEventListener('input', function() {{
+                syncToStreamlit();
+                updateToolbarState();
+            }});
+            editor.addEventListener('keyup', updateToolbarState);
+            editor.addEventListener('mouseup', updateToolbarState);
+            editor.addEventListener('focus', updateToolbarState);
+            document.addEventListener('selectionchange', updateToolbarState);
+
+            function applyCommand(cmd) {{
+                return function(e) {{
+                    e.preventDefault();
+                    editor.focus();
+                    document.execCommand(cmd, false, null);
+                    syncToStreamlit();
+                    updateToolbarState();
+                }};
+            }}
+            buttons.bold.addEventListener('mousedown', applyCommand('bold'));
+            buttons.italic.addEventListener('mousedown', applyCommand('italic'));
+            buttons.underline.addEventListener('mousedown', applyCommand('underline'));
+        }})();
+        </script>
+    """, height=height + 80)
+
+
+def wrap_rich_html_for_storage(key):
+    # Call after render_rich_html_editor(key, ...) — reads its resulting
+    # HTML back out of session_state, sanitizes it again, and bakes in
+    # the chosen text size as a wrapping div so it travels with the
+    # content. Returns "" if nothing was written.
+    html = sanitize_rich_html(st.session_state.get(key, "")).strip()
+    if not html:
+        return ""
+    px = _SIZE_PX.get(st.session_state.get(f"{key}_size", "Normal"), 16)
+    return f'<div style="font-size:{px}px">{html}</div>'
 
 
 @st.cache_resource
@@ -829,7 +1075,7 @@ def meeting_email_body(meeting, calendar_link, intro):
     lines.append(f"When: {date.fromisoformat(meeting['meeting_date']).strftime('%A, %d %B %Y')}"
                  + (f" at {meeting['meeting_time'][:5]}" if meeting.get("meeting_time") else ""))
     if meeting.get("agenda"):
-        lines.append(f"Agenda: {meeting['agenda']}")
+        lines.append(f"Agenda: {plain_text_from_rich_html(meeting['agenda'])}")
     if meeting.get("join_link"):
         lines.append(f"Join: {meeting['join_link']}")
     if meeting.get("meeting_id_code"):
@@ -1421,7 +1667,7 @@ def _meeting_discord_body(meeting, kind, is_private):
         headline = f":alarm_clock: **Starting soon — {meeting['title']} is about 1 hour away**"
     body = f"{headline}\n:date: {when}"
     if meeting.get("agenda"):
-        body += f"\n{meeting['agenda']}"
+        body += f"\n{plain_text_from_rich_html(meeting['agenda'])}"
     body += "\n\nFull details, the join link and RSVP are on the dashboard — not posted here."
     return body
 
@@ -1456,5 +1702,82 @@ def notify_meeting_discord(meeting, invitee_ids, kind):
             tags = discord_role_tags()
             message = body + (f"\n{tags}" if tags else "")
             send_discord_message(message, channel="announcements")
+    except Exception:
+        pass
+
+
+def notify_exun_task_assigned(task, assignee_ids):
+    # Told the moment a host delegates something, same "synchronous, fires
+    # once, right when the write happens" shape as notify_meeting_discord's
+    # "new" case — no cron needed here since this only ever happens once,
+    # right when a host clicks Assign. Email + a DM to whoever has a linked
+    # Discord account; nobody without one just gets the email, same as
+    # meetings' "no error if not linked" rule.
+    try:
+        rows = get_client().table("users").select(
+            "user_id, email, discord_user_id"
+        ).in_("user_id", list(assignee_ids)).execute().data
+        due = (
+            f" — due {date.fromisoformat(task['due_date']).strftime('%d %b %Y')}"
+            if task.get("due_date") else ""
+        )
+        email_body = f"You've been assigned an Exun task: {task['title']}{due}."
+        if task.get("description"):
+            email_body += f"\n\n{plain_text_from_rich_html(task['description'])}"
+        email_body += f"\n\nOpen it on the dashboard: {APP_URL}"
+        discord_body = f":clipboard: **New Exun task: {task['title']}**{due}\n"
+        if task.get("description"):
+            discord_body += f"{plain_text_from_rich_html(task['description'])}\n"
+        discord_body += "Full details are on the dashboard — not posted here."
+        for row in rows:
+            if row.get("email"):
+                send_email(row["email"], f"Exun task: {task['title']}", email_body)
+            if row.get("discord_user_id"):
+                send_discord_dm(row["discord_user_id"], discord_body)
+    except Exception:
+        pass
+
+
+# Exun's own official Discord account (a real user id, not a server
+# role — a role can't be DMed) — kept here as a plain constant rather
+# than an env var, matching how discord_bot/bot.py already keeps a few
+# real Discord snowflake ids directly in source (ARBITER_DISCORD_IDS,
+# AI_ASSISTANT_BANNED_DISCORD_IDS): a numeric platform id is far less
+# directly actionable than an email, which is why THOSE were moved out
+# of source and this wasn't.
+EXUN_CLAN_DISCORD_USER_ID = "788696530781339669"
+
+
+def notify_exun_hub_post(author_email, summary):
+    # DMs Exun's own Discord account whenever the RK side posts something
+    # new in the Exun 2026 hub, so they don't have to remember to check
+    # the dashboard. Never fired for Exun's OWN post back — same "don't
+    # notify someone about their own action" rule
+    # _notify_new_chat_message already follows for ordinary chats.
+    if author_email in EXUN_EMAILS:
+        return
+    try:
+        send_discord_dm(EXUN_CLAN_DISCORD_USER_ID, summary)
+    except Exception:
+        pass
+
+
+def notify_exun_task_update(message, email_subject):
+    # Told when something happens on the HOST'S side of a task — a
+    # submission, a mark-done, an issue, or a help request. DMs every
+    # host with a linked Discord account, AND emails every host — never
+    # posted to the shared exun_rk channel: that channel's audience
+    # (EXUN_CHANNEL_MEMBERS) includes Exun's own leadership, and this is
+    # RoboKnights-internal volunteer management, nothing Exun needs to
+    # see. (First version of this wrongly reused
+    # notify_if_roster_complete's "post to exun_rk" shape — that one's
+    # actually meant for Exun's eyes, a finalized competition roster;
+    # this one isn't.)
+    try:
+        for row in cached_table("users"):
+            if row.get("email") in HOST_EMAILS and row.get("discord_user_id"):
+                send_discord_dm(row["discord_user_id"], message)
+        for email in HOST_EMAILS:
+            send_email(email, email_subject, message)
     except Exception:
         pass
