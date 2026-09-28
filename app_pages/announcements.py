@@ -73,8 +73,12 @@ def render_send_announcement():
                     if phone:
                         # WhatsApp template body text is short by design —
                         # the subject carries the gist, not the full body.
+                        # Template name has a leading underscore in Meta
+                        # ("_club_announcement", confirmed live 2026-09-29)
+                        # — not a typo here, has to match exactly or every
+                        # send 404s.
                         send_whatsapp(
-                            phone, "club_announcement",
+                            phone, "_club_announcement",
                             named_params={"subject": announcement_subject.strip()},
                         )
                 st.session_state.announcement_message = (
