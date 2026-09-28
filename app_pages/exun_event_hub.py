@@ -12,7 +12,7 @@ import time
 import streamlit as st
 
 from shared import (
-    EXUN_CHANNEL_MEMBERS, EXUN_EMAILS, cached_table, format_relative, get_client, get_storage_client,
+    APP_URL, EXUN_CHANNEL_MEMBERS, EXUN_EMAILS, cached_table, format_relative, get_client, get_storage_client,
     invalidate_cache, notify_exun_hub_post, plain_text_from_rich_html, render_file_open_and_download,
     render_rich_html_editor, safe_write, sanitize_rich_html, wrap_rich_html_for_storage,
 )
@@ -112,20 +112,27 @@ if can_post_here:
                         "file_name": file_name,
                     }).execute()
                     invalidate_cache()
-                summary_bits = [f":inbox_tray: **{current_user_name} shared something in the Exun 2026 hub**"]
+                discord_bits = [f":inbox_tray: **{current_user_name} shared something in the Exun 2026 hub**"]
+                email_bits = [f"{current_user_name} shared something in the Exun 2026 hub."]
                 if body_html:
                     # Discord/email get plain text — the rich formatting
                     # only means something rendered on the dashboard itself.
                     plain_body = plain_text_from_rich_html(body_html)
                     if plain_body:
-                        summary_bits.append(plain_body[:200])
+                        discord_bits.append(plain_body[:200])
+                        email_bits.append(plain_body[:200])
                 if link_clean:
-                    summary_bits.append(link_clean)
+                    discord_bits.append(link_clean)
+                    email_bits.append(link_clean)
                 if file_name:
-                    summary_bits.append(f"Attached: {file_name}")
-                summary_bits.append("Full details are on the dashboard.")
+                    discord_bits.append(f"Attached: {file_name}")
+                    email_bits.append(f"Attached: {file_name}")
+                discord_bits.append("Full details are on the dashboard.")
+                email_bits.append(f"Open it on the dashboard: {APP_URL}")
                 notify_exun_hub_post(
-                    st.session_state.auth_user["email"], "\n".join(summary_bits)
+                    st.session_state.auth_user["email"],
+                    "\n".join(discord_bits),
+                    "\n".join(email_bits),
                 )
                 st.session_state.hub_message = "Posted."
                 for k in ("hub_new_body_rich", "hub_new_body_rich_size", "hub_new_link"):

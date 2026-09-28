@@ -1714,28 +1714,36 @@ def notify_exun_task_assigned(task, assignee_ids):
 EXUN_CLAN_DISCORD_USER_ID = "788696530781339669"
 
 
-def notify_exun_hub_post(author_email, summary):
+def notify_exun_hub_post(author_email, discord_summary, email_body):
     # Two directions, never both on the same post — same "don't notify
     # someone about their own action" rule _notify_new_chat_message
-    # already follows for ordinary chats:
-    # - RoboKnights posts -> DM Exun's own Discord account, so they don't
-    #   have to remember to check the dashboard.
-    # - Exun posts -> DM the specific RoboKnights people in
+    # already follows for ordinary chats. Both a Discord DM AND an email
+    # now (host's explicit request, 2026-09-28) — a DM only reaches
+    # someone with a linked Discord account, email always gets through
+    # regardless:
+    # - RoboKnights posts -> DM + email Exun (their own Discord account,
+    #   plus every EXUN_EMAILS address), so they don't have to remember
+    #   to check the dashboard.
+    # - Exun posts -> DM + email the specific RoboKnights people in
     #   EXUN_HUB_PING_EMAILS (host's explicit request, 2026-09-26), so
     #   THEY don't have to remember to check it either.
     try:
         if author_email in EXUN_EMAILS:
-            # Case-insensitive on purpose: confirmed live that
-            # access_roles.email and users.email don't always agree on
-            # casing for the same real person (Aryamman's is
+            for email in EXUN_HUB_PING_EMAILS:
+                send_email(email, "Exun 2026 hub", email_body)
+            # Case-insensitive on purpose for the Discord lookup: confirmed
+            # live that access_roles.email and users.email don't always
+            # agree on casing for the same real person (Aryamman's is
             # "v09145aryamman@..." in one table, "V09145aryamman@..." in
             # the other) — an exact .in_() match would silently drop him.
             ping_emails_lower = {e.lower() for e in EXUN_HUB_PING_EMAILS}
             for row in get_client().table("users").select("email, discord_user_id").execute().data:
                 if (row.get("email") or "").lower() in ping_emails_lower and row.get("discord_user_id"):
-                    send_discord_dm(row["discord_user_id"], summary)
+                    send_discord_dm(row["discord_user_id"], discord_summary)
         else:
-            send_discord_dm(EXUN_CLAN_DISCORD_USER_ID, summary)
+            send_discord_dm(EXUN_CLAN_DISCORD_USER_ID, discord_summary)
+            for email in EXUN_EMAILS:
+                send_email(email, "Exun 2026 hub", email_body)
     except Exception:
         pass
 
