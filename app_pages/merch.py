@@ -43,6 +43,7 @@ if not is_host and not has_access:
 BUCKET = "merch-assets"
 ALLOWED_IMAGES = {"png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg"}
 MAX_MB = 5
+SIZES = ["XS", "S", "M", "L", "XL"]
 
 STATUS_LABELS = {
     "registered": "Registered",
@@ -156,6 +157,11 @@ def render_new_drive():
         help=f"What the merch looks like — shown directly on the page. PNG or JPG, up to {MAX_MB} MB each.",
         disabled=storage is None, accept_multiple_files=True,
     )
+    size_chart_upload = st.file_uploader(
+        "Size chart (optional)", type=list(ALLOWED_IMAGES), key="new_drive_size_chart",
+        help=f"Shown directly on the page so people can pick a size. PNG or JPG, up to {MAX_MB} MB.",
+        disabled=storage is None,
+    )
     upi_id = st.text_input("UPI ID", key="new_drive_upi_id")
     qr_upload = st.file_uploader(
         "UPI payment QR code", type=list(ALLOWED_IMAGES), key="new_drive_qr",
@@ -184,6 +190,9 @@ def render_new_drive():
                     _save_image(upload, f"design_{stamp}_{i}")
                     for i, upload in enumerate(design_uploads)
                 ]
+                size_chart_path = (
+                    _save_image(size_chart_upload, f"sizechart_{stamp}") if size_chart_upload else None
+                )
                 client.table("merch_drives").insert({
                     "title": title.strip(),
                     "description": description.strip(),
@@ -191,6 +200,7 @@ def render_new_drive():
                     "qr_image_path": qr_path,
                     "upi_id": upi_id.strip(),
                     "design_image_paths": design_paths,
+                    "size_chart_image_path": size_chart_path,
                     "deadline": deadline.isoformat(),
                     "created_by": current_user_id,
                 }).execute()
@@ -228,11 +238,16 @@ def render_register_form(d):
     number = st.number_input(
         "Your number (0-99)", min_value=0, max_value=99, step=1, key=f"register_number_{d['drive_id']}",
     )
+    size = st.selectbox(
+        "Size", SIZES, index=None, placeholder="Select a size", key=f"register_size_{d['drive_id']}",
+    )
     if st.button(
         "Register", key=f"register_btn_{d['drive_id']}", icon=":material/how_to_reg:", type="primary",
     ):
         if not name.strip() or not username.strip():
             st.error("Name and username are required.")
+        elif size is None:
+            st.error("Pick a size.")
         else:
             with safe_write("register for this drive"):
                 client.table("merch_orders").insert({
@@ -241,6 +256,7 @@ def render_register_form(d):
                     "name": name.strip(),
                     "username": username.strip(),
                     "custom_number": int(number),
+                    "size": size,
                     "status": "registered",
                 }).execute()
                 invalidate_cache()
@@ -296,7 +312,7 @@ def render_payment_form(d, order):
 
 def render_my_registration(d, order):
     st.markdown("**Your registration**")
-    st.caption(f"{order['name']} · {order['username']} · #{order['custom_number']}")
+    st.caption(f"{order['name']} · {order['username']} · #{order['custom_number']} · Size {order['size']}")
     st.badge(
         STATUS_LABELS[order["status"]], color=STATUS_BADGE_COLOR[order["status"]],
         icon=":material/how_to_reg:",
@@ -324,7 +340,7 @@ def render_registration_review(d, orders):
         for o in sorted(orders, key=lambda o: (o["status"] != "pending_review", o["created_at"])):
             with st.container(border=True, key=f"rkcard_merchorder_{o['order_id']}"):
                 name_col, badge_col = st.columns([3, 1], vertical_alignment="center")
-                name_col.markdown(f"**{o['name']}** ({o['username']}) — #{o['custom_number']}")
+                name_col.markdown(f"**{o['name']}** ({o['username']}) — #{o['custom_number']}, Size {o['size']}")
                 badge_col.badge(
                     STATUS_LABELS[o["status"]], color=STATUS_BADGE_COLOR[o["status"]],
                     icon=":material/how_to_reg:",
@@ -472,6 +488,10 @@ for d in drives:
                 accept_multiple_files=True,
                 help="Uploading new ones here replaces the current set entirely.",
             )
+            new_size_chart = st.file_uploader(
+                "Replace the size chart (optional)", type=list(ALLOWED_IMAGES),
+                key=f"edit_drive_size_chart_{d['drive_id']}", disabled=storage is None,
+            )
             edit_upi_id = st.text_input(
                 "UPI ID", value=d.get("upi_id") or "",
                 key=f"edit_drive_upi_{d['drive_id']}",
@@ -507,6 +527,10 @@ for d in drives:
                             _save_image(upload, f"design_{d['drive_id']}_{stamp}_{i}")
                             for i, upload in enumerate(new_design_uploads)
                         ]
+                    if new_size_chart is not None:
+                        update_row["size_chart_image_path"] = _save_image(
+                            new_size_chart, f"sizechart_{d['drive_id']}_{stamp}"
+                        )
                     client.table("merch_drives").update(update_row).eq("drive_id", d["drive_id"]).execute()
                     invalidate_cache()
                 st.session_state.merch_message = ("success", f"Updated {edit_title.strip()}.")
@@ -531,6 +555,8 @@ for d in drives:
                 with safe_write(f"delete {d['title']}"):
                     if storage is not None:
                         stale_paths = [d["qr_image_path"]] if d.get("qr_image_path") else []
+                        if d.get("size_chart_image_path"):
+                            stale_paths.append(d["size_chart_image_path"])
                         stale_paths += d.get("design_image_paths") or []
                         if stale_paths:
                             try:
@@ -557,6 +583,15 @@ for d in drives:
                     pass
             if design_images:
                 st.image(design_images, width=220)
+
+        if d.get("size_chart_image_path") and storage is not None:
+            try:
+                st.image(
+                    storage.storage.from_(BUCKET).download(d["size_chart_image_path"]),
+                    width=220, caption="Size chart",
+                )
+            except Exception:
+                st.caption(":material/error: Couldn't load the size chart right now.")
 
         if is_host:
             render_payment_toggle(d)

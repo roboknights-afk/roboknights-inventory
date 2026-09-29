@@ -942,6 +942,10 @@ create table if not exists merch_drives (
     design_image_paths  text[] not null default '{}',  -- shown inline to
                                      -- everyone who can see the drive, not
                                      -- behind an Open/Download click
+    size_chart_image_path  text,  -- also shown inline, always (not gated by
+                                     -- payment_phase_open) — a registrant
+                                     -- needs this to pick a size BEFORE
+                                     -- paying
     deadline            date not null,  -- last day to REGISTER (IST) — see
                                     -- today_ist() in shared.py for why this
                                     -- is a plain date, not a timestamp
@@ -964,6 +968,8 @@ create table if not exists merch_orders (
     custom_number            int not null,   -- 0-99, enforced in the app;
                                               -- deliberately NOT unique —
                                               -- duplicates are allowed
+    size                     text not null,  -- 'XS' / 'S' / 'M' / 'L' / 'XL',
+                                              -- enforced in the app
     quote                    text not null default '',  -- filled in at
                                      -- payment time, not registration
     payment_screenshot_path  text,
@@ -1012,3 +1018,11 @@ alter table merch_drives add column if not exists design_image_paths text[] not 
 alter table merch_drives add column if not exists payment_phase_open boolean not null default false;
 alter table merch_orders alter column status set default 'registered';
 update merch_orders set status = 'registered' where status = 'pending_review' and payment_screenshot_path is null;
+
+-- Merch: size chart picture + a size question at registration (2026-09-29).
+-- Default 'M' on the add-column step only covers any pre-existing test
+-- rows — every new registration sets this explicitly from the app's own
+-- XS/S/M/L/XL selectbox, so the default is never actually relied on going
+-- forward.
+alter table merch_drives add column if not exists size_chart_image_path text;
+alter table merch_orders add column if not exists size text not null default 'M';
