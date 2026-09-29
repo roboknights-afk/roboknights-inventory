@@ -1,9 +1,9 @@
 # Merch: a host-run order drive. A member fills in their order details and
-# attaches a payment screenshot (paid via a FamApp UPI QR code the host
-# uploads); a host manually reviews the screenshot and approves or rejects
-# it before the order counts as paid. Real money from minors, so a human
-# stays in the loop rather than just showing a QR and trusting people —
-# see CLAUDE.md's earlier note on this exact tradeoff.
+# attaches a payment screenshot (paid via a UPI QR code the host uploads);
+# a host manually reviews the screenshot and approves or rejects it before
+# the order counts as paid. Real money from minors, so a human stays in the
+# loop rather than just showing a QR and trusting people — see CLAUDE.md's
+# earlier note on this exact tradeoff.
 
 from datetime import date, datetime, timezone
 
@@ -120,11 +120,19 @@ def render_new_drive():
     )
     description = st.text_area(
         "Details for members", key="new_drive_description",
-        placeholder="Price, sizes, what's included...",
+        placeholder="Sizes, what's included...",
     )
-    fampay_user_id = st.text_input("FamApp user ID", key="new_drive_fampay_id")
+    price = st.number_input(
+        "Price (₹)", min_value=0.0, step=1.0, key="new_drive_price",
+    )
+    design_uploads = st.file_uploader(
+        "Design pictures (optional)", type=list(ALLOWED_IMAGES), key="new_drive_design",
+        help=f"What the merch looks like — shown directly on the page. PNG or JPG, up to {MAX_MB} MB each.",
+        disabled=storage is None, accept_multiple_files=True,
+    )
+    upi_id = st.text_input("UPI ID", key="new_drive_upi_id")
     qr_upload = st.file_uploader(
-        "FamApp payment QR code", type=list(ALLOWED_IMAGES), key="new_drive_qr",
+        "UPI payment QR code", type=list(ALLOWED_IMAGES), key="new_drive_qr",
         help=f"PNG or JPG, up to {MAX_MB} MB.", disabled=storage is None,
     )
     deadline = st.date_input(
@@ -133,26 +141,35 @@ def render_new_drive():
     if st.button("Start this drive", icon=":material/storefront:", type="primary", key="confirm_new_drive"):
         if not title.strip():
             st.error("Title is required.")
-        elif not fampay_user_id.strip():
-            st.error("FamApp user ID is required.")
+        elif price <= 0:
+            st.error("Enter a price greater than 0.")
+        elif not upi_id.strip():
+            st.error("UPI ID is required.")
         elif qr_upload is None:
             st.error("Upload the payment QR code.")
         elif storage is None:
             st.error("File uploads aren't set up on this server yet — tell a host to add SUPABASE_SERVICE_KEY.")
         else:
+            stamp = int(datetime.now(timezone.utc).timestamp())
             with safe_write("start this drive"):
-                qr_path = _save_image(qr_upload, f"qr_{int(datetime.now(timezone.utc).timestamp())}")
+                qr_path = _save_image(qr_upload, f"qr_{stamp}")
+                design_paths = [
+                    _save_image(upload, f"design_{stamp}_{i}")
+                    for i, upload in enumerate(design_uploads)
+                ]
                 client.table("merch_drives").insert({
                     "title": title.strip(),
                     "description": description.strip(),
+                    "price": price,
                     "qr_image_path": qr_path,
-                    "fampay_user_id": fampay_user_id.strip(),
+                    "upi_id": upi_id.strip(),
+                    "design_image_paths": design_paths,
                     "deadline": deadline.isoformat(),
                     "created_by": current_user_id,
                 }).execute()
                 invalidate_cache()
             st.session_state.merch_message = ("success", f"Started \"{title.strip()}\".")
-            for k in ("new_drive_title", "new_drive_description", "new_drive_fampay_id"):
+            for k in ("new_drive_title", "new_drive_description", "new_drive_upi_id"):
                 st.session_state.pop(k, None)
             st.session_state.show_new_drive = False
             st.rerun()
@@ -328,9 +345,19 @@ for d in drives:
                 "Details for members", value=d.get("description") or "",
                 key=f"edit_drive_desc_{d['drive_id']}",
             )
-            edit_fampay_id = st.text_input(
-                "FamApp user ID", value=d.get("fampay_user_id") or "",
-                key=f"edit_drive_fampay_{d['drive_id']}",
+            edit_price = st.number_input(
+                "Price (₹)", min_value=0.0, step=1.0, value=float(d.get("price") or 0),
+                key=f"edit_drive_price_{d['drive_id']}",
+            )
+            new_design_uploads = st.file_uploader(
+                "Replace the design pictures (optional)", type=list(ALLOWED_IMAGES),
+                key=f"edit_drive_design_{d['drive_id']}", disabled=storage is None,
+                accept_multiple_files=True,
+                help="Uploading new ones here replaces the current set entirely.",
+            )
+            edit_upi_id = st.text_input(
+                "UPI ID", value=d.get("upi_id") or "",
+                key=f"edit_drive_upi_{d['drive_id']}",
             )
             edit_deadline = st.date_input(
                 "Last day orders are open", value=date.fromisoformat(d["deadline"]),
@@ -350,14 +377,19 @@ for d in drives:
                 update_row = {
                     "title": edit_title.strip(),
                     "description": edit_description.strip(),
-                    "fampay_user_id": edit_fampay_id.strip(),
+                    "price": edit_price,
+                    "upi_id": edit_upi_id.strip(),
                     "deadline": edit_deadline.isoformat(),
                 }
+                stamp = int(datetime.now(timezone.utc).timestamp())
                 with safe_write(f"update {edit_title.strip()}"):
                     if new_qr is not None:
-                        update_row["qr_image_path"] = _save_image(
-                            new_qr, f"qr_{d['drive_id']}_{int(datetime.now(timezone.utc).timestamp())}"
-                        )
+                        update_row["qr_image_path"] = _save_image(new_qr, f"qr_{d['drive_id']}_{stamp}")
+                    if new_design_uploads:
+                        update_row["design_image_paths"] = [
+                            _save_image(upload, f"design_{d['drive_id']}_{stamp}_{i}")
+                            for i, upload in enumerate(new_design_uploads)
+                        ]
                     client.table("merch_drives").update(update_row).eq("drive_id", d["drive_id"]).execute()
                     invalidate_cache()
                 st.session_state.merch_message = ("success", f"Updated {edit_title.strip()}.")
@@ -380,32 +412,51 @@ for d in drives:
                 st.rerun()
             if delete_col.button("Delete", key=f"delete_btn_drive_{d['drive_id']}", icon=":material/delete:"):
                 with safe_write(f"delete {d['title']}"):
-                    if d.get("qr_image_path") and storage is not None:
-                        try:
-                            storage.storage.from_(BUCKET).remove([d["qr_image_path"]])
-                        except Exception:
-                            pass
+                    if storage is not None:
+                        stale_paths = [d["qr_image_path"]] if d.get("qr_image_path") else []
+                        stale_paths += d.get("design_image_paths") or []
+                        if stale_paths:
+                            try:
+                                storage.storage.from_(BUCKET).remove(stale_paths)
+                            except Exception:
+                                pass
                     client.table("merch_drives").delete().eq("drive_id", d["drive_id"]).execute()
                     invalidate_cache()
                 st.session_state.merch_message = ("success", f"Deleted {d['title']}.")
                 st.rerun()
 
+        # PostgREST returns `numeric` columns as JSON strings, not floats
+        # (avoids float precision loss) — cast before formatting or this
+        # breaks the moment a real price comes back from the database.
+        price_value = float(d.get("price") or 0)
+        price_text = f"₹{price_value:.0f}" if price_value == int(price_value) else f"₹{price_value:.2f}"
+        st.markdown(f"**{price_text}**")
         st.caption(
             f":material/event: Orders open through {date.fromisoformat(d['deadline']).strftime('%d %b %Y')}"
         )
         if d.get("description"):
             st.write(d["description"])
 
+        if d.get("design_image_paths") and storage is not None:
+            design_images = []
+            for path in d["design_image_paths"]:
+                try:
+                    design_images.append(storage.storage.from_(BUCKET).download(path))
+                except Exception:
+                    pass
+            if design_images:
+                st.image(design_images, width=220)
+
         if d.get("qr_image_path") and storage is not None:
             try:
                 st.image(
                     storage.storage.from_(BUCKET).download(d["qr_image_path"]),
-                    width=220, caption="Pay via FamApp",
+                    width=220, caption="Pay via UPI",
                 )
             except Exception:
                 st.caption(":material/error: Couldn't load the QR code right now.")
-        if d.get("fampay_user_id"):
-            st.caption(f":material/badge: FamApp user ID: **{d['fampay_user_id']}**")
+        if d.get("upi_id"):
+            st.caption(f":material/badge: UPI ID: **{d['upi_id']}**")
 
         if has_access:
             if my_order is None:
