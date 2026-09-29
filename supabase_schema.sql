@@ -942,9 +942,14 @@ create table if not exists merch_drives (
     design_image_paths  text[] not null default '{}',  -- shown inline to
                                      -- everyone who can see the drive, not
                                      -- behind an Open/Download click
-    deadline            date not null,  -- last day orders are open (IST) —
-                                    -- see today_ist() in shared.py for why
-                                    -- this is a plain date, not a timestamp
+    deadline            date not null,  -- last day to REGISTER (IST) — see
+                                    -- today_ist() in shared.py for why this
+                                    -- is a plain date, not a timestamp
+    payment_phase_open  boolean not null default false,  -- price/QR/UPI and
+                                     -- the payment step only reach a
+                                     -- registrant once a host flips this —
+                                     -- registering is "interest", not an
+                                     -- order, until then
     created_by          uuid references users(user_id),
     created_at          timestamptz not null default now()
 );
@@ -959,17 +964,17 @@ create table if not exists merch_orders (
     custom_number            int not null,   -- 0-99, enforced in the app;
                                               -- deliberately NOT unique —
                                               -- duplicates are allowed
-    quote                    text not null default '',
+    quote                    text not null default '',  -- filled in at
+                                     -- payment time, not registration
     payment_screenshot_path  text,
     payment_screenshot_name  text,  -- the ORIGINAL filename, since the path
                                      -- is keyed by drive_id/user_id
-    status                   text not null default 'pending_review',
-                                     -- 'pending_review' / 'paid' / 'rejected'
+    status                   text not null default 'registered',
+                                     -- 'registered' / 'pending_review' /
+                                     -- 'paid' / 'rejected'
     created_at               timestamptz not null default now(),
     updated_at               timestamptz not null default now(),
-    unique (drive_id, user_id)  -- one order per person per drive; a
-                                 -- rejected order is edited in place and
-                                 -- resubmitted, not duplicated
+    unique (drive_id, user_id)  -- one registration per person per drive
 );
 
 -- QR codes and payment screenshots go in a Storage bucket named
@@ -999,3 +1004,11 @@ update users set has_merch_access = true where role in ('member', 'core_member')
 alter table merch_drives rename column fampay_user_id to upi_id;
 alter table merch_drives add column if not exists price numeric(10, 2) not null default 0;
 alter table merch_drives add column if not exists design_image_paths text[] not null default '{}';
+
+-- Merch: two-phase flow — register interest now, pay only once a host
+-- opens it (2026-09-29). Existing rows (if any) default to 'registered'
+-- since nothing has gone through actual payment review under the old
+-- one-step flow yet.
+alter table merch_drives add column if not exists payment_phase_open boolean not null default false;
+alter table merch_orders alter column status set default 'registered';
+update merch_orders set status = 'registered' where status = 'pending_review' and payment_screenshot_path is null;

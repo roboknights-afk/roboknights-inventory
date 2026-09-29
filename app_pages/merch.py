@@ -1,8 +1,11 @@
-# Merch: a host-run order drive. A member fills in their order details and
-# attaches a payment screenshot (paid via a UPI QR code the host uploads);
-# a host manually reviews the screenshot and approves or rejects it before
-# the order counts as paid. Real money from minors, so a human stays in the
-# loop rather than just showing a QR and trusting people — see CLAUDE.md's
+# Merch: a host-run drive, in two phases. Phase 1 is just registering
+# interest — name, username, the number to show on the merch — open until
+# the drive's deadline. Phase 2 (payment) is released by a host whenever
+# they're ready, and only reaches people who already registered: they see
+# the price/QR/UPI details for the first time then, and submit a payment
+# screenshot; a host manually approves or rejects it before the order
+# counts as paid. Real money from minors, so a human stays in the loop
+# rather than just showing a QR and trusting people — see CLAUDE.md's
 # earlier note on this exact tradeoff.
 
 from datetime import date, datetime, timezone
@@ -28,7 +31,7 @@ has_access = bool(current_user_row and current_user_row.get("has_merch_access"))
 # reaches this page (adhocs included), but only people a host has actually
 # granted merch access see the drives themselves. A host always gets
 # through, even without merch access personally, to manage the Access list
-# and review orders.
+# and review registrations.
 if not is_host and not has_access:
     st.title(":material/storefront: Merch")
     st.warning(
@@ -41,11 +44,18 @@ BUCKET = "merch-assets"
 ALLOWED_IMAGES = {"png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg"}
 MAX_MB = 5
 
-STATUS_LABELS = {"pending_review": "Awaiting review", "paid": "Paid", "rejected": "Rejected — resubmit"}
-STATUS_BADGE_COLOR = {"pending_review": "orange", "paid": "green", "rejected": "red"}
+STATUS_LABELS = {
+    "registered": "Registered",
+    "pending_review": "Awaiting payment review",
+    "paid": "Paid",
+    "rejected": "Rejected — resubmit",
+}
+STATUS_BADGE_COLOR = {
+    "registered": "blue", "pending_review": "orange", "paid": "green", "rejected": "red",
+}
 
 st.title(":material/storefront: Merch")
-st.caption("Order drives the club is running right now, and what you've ordered.")
+st.caption("Merch drives the club is running right now, and where you stand on each.")
 
 if "merch_message" not in st.session_state:
     st.session_state.merch_message = None
@@ -81,6 +91,18 @@ def _save_image(upload, path_prefix):
     return path
 
 
+def _price_value(d):
+    # PostgREST returns `numeric` columns as JSON strings, not floats
+    # (avoids float precision loss) — cast before doing arithmetic or
+    # formatting, or this breaks the moment a real price comes back.
+    return float(d.get("price") or 0)
+
+
+def _price_text(d):
+    value = _price_value(d)
+    return f"₹{value:.0f}" if value == int(value) else f"₹{value:.2f}"
+
+
 # --- Host: who has merch access -----------------------------------------
 # Same multiselect-diff pattern exun_tasks.py already uses for its
 # volunteer list: a picker of real names, pre-filled with who currently has
@@ -89,8 +111,8 @@ def render_access_manager():
     eligible = [u for u in all_users if u.get("has_merch_access")]
     with st.expander(f":material/badge: Merch access ({len(eligible)})", expanded=False):
         st.caption(
-            "Who can see and place orders on this page — independent of club "
-            "role, so add or remove anyone here directly."
+            "Who can see and register for drives on this page — independent of "
+            "club role, so add or remove anyone here directly."
         )
         selected = st.multiselect(
             "Has merch access",
@@ -113,6 +135,10 @@ def render_access_manager():
 
 
 # --- Host: start a drive -----------------------------------------------
+# Price/QR/UPI are all set up FRONT here, even though members won't see
+# them until a host opens payment collection (below) — no reason to make
+# a host re-enter payment details later just because members shouldn't see
+# them yet.
 @st.dialog("Start a merch drive", on_dismiss=lambda: st.session_state.update(show_new_drive=False))
 def render_new_drive():
     title = st.text_input(
@@ -133,10 +159,11 @@ def render_new_drive():
     upi_id = st.text_input("UPI ID", key="new_drive_upi_id")
     qr_upload = st.file_uploader(
         "UPI payment QR code", type=list(ALLOWED_IMAGES), key="new_drive_qr",
-        help=f"PNG or JPG, up to {MAX_MB} MB.", disabled=storage is None,
+        help=f"PNG or JPG, up to {MAX_MB} MB. Not shown to members until you open payment collection.",
+        disabled=storage is None,
     )
     deadline = st.date_input(
-        "Last day orders are open", key="new_drive_deadline", value=date(2026, 10, 1),
+        "Last day to register", key="new_drive_deadline", value=date(2026, 10, 1),
     )
     if st.button("Start this drive", icon=":material/storefront:", type="primary", key="confirm_new_drive"):
         if not title.strip():
@@ -175,93 +202,132 @@ def render_new_drive():
             st.rerun()
 
 
-# --- Member: place or resubmit an order ---------------------------------
-def render_order_form(d, existing=None):
-    st.markdown("**Resubmit your order**" if existing else "**Place your order**")
-    name = st.text_input(
-        "Name", value=(existing or {}).get("name") or current_user_name, key=f"order_name_{d['drive_id']}"
-    )
-    username = st.text_input(
-        "Username", value=(existing or {}).get("username") or "", key=f"order_username_{d['drive_id']}"
-    )
+# --- Payment details (price/QR/UPI) --------------------------------------
+# Shared by the host's always-visible view and a registrant's view once
+# payment collection is open — one place for this block so the two never
+# drift apart.
+def render_payment_details(d):
+    st.markdown(f"**{_price_text(d)}**")
+    if d.get("qr_image_path") and storage is not None:
+        try:
+            st.image(
+                storage.storage.from_(BUCKET).download(d["qr_image_path"]),
+                width=220, caption="Pay via UPI",
+            )
+        except Exception:
+            st.caption(":material/error: Couldn't load the QR code right now.")
+    if d.get("upi_id"):
+        st.caption(f":material/badge: UPI ID: **{d['upi_id']}**")
+
+
+# --- Phase 1: register interest -------------------------------------------
+def render_register_form(d):
+    st.markdown("**Register for this drive**")
+    name = st.text_input("Name", value=current_user_name, key=f"register_name_{d['drive_id']}")
+    username = st.text_input("Username", key=f"register_username_{d['drive_id']}")
     number = st.number_input(
-        "Your number (0-99)", min_value=0, max_value=99, step=1,
-        value=(existing or {}).get("custom_number") or 0, key=f"order_number_{d['drive_id']}",
+        "Your number (0-99)", min_value=0, max_value=99, step=1, key=f"register_number_{d['drive_id']}",
     )
-    quote = st.text_area("Quote", value=(existing or {}).get("quote") or "", key=f"order_quote_{d['drive_id']}")
+    if st.button(
+        "Register", key=f"register_btn_{d['drive_id']}", icon=":material/how_to_reg:", type="primary",
+    ):
+        if not name.strip() or not username.strip():
+            st.error("Name and username are required.")
+        else:
+            with safe_write("register for this drive"):
+                client.table("merch_orders").insert({
+                    "drive_id": d["drive_id"],
+                    "user_id": current_user_id,
+                    "name": name.strip(),
+                    "username": username.strip(),
+                    "custom_number": int(number),
+                    "status": "registered",
+                }).execute()
+                invalidate_cache()
+            for email in HOST_EMAILS:
+                send_email(
+                    email, f"Merch registration: {d['title']}",
+                    f"{name.strip()} registered interest in \"{d['title']}\".",
+                )
+            st.session_state.merch_message = (
+                "success", "Registered — you'll be told once it's time to pay."
+            )
+            st.rerun()
+
+
+# --- Phase 2: pay (only reachable once a host opens it) --------------------
+def render_payment_form(d, order):
+    st.markdown("**Complete your payment**")
+    quote = st.text_area(
+        "Quote (optional)", value=order.get("quote") or "", key=f"pay_quote_{order['order_id']}"
+    )
     screenshot = st.file_uploader(
-        "Payment screenshot", type=list(ALLOWED_IMAGES), key=f"order_screenshot_{d['drive_id']}",
+        "Payment screenshot", type=list(ALLOWED_IMAGES), key=f"pay_screenshot_{order['order_id']}",
         help=f"Pay via the QR above first, then attach proof here. PNG or JPG, up to {MAX_MB} MB.",
         disabled=storage is None,
     )
     if st.button(
-        "Resubmit order" if existing else "Submit order",
-        key=f"submit_order_{d['drive_id']}", icon=":material/send:", type="primary",
+        "Submit payment proof", key=f"pay_submit_{order['order_id']}", icon=":material/send:", type="primary",
     ):
-        if not name.strip() or not username.strip():
-            st.error("Name and username are required.")
-        elif screenshot is None:
+        if screenshot is None:
             st.error("Attach your payment screenshot before submitting.")
         elif storage is None:
             st.error("File uploads aren't set up on this server yet — tell a host.")
         else:
             row = {
-                "name": name.strip(),
-                "username": username.strip(),
-                "custom_number": int(number),
                 "quote": quote.strip(),
                 "payment_screenshot_name": screenshot.name,
                 "status": "pending_review",
             }
-            with safe_write("submit this order"):
+            with safe_write("submit your payment proof"):
                 row["payment_screenshot_path"] = _save_image(
                     screenshot, f"proof_{d['drive_id']}_{current_user_id}"
                 )
-                if existing is None:
-                    client.table("merch_orders").insert({
-                        **row, "drive_id": d["drive_id"], "user_id": current_user_id,
-                    }).execute()
-                else:
-                    client.table("merch_orders").update(row).eq("order_id", existing["order_id"]).execute()
+                client.table("merch_orders").update(row).eq("order_id", order["order_id"]).execute()
                 invalidate_cache()
             for email in HOST_EMAILS:
                 send_email(
-                    email, f"Merch order: {d['title']}",
-                    f"{name.strip()} submitted an order for \"{d['title']}\" and needs payment review.\n\n"
-                    "Open the Merch page on the dashboard to review it.",
+                    email, f"Merch payment: {d['title']}",
+                    f"{order['name']} submitted payment proof for \"{d['title']}\" and needs review.",
                 )
-            st.session_state.merch_message = ("success", "Order submitted — a host will review your payment.")
+            st.session_state.merch_message = ("success", "Payment proof submitted — a host will review it.")
             st.rerun()
 
 
-def render_my_order(d, order):
-    st.markdown("**Your order**")
-    caption = f"{order['name']} · {order['username']} · #{order['custom_number']}"
-    if order.get("quote"):
-        caption += f" — “{order['quote']}”"
-    st.caption(caption)
+def render_my_registration(d, order):
+    st.markdown("**Your registration**")
+    st.caption(f"{order['name']} · {order['username']} · #{order['custom_number']}")
     st.badge(
         STATUS_LABELS[order["status"]], color=STATUS_BADGE_COLOR[order["status"]],
-        icon=":material/receipt_long:",
+        icon=":material/how_to_reg:",
     )
-    if order["status"] == "rejected" and d["deadline"] >= today_iso:
-        st.warning("Your payment screenshot was rejected. Fix it and resubmit below.")
-        render_order_form(d, existing=order)
+    if order["status"] in ("registered", "rejected"):
+        if order["status"] == "rejected":
+            st.warning("Your payment screenshot was rejected. Fix it and resubmit below.")
+        if d.get("payment_phase_open"):
+            render_payment_details(d)
+            render_payment_form(d, order)
+        else:
+            st.caption("Payment details will be sent once the drive is ready to collect payment.")
+    elif order["status"] == "pending_review":
+        st.caption("Your payment is being reviewed by a host.")
+    elif order["status"] == "paid":
+        st.caption("All set — your order is confirmed.")
 
 
-# --- Host: review submitted orders ---------------------------------------
-def render_order_review(d, orders):
+# --- Host: review registrations / payments --------------------------------
+def render_registration_review(d, orders):
     if not orders:
         return
     pending_count = sum(1 for o in orders if o["status"] == "pending_review")
-    with st.expander(f":material/receipt_long: Orders ({len(orders)})", expanded=pending_count > 0):
+    with st.expander(f":material/how_to_reg: Registrations ({len(orders)})", expanded=pending_count > 0):
         for o in sorted(orders, key=lambda o: (o["status"] != "pending_review", o["created_at"])):
             with st.container(border=True, key=f"rkcard_merchorder_{o['order_id']}"):
                 name_col, badge_col = st.columns([3, 1], vertical_alignment="center")
                 name_col.markdown(f"**{o['name']}** ({o['username']}) — #{o['custom_number']}")
                 badge_col.badge(
                     STATUS_LABELS[o["status"]], color=STATUS_BADGE_COLOR[o["status"]],
-                    icon=":material/receipt_long:",
+                    icon=":material/how_to_reg:",
                 )
                 if o.get("quote"):
                     st.caption(f"“{o['quote']}”")
@@ -307,6 +373,57 @@ def render_order_review(d, orders):
                             )
                         st.session_state.merch_message = ("success", "Marked rejected.")
                         st.rerun()
+
+
+# --- Host: open/close payment collection -----------------------------------
+# The moment this flips on, every current registrant gets emailed — this
+# IS "the payment link being sent to people who registered," just done as
+# an in-app reveal (price/QR/UPI) plus an email pointing them to it, since
+# there's no separate external payment link to send.
+def render_payment_toggle(d):
+    if d.get("payment_phase_open"):
+        toggle_col, close_col = st.columns([3, 1], vertical_alignment="center")
+        toggle_col.badge("Payment collection open", color="green", icon=":material/payments:")
+        if close_col.button("Close", key=f"close_payment_{d['drive_id']}", icon=":material/lock:"):
+            with safe_write("close payment collection"):
+                client.table("merch_drives").update({"payment_phase_open": False}).eq(
+                    "drive_id", d["drive_id"]
+                ).execute()
+                invalidate_cache()
+            st.session_state.merch_message = ("success", "Payment collection closed.")
+            st.rerun()
+    else:
+        payment_ready = _price_value(d) > 0 and bool(d.get("qr_image_path")) and bool(d.get("upi_id"))
+        if not payment_ready:
+            st.caption(
+                ":material/info: Add a price, a UPI QR code, and a UPI ID (Edit) "
+                "before you can open payment collection."
+            )
+        if st.button(
+            "Open payment collection", key=f"open_payment_{d['drive_id']}",
+            icon=":material/payments:", type="primary", disabled=not payment_ready,
+        ):
+            with safe_write("open payment collection"):
+                client.table("merch_drives").update({"payment_phase_open": True}).eq(
+                    "drive_id", d["drive_id"]
+                ).execute()
+                invalidate_cache()
+            registrants = [
+                o for o in orders_by_drive.get(d["drive_id"], [])
+                if o["status"] in ("registered", "rejected")
+            ]
+            for o in registrants:
+                recipient = user_email_by_id.get(o["user_id"])
+                if recipient:
+                    send_email(
+                        recipient, f"Time to pay: {d['title']}",
+                        f"Payment collection is now open for \"{d['title']}\" ({_price_text(d)}).\n"
+                        "Log in to the dashboard's Merch page to pay via UPI and upload your payment screenshot.",
+                    )
+            st.session_state.merch_message = (
+                "success", f"Payment collection open — emailed {len(registrants)} registrant(s)."
+            )
+            st.rerun()
 
 
 # --- Layout ----------------------------------------------------------------
@@ -360,7 +477,7 @@ for d in drives:
                 key=f"edit_drive_upi_{d['drive_id']}",
             )
             edit_deadline = st.date_input(
-                "Last day orders are open", value=date.fromisoformat(d["deadline"]),
+                "Last day to register", value=date.fromisoformat(d["deadline"]),
                 key=f"edit_drive_deadline_{d['drive_id']}",
             )
             new_qr = st.file_uploader(
@@ -403,7 +520,7 @@ for d in drives:
         title_col, badge_col, edit_col, delete_col = st.columns([3, 1, 1, 1], vertical_alignment="center")
         title_col.markdown(f"### {d['title']}")
         if is_open:
-            badge_col.badge("Open", color="green", icon=":material/storefront:")
+            badge_col.badge("Open", color="green", icon=":material/how_to_reg:")
         else:
             badge_col.badge("Closed", color="grey", icon=":material/lock:")
         if is_host:
@@ -425,14 +542,8 @@ for d in drives:
                 st.session_state.merch_message = ("success", f"Deleted {d['title']}.")
                 st.rerun()
 
-        # PostgREST returns `numeric` columns as JSON strings, not floats
-        # (avoids float precision loss) — cast before formatting or this
-        # breaks the moment a real price comes back from the database.
-        price_value = float(d.get("price") or 0)
-        price_text = f"₹{price_value:.0f}" if price_value == int(price_value) else f"₹{price_value:.2f}"
-        st.markdown(f"**{price_text}**")
         st.caption(
-            f":material/event: Orders open through {date.fromisoformat(d['deadline']).strftime('%d %b %Y')}"
+            f":material/event: Registration open through {date.fromisoformat(d['deadline']).strftime('%d %b %Y')}"
         )
         if d.get("description"):
             st.write(d["description"])
@@ -447,25 +558,18 @@ for d in drives:
             if design_images:
                 st.image(design_images, width=220)
 
-        if d.get("qr_image_path") and storage is not None:
-            try:
-                st.image(
-                    storage.storage.from_(BUCKET).download(d["qr_image_path"]),
-                    width=220, caption="Pay via UPI",
-                )
-            except Exception:
-                st.caption(":material/error: Couldn't load the QR code right now.")
-        if d.get("upi_id"):
-            st.caption(f":material/badge: UPI ID: **{d['upi_id']}**")
+        if is_host:
+            render_payment_toggle(d)
+            render_payment_details(d)
 
         if has_access:
             if my_order is None:
                 if is_open:
-                    render_order_form(d)
+                    render_register_form(d)
                 else:
-                    st.caption("Orders are closed for this drive.")
+                    st.caption("Registration is closed for this drive.")
             else:
-                render_my_order(d, my_order)
+                render_my_registration(d, my_order)
 
         if is_host:
-            render_order_review(d, orders_by_drive.get(d["drive_id"], []))
+            render_registration_review(d, orders_by_drive.get(d["drive_id"], []))
