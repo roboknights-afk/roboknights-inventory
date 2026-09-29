@@ -1713,6 +1713,13 @@ club_pages.append(st.Page("app_pages/achievements.py", title="Achievements", ico
 # private phone/admission columns hidden — see members.py).
 if st.session_state.is_host or st.session_state.is_exun or st.session_state.is_viewer:
     club_pages.append(st.Page("app_pages/members.py", title="Members", icon=":material/badge:"))
+# Merch: hosts, plus anyone with a real users row (adhocs included) — not
+# Exun, not the read-only viewer, neither of whom has one. Visible to
+# everyone in the club regardless of role or merch-access status; the page
+# itself shows an eligibility message instead of the order form to whoever
+# lacks users.has_merch_access (see merch.py).
+if st.session_state.is_host or current_user_row:
+    club_pages.append(st.Page("app_pages/merch.py", title="Merch", icon=":material/storefront:"))
 
 # "Talk": every two-way conversation surface — with hosts, with other
 # members, or with the AI.
