@@ -14,7 +14,8 @@ import streamlit as st
 
 from shared import (
     HOST_EMAILS, MERCH_HOST_EMAILS, cached_table, get_client, get_storage_client,
-    invalidate_cache, render_file_open_and_download, safe_write, send_email, today_ist,
+    invalidate_cache, render_file_open_and_download, safe_write, send_email,
+    sync_merch_orders_to_sheet, today_ist,
 )
 
 client = get_client()
@@ -421,6 +422,7 @@ def render_register_form(d):
                     row["payment_screenshot_name"] = screenshot.name
                 client.table("merch_orders").insert(row).execute()
                 invalidate_cache()
+                sync_merch_orders_to_sheet()
             for email in HOST_EMAILS:
                 send_email(
                     email, f"Merch registration: {d['title']}",
@@ -478,6 +480,7 @@ def render_payment_form(d, order):
                     row["payment_screenshot_name"] = screenshot.name
                 client.table("merch_orders").update(row).eq("order_id", order["order_id"]).execute()
                 invalidate_cache()
+                sync_merch_orders_to_sheet()
             for email in HOST_EMAILS:
                 send_email(
                     email, f"Merch payment: {d['title']}",
@@ -572,12 +575,14 @@ def render_edit_order_form(d, o):
                 _apply_pending_change(
                     "edit_order", {"order_id": o["order_id"], "update": update_row}, current_user_id
                 )
+                invalidate_cache()
+                sync_merch_orders_to_sheet()
             else:
                 _stage_pending_change(
                     "edit_order", f"Edit {o['name']}'s registration",
                     {"order_id": o["order_id"], "update": update_row},
                 )
-            invalidate_cache()
+                invalidate_cache()
         st.session_state.merch_message = (
             ("success", f"Updated {edit_name.strip()}'s registration.") if is_host
             else ("success", "Submitted — a host needs to approve this edit.")
@@ -634,6 +639,7 @@ def render_registration_review(d, orders):
                             with safe_write("approve this order"):
                                 _apply_pending_change("approve_order", {"order_id": o["order_id"]}, current_user_id)
                                 invalidate_cache()
+                                sync_merch_orders_to_sheet()
                             st.session_state.merch_message = ("success", "Marked paid.")
                         else:
                             with safe_write("request approving this order"):
@@ -653,6 +659,7 @@ def render_registration_review(d, orders):
                             with safe_write("reject this order"):
                                 _apply_pending_change("reject_order", {"order_id": o["order_id"]}, current_user_id)
                                 invalidate_cache()
+                                sync_merch_orders_to_sheet()
                             st.session_state.merch_message = ("success", "Marked rejected.")
                         else:
                             with safe_write("request rejecting this order"):
@@ -693,6 +700,8 @@ def render_pending_approvals():
                             "reviewed_at": datetime.now(timezone.utc).isoformat(),
                         }).eq("pending_id", p["pending_id"]).execute()
                         invalidate_cache()
+                        if p["action"] in ("delete_drive", "edit_order", "approve_order", "reject_order"):
+                            sync_merch_orders_to_sheet()
                     st.session_state.merch_message = ("success", "Approved and applied.")
                     st.rerun()
                 if reject_col.button(
@@ -860,6 +869,7 @@ for d in drives:
                     with safe_write(f"delete {d['title']}"):
                         _apply_pending_change("delete_drive", {"drive_id": d["drive_id"]}, current_user_id)
                         invalidate_cache()
+                        sync_merch_orders_to_sheet()
                     st.session_state.merch_message = ("success", f"Deleted {d['title']}.")
                 else:
                     with safe_write(f"request deleting {d['title']}"):

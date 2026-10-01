@@ -267,6 +267,12 @@ def _roast_request(text):
 # so the host scans it directly instead of pasting a link every time.
 E2C_SHEET_ID = "1RLSXcAJ4t44M_wQ_hKlZqaTVmWjwAXrI8FInjHIZRTw"
 
+# A plain merch-orders mirror, "Roboknights Merch Orders" (2026-10-02) —
+# a SEPARATE sheet from Clio/E2C above, with no other data living in it, so
+# sync_merch_orders_to_sheet (below) can safely rewrite it wholesale every
+# time rather than match/diff individual rows the way Clio has to.
+MERCH_SHEET_ID = "1RwlIePxMT6SX4j3qNr_qbrexpzh63ZRszk9nQIMLKhE"
+
 # The school's own admission roster, "RoboKnights Clio" (2026-08-14) — one
 # tab per school year, plus an Alumni tab. Unlike E2C above (read-only, a
 # plain API key is enough), this needs WRITE access, so it uses a Google
@@ -661,6 +667,67 @@ def sync_member_to_clio_sheet(
         ws.insert_row(
             row, index=marker_row - CLIO_ADHOC_GAP_ROWS, inherit_from_before=True,
         )
+
+
+_MERCH_SHEET_STATUS_LABELS = {
+    "registered": "Registered",
+    "pending_review": "Awaiting payment review",
+    "cash_awaited": "Cash payment awaited",
+    "paid": "Paid",
+    "rejected": "Rejected",
+}
+
+
+def sync_merch_orders_to_sheet():
+    # A plain, read-only-for-humans mirror of every merch registration
+    # (every drive, not just one), so a host can hand MERCH_SHEET_ID to
+    # someone outside the app (a vendor, a parent helping with logistics)
+    # or just eyeball it without opening the dashboard. Called right after
+    # any merch_orders write in app_pages/merch.py.
+    #
+    # Unlike sync_member_to_clio_sheet above, this sheet has no other data
+    # or formatting living in it that a sync could clobber, so it's
+    # simplest and safest to clear and rewrite the whole thing every call
+    # rather than match/diff individual rows — the same "regenerate
+    # wholesale" approach export_public_achievements.py already uses for
+    # the website. Best-effort, like every other outside-this-app write in
+    # this file: wrapped in its own try/except so a Sheets hiccup never
+    # blocks the actual registration/payment write that triggered this.
+    if not MERCH_SHEET_ID:
+        return
+    try:
+        gc = get_sheets_write_client()
+        if gc is None:
+            return
+        client = get_client()
+        drives_by_id = {d["drive_id"]: d for d in client.table("merch_drives").select("*").execute().data}
+        orders = client.table("merch_orders").select("*").execute().data
+
+        header = [
+            "Drive", "Name", "Username", "Number", "Size", "Payment Method",
+            "Status", "Merch Role", "Quote", "Registered At (IST)",
+        ]
+        rows = [header]
+        for o in sorted(orders, key=lambda o: o["created_at"]):
+            drive = drives_by_id.get(o["drive_id"])
+            rows.append([
+                drive["title"] if drive else "(deleted drive)",
+                o["name"],
+                o["username"],
+                o["custom_number"],
+                o["size"],
+                (o.get("payment_method") or "").upper(),
+                _MERCH_SHEET_STATUS_LABELS.get(o["status"], o["status"]),
+                o.get("merch_role") or "",
+                o.get("quote") or "",
+                format_ist(o["created_at"]),
+            ])
+
+        ws = gc.open_by_key(MERCH_SHEET_ID).sheet1
+        ws.clear()
+        ws.update("A1", rows)
+    except Exception:
+        pass
 
 
 # Every page was re-fetching whole tables from Supabase on every single
