@@ -395,6 +395,13 @@ def render_edit_order_form(d, o):
         "Status", list(STATUS_LABELS), format_func=lambda s: STATUS_LABELS[s],
         index=list(STATUS_LABELS).index(o["status"]), key=f"edit_order_status_{o['order_id']}",
     )
+    merch_role_options = ["", "core", "member"]
+    edit_merch_role = st.selectbox(
+        "Merch role", merch_role_options,
+        format_func=lambda r: {"": "— none —", "core": "Core", "member": "Member"}[r],
+        index=merch_role_options.index(o["merch_role"]) if o.get("merch_role") in merch_role_options else 0,
+        key=f"edit_order_merch_role_{o['order_id']}",
+    )
     new_screenshot = None
     if edit_method == "UPI":
         new_screenshot = st.file_uploader(
@@ -419,6 +426,7 @@ def render_edit_order_form(d, o):
             "quote": edit_quote.strip(),
             "payment_method": "cash" if edit_method == "Cash" else "upi",
             "status": edit_status,
+            "merch_role": edit_merch_role or None,
         }
         with safe_write(f"update {edit_name.strip()}'s registration"):
             if edit_method == "UPI" and new_screenshot is not None:
@@ -457,6 +465,8 @@ def render_registration_review(d, orders):
                 if edit_col.button("Edit", key=f"edit_order_{o['order_id']}", icon=":material/edit:"):
                     st.session_state.editing_order_id = o["order_id"]
                     st.rerun()
+                if o.get("merch_role"):
+                    st.caption(f":material/military_tech: Merch role: **{o['merch_role'].title()}**")
                 if o.get("quote"):
                     st.caption(f"“{o['quote']}”")
                 if o.get("payment_method") == "cash":
@@ -472,8 +482,20 @@ def render_registration_review(d, orders):
                         "Approve — paid", key=f"approve_order_{o['order_id']}",
                         icon=":material/check_circle:", type="primary",
                     ):
+                        # Auto-assign a merch role from the buyer's real club
+                        # role — but never for a host's own order (their
+                        # host status isn't a club "role" at all, and the
+                        # student explicitly didn't want this guessed for
+                        # them).
+                        update_row = {"status": "paid"}
+                        buyer_email = user_email_by_id.get(o["user_id"])
+                        if buyer_email not in HOST_EMAILS:
+                            buyer = next((u for u in all_users if u["user_id"] == o["user_id"]), None)
+                            update_row["merch_role"] = (
+                                "core" if buyer and buyer.get("role") == "core_member" else "member"
+                            )
                         with safe_write("approve this order"):
-                            client.table("merch_orders").update({"status": "paid"}).eq(
+                            client.table("merch_orders").update(update_row).eq(
                                 "order_id", o["order_id"]
                             ).execute()
                             invalidate_cache()

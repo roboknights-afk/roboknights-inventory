@@ -981,6 +981,12 @@ create table if not exists merch_orders (
     status                   text not null default 'registered',
                                      -- 'registered' / 'pending_review' /
                                      -- 'paid' / 'rejected'
+    merch_role               text,  -- 'core' / 'member' / null — set
+                                     -- automatically when a host approves
+                                     -- payment (mirrors the buyer's real
+                                     -- users.role at that moment; never
+                                     -- auto-set for a host's own order),
+                                     -- editable by a host afterward
     created_at               timestamptz not null default now(),
     updated_at               timestamptz not null default now(),
     unique (drive_id, user_id)  -- one registration per person per drive
@@ -1034,3 +1040,9 @@ alter table merch_orders add column if not exists size text not null default 'M'
 -- screenshot — a host confirms it by hand (WhatsApp/in person) and then
 -- marks the order paid from the Registrations review list.
 alter table merch_orders add column if not exists payment_method text not null default 'upi';
+
+-- Merch: a "Core"/"Member" role per paid order, auto-assigned from the
+-- buyer's real users.role when a host approves payment (2026-10-01) — never
+-- auto-set for a host's own order. Host-editable afterward; see
+-- render_edit_order_form in app_pages/merch.py.
+alter table merch_orders add column if not exists merch_role text;
