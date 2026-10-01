@@ -695,95 +695,230 @@ _MERCH_SHEET_STATUS_COLORS = {
     "Rejected": ({"red": 1.0, "green": 0.85, "blue": 0.85}, {"red": 0.60, "green": 0.10, "blue": 0.10}),
 }
 
-# RoboKnights' own "knight gold" accent (config.toml primaryColor) — the
-# header uses the exact same color the dashboard itself does, so the
-# sheet reads as the same brand rather than a generic spreadsheet.
+# RoboKnights' own "knight gold" accent (config.toml primaryColor) and a
+# near-black matching the dashboard's dark theme — so the sheet reads as
+# the same brand as the app, not a generic spreadsheet.
 _MERCH_SHEET_GOLD = {"red": 0xE8 / 255, "green": 0xB3 / 255, "blue": 0x3D / 255}
+_MERCH_SHEET_DARK = {"red": 0.08, "green": 0.09, "blue": 0.11}
+_MERCH_SHEET_FONT = "Nunito"  # already proven to render in Sheets — see the Clio adhoc label
+
+# Layout: row 1 = title banner, row 2 = live summary line, row 3 = column
+# headers, row 4+ = one row per registration.
+_MERCH_SHEET_HEADER_ROW = 2  # 0-based
+_MERCH_SHEET_FIRST_DATA_ROW = 3  # 0-based
+
+# Fixed pixel widths rather than autoResize — autoResize would size
+# column A to the full title text sitting in the merged banner above it.
+_MERCH_SHEET_COLUMN_WIDTHS = [190, 170, 150, 80, 70, 110, 190, 120, 320, 200]
+_MERCH_SHEET_CENTERED_COLUMNS = {3, 4, 5, 6, 7}  # Number, Size, Payment, Status, Merch Role
+_MERCH_SHEET_QUOTE_COLUMN = 8
+_MERCH_SHEET_STATUS_COLUMN = 6
 
 
-def _merch_sheet_style_requests(sheet_id, num_cols, statuses):
-    # Everything here SETS a property to a value (never appends a rule),
-    # so re-running this on every single sync is safe — it can't pile up
-    # duplicate conditional formats or banding the way an "add a rule"
-    # API call would if called repeatedly. That's why status coloring is
-    # done as plain per-cell background/text color here, computed fresh
-    # from the data already in hand, rather than a Sheets conditional
-    # format rule.
-    num_rows = len(statuses) + 1  # +1 for the header row
-    requests = [
-        # Bold, centered, gold header — frozen so it stays visible on
-        # scroll.
+def _merch_sheet_range(sheet_id, start_row, end_row, start_col, end_col):
+    rng = {"sheetId": sheet_id, "startColumnIndex": start_col, "endColumnIndex": end_col}
+    if start_row is not None:
+        rng["startRowIndex"] = start_row
+    if end_row is not None:
+        rng["endRowIndex"] = end_row
+    return rng
+
+
+def _merch_sheet_style_requests(sheet_id, num_cols, statuses, existing_banding_ids):
+    # Re-run on every sync, so everything here either SETS a property to a
+    # value or first deletes what it's about to re-add (the banding) —
+    # nothing can pile up duplicates across thousands of syncs. Order
+    # matters: the full reset runs FIRST, then everything paints on top
+    # (an earlier version reset after drawing borders and wiped them off
+    # every data row).
+    num_data = len(statuses)
+    end_row = _MERCH_SHEET_FIRST_DATA_ROW + num_data
+    fmt_fields = "userEnteredFormat"
+
+    requests = [{"deleteBanding": {"bandedRangeId": bid}} for bid in existing_banding_ids]
+    requests += [
+        # 1. Wipe every cell's formatting and any merges from last time.
+        {"unmergeCells": {"range": _merch_sheet_range(sheet_id, None, None, 0, num_cols)}},
+        {
+            "repeatCell": {
+                "range": _merch_sheet_range(sheet_id, None, None, 0, num_cols),
+                "cell": {"userEnteredFormat": {}},
+                "fields": fmt_fields,
+            }
+        },
+        # 2. Sheet-wide: no gridlines (clean, app-like), 3 frozen rows so
+        #    the banner, summary and headers stay put on scroll.
         {
             "updateSheetProperties": {
-                "properties": {"sheetId": sheet_id, "gridProperties": {"frozenRowCount": 1}},
-                "fields": "gridProperties.frozenRowCount",
+                "properties": {
+                    "sheetId": sheet_id,
+                    "gridProperties": {"frozenRowCount": _MERCH_SHEET_FIRST_DATA_ROW, "hideGridlines": True},
+                },
+                "fields": "gridProperties(frozenRowCount,hideGridlines)",
+            }
+        },
+        # 3. Title banner + summary line: dark, merged across the table.
+        {"mergeCells": {"range": _merch_sheet_range(sheet_id, 0, 1, 0, num_cols), "mergeType": "MERGE_ALL"}},
+        {"mergeCells": {"range": _merch_sheet_range(sheet_id, 1, 2, 0, num_cols), "mergeType": "MERGE_ALL"}},
+        {
+            "repeatCell": {
+                "range": _merch_sheet_range(sheet_id, 0, 1, 0, num_cols),
+                "cell": {"userEnteredFormat": {
+                    "backgroundColor": _MERCH_SHEET_DARK,
+                    "horizontalAlignment": "CENTER", "verticalAlignment": "MIDDLE",
+                    "textFormat": {
+                        "fontFamily": _MERCH_SHEET_FONT, "fontSize": 18, "bold": True,
+                        "foregroundColor": _MERCH_SHEET_GOLD,
+                    },
+                }},
+                "fields": fmt_fields,
             }
         },
         {
             "repeatCell": {
-                "range": {"sheetId": sheet_id, "startRowIndex": 0, "endRowIndex": 1, "startColumnIndex": 0, "endColumnIndex": num_cols},
-                "cell": {
-                    "userEnteredFormat": {
-                        "backgroundColor": _MERCH_SHEET_GOLD,
-                        "horizontalAlignment": "CENTER",
-                        "textFormat": {"bold": True, "foregroundColor": {"red": 0.15, "green": 0.11, "blue": 0.02}},
-                    }
-                },
-                "fields": "userEnteredFormat(backgroundColor,horizontalAlignment,textFormat)",
+                "range": _merch_sheet_range(sheet_id, 1, 2, 0, num_cols),
+                "cell": {"userEnteredFormat": {
+                    "backgroundColor": _MERCH_SHEET_DARK,
+                    "horizontalAlignment": "CENTER", "verticalAlignment": "TOP",
+                    "textFormat": {
+                        "fontFamily": _MERCH_SHEET_FONT, "fontSize": 10,
+                        "foregroundColor": {"red": 0.72, "green": 0.72, "blue": 0.76},
+                    },
+                }},
+                "fields": fmt_fields,
             }
         },
-        # A clean grid border over the whole table, header included.
-        {
-            "updateBorders": {
-                "range": {"sheetId": sheet_id, "startRowIndex": 0, "endRowIndex": num_rows, "startColumnIndex": 0, "endColumnIndex": num_cols},
-                **{
-                    side: {"style": "SOLID", "width": 1, "color": {"red": 0.75, "green": 0.75, "blue": 0.75}}
-                    for side in ("top", "bottom", "left", "right", "innerHorizontal", "innerVertical")
-                },
-            }
-        },
-        # Auto-size every column to fit its longest value instead of
-        # leaving Sheets' default fixed width (what actually made a plain
-        # sync look like a raw data dump rather than a real sheet).
-        {
-            "autoResizeDimensions": {
-                "dimensions": {"sheetId": sheet_id, "dimension": "COLUMNS", "startIndex": 0, "endIndex": num_cols}
-            }
-        },
-        # Reset any stale per-cell formatting from a previous sync (e.g. a
-        # row that no longer exists after a delete) before repainting the
-        # status column below — otherwise leftover color from a longer
-        # previous sync could survive underneath shorter current data.
+        # 4. Column headers: gold, bold, dark text (white-on-gold is
+        #    unreadable — same call the dashboard's own buttons made).
         {
             "repeatCell": {
-                "range": {"sheetId": sheet_id, "startRowIndex": 1, "startColumnIndex": 0, "endColumnIndex": num_cols},
-                "cell": {"userEnteredFormat": {}},
-                "fields": "userEnteredFormat",
+                "range": _merch_sheet_range(sheet_id, _MERCH_SHEET_HEADER_ROW, _MERCH_SHEET_HEADER_ROW + 1, 0, num_cols),
+                "cell": {"userEnteredFormat": {
+                    "backgroundColor": _MERCH_SHEET_GOLD,
+                    "horizontalAlignment": "CENTER", "verticalAlignment": "MIDDLE",
+                    "textFormat": {
+                        "fontFamily": _MERCH_SHEET_FONT, "fontSize": 11, "bold": True,
+                        "foregroundColor": {"red": 0.15, "green": 0.11, "blue": 0.02},
+                    },
+                }},
+                "fields": fmt_fields,
             }
         },
+        # 5. Row heights: a tall banner, then comfortable data rows.
+        *[
+            {
+                "updateDimensionProperties": {
+                    "range": {"sheetId": sheet_id, "dimension": "ROWS", "startIndex": start, "endIndex": end},
+                    "properties": {"pixelSize": px},
+                    "fields": "pixelSize",
+                }
+            }
+            for start, end, px in (
+                (0, 1, 52), (1, 2, 28), (_MERCH_SHEET_HEADER_ROW, _MERCH_SHEET_HEADER_ROW + 1, 36),
+            )
+        ],
+        # 6. Fixed column widths.
+        *[
+            {
+                "updateDimensionProperties": {
+                    "range": {"sheetId": sheet_id, "dimension": "COLUMNS", "startIndex": i, "endIndex": i + 1},
+                    "properties": {"pixelSize": px},
+                    "fields": "pixelSize",
+                }
+            }
+            for i, px in enumerate(_MERCH_SHEET_COLUMN_WIDTHS[:num_cols])
+        ],
     ]
-    # Status lives in column G (index 6) — color just that cell per row,
-    # a light tint rather than the whole row, so the sheet stays easy to
-    # read instead of turning into a wall of color.
-    status_col_index = 6
-    for i, status in enumerate(statuses):
-        bg, fg = _MERCH_SHEET_STATUS_COLORS.get(status, ({"red": 1, "green": 1, "blue": 1}, {"red": 0, "green": 0, "blue": 0}))
-        row_index = i + 1  # +1 to skip the header row
-        requests.append({
-            "repeatCell": {
-                "range": {
-                    "sheetId": sheet_id, "startRowIndex": row_index, "endRowIndex": row_index + 1,
-                    "startColumnIndex": status_col_index, "endColumnIndex": status_col_index + 1,
-                },
-                "cell": {
-                    "userEnteredFormat": {
-                        "backgroundColor": bg,
-                        "textFormat": {"bold": True, "foregroundColor": fg},
+
+    if num_data:
+        data_range = _merch_sheet_range(sheet_id, _MERCH_SHEET_FIRST_DATA_ROW, end_row, 0, num_cols)
+        requests += [
+            {
+                "updateDimensionProperties": {
+                    "range": {"sheetId": sheet_id, "dimension": "ROWS",
+                              "startIndex": _MERCH_SHEET_FIRST_DATA_ROW, "endIndex": end_row},
+                    "properties": {"pixelSize": 32},
+                    "fields": "pixelSize",
+                }
+            },
+            # 7. Data rows: brand font, vertically centered.
+            {
+                "repeatCell": {
+                    "range": data_range,
+                    "cell": {"userEnteredFormat": {
+                        "verticalAlignment": "MIDDLE",
+                        "textFormat": {"fontFamily": _MERCH_SHEET_FONT, "fontSize": 10},
+                    }},
+                    "fields": "userEnteredFormat(verticalAlignment,textFormat)",
+                }
+            },
+            # 8. Zebra stripes — white / faint warm grey.
+            {
+                "addBanding": {
+                    "bandedRange": {
+                        "range": data_range,
+                        "rowProperties": {
+                            "firstBandColor": {"red": 1, "green": 1, "blue": 1},
+                            "secondBandColor": {"red": 0.98, "green": 0.97, "blue": 0.94},
+                        },
                     }
-                },
-                "fields": "userEnteredFormat(backgroundColor,textFormat)",
-            }
-        })
+                }
+            },
+            # 9. Quotes in italic grey, wrapped so long ones aren't cut off.
+            {
+                "repeatCell": {
+                    "range": _merch_sheet_range(sheet_id, _MERCH_SHEET_FIRST_DATA_ROW, end_row,
+                                                _MERCH_SHEET_QUOTE_COLUMN, _MERCH_SHEET_QUOTE_COLUMN + 1),
+                    "cell": {"userEnteredFormat": {
+                        "wrapStrategy": "WRAP",
+                        "textFormat": {"fontFamily": _MERCH_SHEET_FONT, "fontSize": 10, "italic": True,
+                                       "foregroundColor": {"red": 0.40, "green": 0.40, "blue": 0.42}},
+                    }},
+                    "fields": "userEnteredFormat(wrapStrategy,textFormat)",
+                }
+            },
+        ]
+        # 10. Short-value columns centered.
+        for col in _MERCH_SHEET_CENTERED_COLUMNS:
+            if col < num_cols:
+                requests.append({
+                    "repeatCell": {
+                        "range": _merch_sheet_range(sheet_id, _MERCH_SHEET_FIRST_DATA_ROW, end_row, col, col + 1),
+                        "cell": {"userEnteredFormat": {"horizontalAlignment": "CENTER"}},
+                        "fields": "userEnteredFormat.horizontalAlignment",
+                    }
+                })
+        # 11. Status cell tinted to match its value — same color language
+        #     as the dashboard's own STATUS_BADGE_COLOR.
+        for i, status in enumerate(statuses):
+            bg, fg = _MERCH_SHEET_STATUS_COLORS.get(
+                status, ({"red": 1, "green": 1, "blue": 1}, {"red": 0, "green": 0, "blue": 0})
+            )
+            row = _MERCH_SHEET_FIRST_DATA_ROW + i
+            requests.append({
+                "repeatCell": {
+                    "range": _merch_sheet_range(sheet_id, row, row + 1,
+                                                _MERCH_SHEET_STATUS_COLUMN, _MERCH_SHEET_STATUS_COLUMN + 1),
+                    "cell": {"userEnteredFormat": {
+                        "backgroundColor": bg,
+                        "textFormat": {"fontFamily": _MERCH_SHEET_FONT, "fontSize": 10, "bold": True,
+                                       "foregroundColor": fg},
+                    }},
+                    "fields": "userEnteredFormat(backgroundColor,textFormat)",
+                }
+            })
+
+    # 12. Thin light borders around the header + data table only — the
+    #     banner above stays borderless.
+    requests.append({
+        "updateBorders": {
+            "range": _merch_sheet_range(sheet_id, _MERCH_SHEET_HEADER_ROW, end_row, 0, num_cols),
+            **{
+                side: {"style": "SOLID", "width": 1, "color": {"red": 0.86, "green": 0.86, "blue": 0.86}}
+                for side in ("top", "bottom", "left", "right", "innerHorizontal", "innerVertical")
+            },
+        }
+    })
     return requests
 
 
@@ -816,10 +951,10 @@ def sync_merch_orders_to_sheet():
             "Drive", "Name", "Username", "Number", "Size", "Payment Method",
             "Status", "Merch Role", "Quote", "Registered At (IST)",
         ]
-        rows = [header]
+        data_rows = []
         for o in sorted(orders, key=lambda o: o["created_at"]):
             drive = drives_by_id.get(o["drive_id"])
-            rows.append([
+            data_rows.append([
                 drive["title"] if drive else "(deleted drive)",
                 o["name"],
                 o["username"],
@@ -832,14 +967,31 @@ def sync_merch_orders_to_sheet():
                 format_ist(o["created_at"]),
             ])
 
+        statuses = [row[_MERCH_SHEET_STATUS_COLUMN] for row in data_rows]
+        paid = statuses.count("Paid")
+        awaiting = sum(s in ("Awaiting payment review", "Cash payment awaited") for s in statuses)
+        rejected = statuses.count("Rejected")
+        updated = datetime.now(IST).strftime("%d %b %Y, %I:%M %p IST")
+        summary = (
+            f"{len(data_rows)} registrations   ·   {paid} paid   ·   {awaiting} awaiting payment   ·   "
+            f"{rejected} rejected   ·   Last updated {updated}"
+        )
+        blank = [""] * (len(header) - 1)
+        rows = [["ROBOKNIGHTS MERCH  —  REGISTRATIONS"] + blank, [summary] + blank, header] + data_rows
+
         sh = gc.open_by_key(MERCH_SHEET_ID)
         ws = sh.sheet1
+        # Existing zebra-stripe banding has to be deleted before re-adding,
+        # or every sync would stack another one on top.
+        meta = sh.fetch_sheet_metadata({"fields": "sheets(properties.sheetId,bandedRanges.bandedRangeId)"})
+        banding_ids = [
+            b["bandedRangeId"]
+            for s in meta.get("sheets", []) if s["properties"]["sheetId"] == ws.id
+            for b in s.get("bandedRanges", [])
+        ]
         ws.clear()
         ws.update(rows, "A1")
-
-        statuses = [row[6] for row in rows[1:]]  # column G, same order as written above
-        requests = _merch_sheet_style_requests(ws.id, len(header), statuses)
-        sh.batch_update({"requests": requests})
+        sh.batch_update({"requests": _merch_sheet_style_requests(ws.id, len(header), statuses, banding_ids)})
     except Exception:
         pass
 
