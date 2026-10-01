@@ -1046,3 +1046,28 @@ alter table merch_orders add column if not exists payment_method text not null d
 -- auto-set for a host's own order. Host-editable afterward; see
 -- render_edit_order_form in app_pages/merch.py.
 alter table merch_orders add column if not exists merch_role text;
+
+-- Merch co-host (2026-10-01): a named non-host (first use: Yashraj) given
+-- full host-equivalent controls on the Merch page specifically — start/
+-- edit/delete drives, edit the access list, edit any registration,
+-- approve/reject payments — but EVERY one of those actions is staged
+-- here instead of writing immediately, and only takes effect once a real
+-- host approves it from the page's new "Pending merch approvals" section.
+-- Kept in access_roles rather than a hardcoded email in source, same
+-- reason every other privileged email already is (see that table's own
+-- comment) — this repo is public.
+alter table access_roles add column if not exists is_merch_host boolean not null default false;
+
+create table if not exists merch_pending_changes (
+    pending_id   uuid primary key default gen_random_uuid(),
+    requested_by uuid not null references users(user_id),
+    action       text not null,  -- 'edit_access' / 'start_drive' / 'edit_drive' /
+                                  -- 'delete_drive' / 'edit_order' / 'approve_order' /
+                                  -- 'reject_order'
+    summary      text not null,  -- human-readable, shown to the host before approving
+    payload      jsonb not null default '{}'::jsonb,
+    status       text not null default 'pending',  -- 'pending' / 'approved' / 'rejected'
+    created_at   timestamptz not null default now(),
+    reviewed_by  uuid references users(user_id),
+    reviewed_at  timestamptz
+);

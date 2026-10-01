@@ -37,13 +37,14 @@ APP_URL = os.environ.get("APP_URL", "http://localhost:8501")
 def _load_access_roles():
     host_emails, host_roles, exun_emails, viewer_emails = set(), {}, set(), set()
     exun_channel_members, ai_banned_emails, exun_hub_ping_emails = set(), set(), set()
+    merch_host_emails = set()
     try:
         client = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
         rows = client.table("access_roles").select("*").execute().data
     except Exception:
         return (
             host_emails, host_roles, exun_emails, viewer_emails, exun_channel_members,
-            ai_banned_emails, exun_hub_ping_emails,
+            ai_banned_emails, exun_hub_ping_emails, merch_host_emails,
         )
     for row in rows:
         email = row["email"]
@@ -61,9 +62,11 @@ def _load_access_roles():
             ai_banned_emails.add(email)
         if row.get("is_exun_hub_ping"):
             exun_hub_ping_emails.add(email)
+        if row.get("is_merch_host"):
+            merch_host_emails.add(email)
     return (
         host_emails, host_roles, exun_emails, viewer_emails, exun_channel_members,
-        ai_banned_emails, exun_hub_ping_emails,
+        ai_banned_emails, exun_hub_ping_emails, merch_host_emails,
     )
 
 
@@ -91,9 +94,16 @@ def _load_access_roles():
 #   than a hardcoded email list in source for the same reason every other
 #   privileged/named email already is (see this table's own comment
 #   below): this repo is public.
+# MERCH_HOST_EMAILS: a named non-host given full host-equivalent controls
+#   on the Merch page specifically (2026-10-01, first use: Yashraj) — but
+#   every action they take there is staged into merch_pending_changes
+#   instead of writing immediately, and only takes effect once a real
+#   host approves it. See app_pages/merch.py's `is_merch_cohost` for how
+#   this is enforced.
 (
     HOST_EMAILS, HOST_ROLES, EXUN_EMAILS, VIEWER_EMAILS,
     EXUN_CHANNEL_MEMBERS, AI_ASSISTANT_BANNED_EMAILS, EXUN_HUB_PING_EMAILS,
+    MERCH_HOST_EMAILS,
 ) = _load_access_roles()
 
 # Derived, not hand-maintained, so it can't drift out of sync with

@@ -13,8 +13,8 @@ from datetime import date, datetime, timezone
 import streamlit as st
 
 from shared import (
-    HOST_EMAILS, cached_table, get_client, get_storage_client, invalidate_cache,
-    render_file_open_and_download, safe_write, send_email, today_ist,
+    HOST_EMAILS, MERCH_HOST_EMAILS, cached_table, get_client, get_storage_client,
+    invalidate_cache, render_file_open_and_download, safe_write, send_email, today_ist,
 )
 
 client = get_client()
@@ -23,16 +23,27 @@ is_host = st.session_state.is_host
 current_user_id = st.session_state.current_user_id
 current_user_name = st.session_state.current_user_name
 user_email_by_id = st.session_state.user_email_by_id
+current_user_email = user_email_by_id.get(current_user_id)
 all_users = cached_table("users")
 current_user_row = next((u for u in all_users if u["user_id"] == current_user_id), None)
 has_access = bool(current_user_row and current_user_row.get("has_merch_access"))
 
+# A merch co-host (2026-10-01, first use: Yashraj) sees every host control
+# on this page — can_manage_merch covers UI visibility everywhere "is_host"
+# used to gate it — but isn't a real host anywhere else in the app, and
+# none of their actions here write immediately. Every one is staged into
+# merch_pending_changes instead and only takes effect once a REAL host
+# approves it (render_pending_approvals, below) — same "a human stays in
+# the loop" reasoning this file already applies to real money.
+is_merch_cohost = bool(current_user_email) and current_user_email in MERCH_HOST_EMAILS and not is_host
+can_manage_merch = is_host or is_merch_cohost
+
 # Belt and braces alongside the nav gating in app.py — everyone in the club
 # reaches this page (adhocs included), but only people a host has actually
-# granted merch access see the drives themselves. A host always gets
-# through, even without merch access personally, to manage the Access list
-# and review registrations.
-if not is_host and not has_access:
+# granted merch access see the drives themselves. A host (or merch
+# co-host) always gets through, even without merch access personally, to
+# manage the Access list and review registrations.
+if not can_manage_merch and not has_access:
     st.title(":material/storefront: Merch")
     st.warning(
         "Sorry — you're not eligible for RoboKnights merch right now. "
@@ -109,6 +120,107 @@ def _price_text(d):
     return f"₹{value:.0f}" if value == int(value) else f"₹{value:.2f}"
 
 
+def _pending_changes():
+    # merch_pending_changes is a brand-new table (see supabase_schema.sql)
+    # that needs a migration run by hand before it exists — degrade to
+    # "nothing pending" instead of crashing the whole Merch page for every
+    # host on every visit until that migration lands, same defensive
+    # pattern as meeting_invitee_rows()/has_unread_queries() elsewhere in
+    # this app for exactly this "table added after the pages that read it"
+    # situation.
+    try:
+        return cached_table("merch_pending_changes")
+    except Exception:
+        return []
+
+
+def _stage_pending_change(action, summary, payload):
+    # What a merch co-host's button click does instead of the real write —
+    # record the intent, change nothing yet. requested_by is whoever is
+    # logged in right now, always the co-host here (a real host never
+    # calls this; see every write site below).
+    client.table("merch_pending_changes").insert({
+        "requested_by": current_user_id,
+        "action": action,
+        "summary": summary,
+        "payload": payload,
+        "status": "pending",
+    }).execute()
+
+
+def _apply_pending_change(action, payload, requested_by):
+    # The actual effect of any merch write — shared by a host's own direct
+    # action AND a host approving something a co-host submitted, so the
+    # two paths can't quietly drift apart. Caller is responsible for the
+    # safe_write/invalidate_cache/toast around this.
+    if action == "edit_access":
+        for uid in payload.get("add", []):
+            client.table("users").update({"has_merch_access": True}).eq("user_id", uid).execute()
+        for uid in payload.get("remove", []):
+            client.table("users").update({"has_merch_access": False}).eq("user_id", uid).execute()
+    elif action == "start_drive":
+        client.table("merch_drives").insert({**payload, "created_by": requested_by}).execute()
+    elif action == "edit_drive":
+        client.table("merch_drives").update(payload["update"]).eq("drive_id", payload["drive_id"]).execute()
+    elif action == "delete_drive":
+        drive = next((dd for dd in drives if dd["drive_id"] == payload["drive_id"]), None)
+        if drive and storage is not None:
+            stale_paths = [drive["qr_image_path"]] if drive.get("qr_image_path") else []
+            if drive.get("size_chart_image_path"):
+                stale_paths.append(drive["size_chart_image_path"])
+            stale_paths += drive.get("design_image_paths") or []
+            if stale_paths:
+                try:
+                    storage.storage.from_(BUCKET).remove(stale_paths)
+                except Exception:
+                    pass
+        client.table("merch_drives").delete().eq("drive_id", payload["drive_id"]).execute()
+    elif action == "edit_order":
+        client.table("merch_orders").update(payload["update"]).eq("order_id", payload["order_id"]).execute()
+    elif action == "approve_order":
+        order = next((oo for oo in all_orders if oo["order_id"] == payload["order_id"]), None)
+        if order is None:
+            return
+        # Auto-assign a merch role from the buyer's real club role — but
+        # never for a host's own order (their host status isn't a club
+        # "role" at all, and the student explicitly didn't want this
+        # guessed for them).
+        update_row = {"status": "paid"}
+        buyer_email = user_email_by_id.get(order["user_id"])
+        if buyer_email not in HOST_EMAILS:
+            buyer = next((u for u in all_users if u["user_id"] == order["user_id"]), None)
+            update_row["merch_role"] = "core" if buyer and buyer.get("role") == "core_member" else "member"
+        client.table("merch_orders").update(update_row).eq("order_id", order["order_id"]).execute()
+        drive = next((dd for dd in drives if dd["drive_id"] == order["drive_id"]), None)
+        recipient = user_email_by_id.get(order["user_id"])
+        if recipient and drive:
+            send_email(
+                recipient, f"Merch order confirmed: {drive['title']}",
+                f"Your payment for \"{drive['title']}\" has been confirmed.\n"
+                f"Order: #{order['custom_number']}, {order['username']}.",
+            )
+    elif action == "reject_order":
+        order = next((oo for oo in all_orders if oo["order_id"] == payload["order_id"]), None)
+        if order is None:
+            return
+        client.table("merch_orders").update({"status": "rejected"}).eq("order_id", order["order_id"]).execute()
+        drive = next((dd for dd in drives if dd["drive_id"] == order["drive_id"]), None)
+        recipient = user_email_by_id.get(order["user_id"])
+        if recipient and drive:
+            if order.get("payment_method") == "cash":
+                send_email(
+                    recipient, f"Merch payment issue: {drive['title']}",
+                    f"Your cash payment for \"{drive['title']}\" couldn't be confirmed. "
+                    "Please check the Merch page and get in touch to sort it out.",
+                )
+            else:
+                send_email(
+                    recipient, f"Merch order needs a new screenshot: {drive['title']}",
+                    f"Your payment screenshot for \"{drive['title']}\" couldn't be confirmed. "
+                    "Please check the Merch page and resubmit.",
+                )
+
+
 # --- Host: who has merch access -----------------------------------------
 # Same multiselect-diff pattern exun_tasks.py already uses for its
 # volunteer list: a picker of real names, pre-filled with who currently has
@@ -130,13 +242,24 @@ def render_access_manager():
         if st.button("Save access list", icon=":material/save:", key="save_merch_access"):
             had_access = {u["user_id"] for u in eligible}
             now_access = set(selected)
-            with safe_write("update merch access"):
-                for uid in now_access - had_access:
-                    client.table("users").update({"has_merch_access": True}).eq("user_id", uid).execute()
-                for uid in had_access - now_access:
-                    client.table("users").update({"has_merch_access": False}).eq("user_id", uid).execute()
-                invalidate_cache()
-            st.session_state.merch_message = ("success", "Merch access updated.")
+            added, removed = sorted(now_access - had_access), sorted(had_access - now_access)
+            if not added and not removed:
+                st.session_state.merch_message = ("error", "No changes to save.")
+            elif is_host:
+                with safe_write("update merch access"):
+                    _apply_pending_change("edit_access", {"add": added, "remove": removed}, current_user_id)
+                    invalidate_cache()
+                st.session_state.merch_message = ("success", "Merch access updated.")
+            else:
+                name = lambda uid: st.session_state.user_name_by_id.get(uid, "Unknown")
+                summary = (
+                    f"Merch access — add: {', '.join(name(u) for u in added) or 'none'}; "
+                    f"remove: {', '.join(name(u) for u in removed) or 'none'}"
+                )
+                with safe_write("request a merch access change"):
+                    _stage_pending_change("edit_access", summary, {"add": added, "remove": removed})
+                    invalidate_cache()
+                st.session_state.merch_message = ("success", "Submitted — a host needs to approve this.")
             st.rerun()
 
 
@@ -198,7 +321,7 @@ def render_new_drive():
                 size_chart_path = (
                     _save_image(size_chart_upload, f"sizechart_{stamp}") if size_chart_upload else None
                 )
-                client.table("merch_drives").insert({
+                drive_payload = {
                     "title": title.strip(),
                     "description": description.strip(),
                     "price": price,
@@ -207,10 +330,18 @@ def render_new_drive():
                     "design_image_paths": design_paths,
                     "size_chart_image_path": size_chart_path,
                     "deadline": deadline.isoformat(),
-                    "created_by": current_user_id,
-                }).execute()
+                }
+                if is_host:
+                    _apply_pending_change("start_drive", drive_payload, current_user_id)
+                else:
+                    _stage_pending_change(
+                        "start_drive", f"Start a new drive: \"{title.strip()}\"", drive_payload
+                    )
                 invalidate_cache()
-            st.session_state.merch_message = ("success", f"Started \"{title.strip()}\".")
+            st.session_state.merch_message = (
+                ("success", f"Started \"{title.strip()}\".") if is_host
+                else ("success", "Submitted — a host needs to approve starting this drive.")
+            )
             for k in ("new_drive_title", "new_drive_description", "new_drive_upi_id"):
                 st.session_state.pop(k, None)
             st.session_state.show_new_drive = False
@@ -437,9 +568,20 @@ def render_edit_order_form(d, o):
                     new_screenshot, f"proof_{d['drive_id']}_{o['user_id']}"
                 )
                 update_row["payment_screenshot_name"] = new_screenshot.name
-            client.table("merch_orders").update(update_row).eq("order_id", o["order_id"]).execute()
+            if is_host:
+                _apply_pending_change(
+                    "edit_order", {"order_id": o["order_id"], "update": update_row}, current_user_id
+                )
+            else:
+                _stage_pending_change(
+                    "edit_order", f"Edit {o['name']}'s registration",
+                    {"order_id": o["order_id"], "update": update_row},
+                )
             invalidate_cache()
-        st.session_state.merch_message = ("success", f"Updated {edit_name.strip()}'s registration.")
+        st.session_state.merch_message = (
+            ("success", f"Updated {edit_name.strip()}'s registration.") if is_host
+            else ("success", "Submitted — a host needs to approve this edit.")
+        )
         st.session_state.editing_order_id = None
         st.rerun()
     if cancel_col.button("Cancel", key=f"cancel_order_{o['order_id']}", icon=":material/close:"):
@@ -484,64 +626,115 @@ def render_registration_review(d, orders):
                 if o["status"] in ("pending_review", "cash_awaited"):
                     approve_col, reject_col = st.columns(2)
                     if approve_col.button(
-                        "Approve — paid", key=f"approve_order_{o['order_id']}",
+                        "Approve — paid" if is_host else "Request approval — paid",
+                        key=f"approve_order_{o['order_id']}",
                         icon=":material/check_circle:", type="primary",
                     ):
-                        # Auto-assign a merch role from the buyer's real club
-                        # role — but never for a host's own order (their
-                        # host status isn't a club "role" at all, and the
-                        # student explicitly didn't want this guessed for
-                        # them).
-                        update_row = {"status": "paid"}
-                        buyer_email = user_email_by_id.get(o["user_id"])
-                        if buyer_email not in HOST_EMAILS:
-                            buyer = next((u for u in all_users if u["user_id"] == o["user_id"]), None)
-                            update_row["merch_role"] = (
-                                "core" if buyer and buyer.get("role") == "core_member" else "member"
-                            )
-                        with safe_write("approve this order"):
-                            client.table("merch_orders").update(update_row).eq(
-                                "order_id", o["order_id"]
-                            ).execute()
-                            invalidate_cache()
-                        recipient = user_email_by_id.get(o["user_id"])
-                        if recipient:
-                            send_email(
-                                recipient, f"Merch order confirmed: {d['title']}",
-                                f"Your payment for \"{d['title']}\" has been confirmed.\n"
-                                f"Order: #{o['custom_number']}, {o['username']}.",
-                            )
-                        st.session_state.merch_message = ("success", "Marked paid.")
+                        if is_host:
+                            with safe_write("approve this order"):
+                                _apply_pending_change("approve_order", {"order_id": o["order_id"]}, current_user_id)
+                                invalidate_cache()
+                            st.session_state.merch_message = ("success", "Marked paid.")
+                        else:
+                            with safe_write("request approving this order"):
+                                _stage_pending_change(
+                                    "approve_order",
+                                    f"Mark {o['name']}'s order paid (#{o['custom_number']})",
+                                    {"order_id": o["order_id"]},
+                                )
+                                invalidate_cache()
+                            st.session_state.merch_message = ("success", "Submitted — a host needs to approve this.")
                         st.rerun()
                     if reject_col.button(
-                        "Reject", key=f"reject_order_{o['order_id']}", icon=":material/cancel:",
+                        "Reject" if is_host else "Request rejection",
+                        key=f"reject_order_{o['order_id']}", icon=":material/cancel:",
                     ):
-                        with safe_write("reject this order"):
-                            client.table("merch_orders").update({"status": "rejected"}).eq(
-                                "order_id", o["order_id"]
-                            ).execute()
-                            invalidate_cache()
-                        recipient = user_email_by_id.get(o["user_id"])
-                        if recipient:
-                            if o.get("payment_method") == "cash":
-                                send_email(
-                                    recipient, f"Merch payment issue: {d['title']}",
-                                    f"Your cash payment for \"{d['title']}\" couldn't be confirmed. "
-                                    "Please check the Merch page and get in touch to sort it out.",
+                        if is_host:
+                            with safe_write("reject this order"):
+                                _apply_pending_change("reject_order", {"order_id": o["order_id"]}, current_user_id)
+                                invalidate_cache()
+                            st.session_state.merch_message = ("success", "Marked rejected.")
+                        else:
+                            with safe_write("request rejecting this order"):
+                                _stage_pending_change(
+                                    "reject_order",
+                                    f"Reject {o['name']}'s order (#{o['custom_number']})",
+                                    {"order_id": o["order_id"]},
                                 )
-                            else:
-                                send_email(
-                                    recipient, f"Merch order needs a new screenshot: {d['title']}",
-                                    f"Your payment screenshot for \"{d['title']}\" couldn't be confirmed. "
-                                    "Please check the Merch page and resubmit.",
-                                )
-                        st.session_state.merch_message = ("success", "Marked rejected.")
+                                invalidate_cache()
+                            st.session_state.merch_message = ("success", "Submitted — a host needs to approve this.")
                         st.rerun()
+
+
+# --- Host: approve/reject what a merch co-host has submitted --------------
+def render_pending_approvals():
+    pending = sorted(
+        (p for p in _pending_changes() if p["status"] == "pending"),
+        key=lambda p: p["created_at"],
+    )
+    if not pending:
+        return
+    with st.expander(f":material/pending_actions: Pending merch approvals ({len(pending)})", expanded=True):
+        st.caption("Submitted by a merch co-host — nothing below has happened yet.")
+        for p in pending:
+            with st.container(border=True, key=f"rkcard_merchpending_{p['pending_id']}"):
+                requester = st.session_state.user_name_by_id.get(p["requested_by"], "Unknown")
+                st.markdown(f"**{p['summary']}**")
+                st.caption(f"Requested by {requester}")
+                approve_col, reject_col = st.columns(2)
+                if approve_col.button(
+                    "Approve", key=f"approve_pending_{p['pending_id']}",
+                    icon=":material/check_circle:", type="primary",
+                ):
+                    with safe_write("approve this change"):
+                        _apply_pending_change(p["action"], p.get("payload") or {}, p["requested_by"])
+                        client.table("merch_pending_changes").update({
+                            "status": "approved", "reviewed_by": current_user_id,
+                            "reviewed_at": datetime.now(timezone.utc).isoformat(),
+                        }).eq("pending_id", p["pending_id"]).execute()
+                        invalidate_cache()
+                    st.session_state.merch_message = ("success", "Approved and applied.")
+                    st.rerun()
+                if reject_col.button(
+                    "Reject", key=f"reject_pending_{p['pending_id']}", icon=":material/cancel:",
+                ):
+                    with safe_write("reject this change"):
+                        client.table("merch_pending_changes").update({
+                            "status": "rejected", "reviewed_by": current_user_id,
+                            "reviewed_at": datetime.now(timezone.utc).isoformat(),
+                        }).eq("pending_id", p["pending_id"]).execute()
+                        invalidate_cache()
+                    st.session_state.merch_message = ("success", "Rejected.")
+                    st.rerun()
+
+
+# --- Co-host: status of what they've submitted -----------------------------
+def render_my_pending_changes():
+    mine = [p for p in _pending_changes() if p["requested_by"] == current_user_id]
+    if not mine:
+        return
+    badge_color = {"pending": "orange", "approved": "green", "rejected": "red"}
+    with st.expander(f":material/pending_actions: Your submitted changes ({len(mine)})", expanded=False):
+        for p in sorted(mine, key=lambda p: p["created_at"], reverse=True):
+            row_col, badge_col = st.columns([4, 1], vertical_alignment="center")
+            row_col.caption(p["summary"])
+            badge_col.badge(p["status"].title(), color=badge_color[p["status"]])
 
 
 # --- Layout ----------------------------------------------------------------
 
 if is_host:
+    render_pending_approvals()
+
+if is_merch_cohost:
+    st.info(
+        "You have merch co-host access — every change you make here is submitted "
+        "for a host to approve before it actually takes effect.",
+        icon=":material/pending_actions:",
+    )
+    render_my_pending_changes()
+
+if can_manage_merch:
     render_access_manager()
     if st.button("Start a merch drive", icon=":material/add_box:", type="primary", key="open_new_drive"):
         st.session_state.show_new_drive = True
@@ -565,7 +758,7 @@ for d in drives:
         (o for o in orders_by_drive.get(d["drive_id"], []) if o["user_id"] == current_user_id), None
     )
     with st.container(border=True, key=f"rkcard_merchdrive_{d['drive_id']}"):
-        editing_this = is_host and st.session_state.editing_drive_id == d["drive_id"]
+        editing_this = can_manage_merch and st.session_state.editing_drive_id == d["drive_id"]
 
         if editing_this:
             edit_title = st.text_input(
@@ -628,9 +821,20 @@ for d in drives:
                         update_row["size_chart_image_path"] = _save_image(
                             new_size_chart, f"sizechart_{d['drive_id']}_{stamp}"
                         )
-                    client.table("merch_drives").update(update_row).eq("drive_id", d["drive_id"]).execute()
+                    if is_host:
+                        _apply_pending_change(
+                            "edit_drive", {"drive_id": d["drive_id"], "update": update_row}, current_user_id
+                        )
+                    else:
+                        _stage_pending_change(
+                            "edit_drive", f"Edit drive \"{d['title']}\"",
+                            {"drive_id": d["drive_id"], "update": update_row},
+                        )
                     invalidate_cache()
-                st.session_state.merch_message = ("success", f"Updated {edit_title.strip()}.")
+                st.session_state.merch_message = (
+                    ("success", f"Updated {edit_title.strip()}.") if is_host
+                    else ("success", "Submitted — a host needs to approve this edit.")
+                )
                 st.session_state.editing_drive_id = None
                 st.rerun()
             if cancel_col.button("Cancel", key=f"cancel_drive_{d['drive_id']}", icon=":material/close:"):
@@ -644,25 +848,26 @@ for d in drives:
             badge_col.badge("Open", color="green", icon=":material/how_to_reg:")
         else:
             badge_col.badge("Closed", color="grey", icon=":material/lock:")
-        if is_host:
+        if can_manage_merch:
             if edit_col.button("Edit", key=f"edit_btn_drive_{d['drive_id']}", icon=":material/edit:"):
                 st.session_state.editing_drive_id = d["drive_id"]
                 st.rerun()
-            if delete_col.button("Delete", key=f"delete_btn_drive_{d['drive_id']}", icon=":material/delete:"):
-                with safe_write(f"delete {d['title']}"):
-                    if storage is not None:
-                        stale_paths = [d["qr_image_path"]] if d.get("qr_image_path") else []
-                        if d.get("size_chart_image_path"):
-                            stale_paths.append(d["size_chart_image_path"])
-                        stale_paths += d.get("design_image_paths") or []
-                        if stale_paths:
-                            try:
-                                storage.storage.from_(BUCKET).remove(stale_paths)
-                            except Exception:
-                                pass
-                    client.table("merch_drives").delete().eq("drive_id", d["drive_id"]).execute()
-                    invalidate_cache()
-                st.session_state.merch_message = ("success", f"Deleted {d['title']}.")
+            if delete_col.button(
+                "Delete" if is_host else "Request delete",
+                key=f"delete_btn_drive_{d['drive_id']}", icon=":material/delete:",
+            ):
+                if is_host:
+                    with safe_write(f"delete {d['title']}"):
+                        _apply_pending_change("delete_drive", {"drive_id": d["drive_id"]}, current_user_id)
+                        invalidate_cache()
+                    st.session_state.merch_message = ("success", f"Deleted {d['title']}.")
+                else:
+                    with safe_write(f"request deleting {d['title']}"):
+                        _stage_pending_change(
+                            "delete_drive", f"Delete drive \"{d['title']}\"", {"drive_id": d["drive_id"]}
+                        )
+                        invalidate_cache()
+                    st.session_state.merch_message = ("success", "Submitted — a host needs to approve this delete.")
                 st.rerun()
 
         st.caption(
@@ -694,7 +899,7 @@ for d in drives:
             except Exception:
                 st.caption(":material/error: Couldn't load the size chart right now.")
 
-        if is_host:
+        if can_manage_merch:
             render_payment_details(d)
 
         if has_access:
@@ -706,5 +911,5 @@ for d in drives:
             else:
                 render_my_registration(d, my_order)
 
-        if is_host:
+        if can_manage_merch:
             render_registration_review(d, orders_by_drive.get(d["drive_id"], []))
