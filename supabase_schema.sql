@@ -1071,3 +1071,12 @@ create table if not exists merch_pending_changes (
     reviewed_by  uuid references users(user_id),
     reviewed_at  timestamptz
 );
+
+-- Merch: numbers are unique per drive (2026-10-02). Registrations already
+-- holding a number block it for everyone else (enforced in app_pages/
+-- merch.py, re-checked against the live table right before saving).
+-- reserved_numbers covers numbers promised to someone outside the app
+-- (claimed on Discord before they'd registered): {"33": "Adhiraj Jain"}.
+-- Blocked for everyone except the person named, matched against their
+-- account name. Host-editable from the drive's Edit form.
+alter table merch_drives add column if not exists reserved_numbers jsonb not null default '{}'::jsonb;

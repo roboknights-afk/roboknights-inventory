@@ -8,6 +8,7 @@
 # rather than just showing a QR and trusting people — see CLAUDE.md's
 # earlier note on this exact tradeoff.
 
+import re
 from datetime import date, datetime, timezone
 
 import streamlit as st
@@ -121,6 +122,52 @@ def _price_text(d):
     return f"₹{value:.0f}" if value == int(value) else f"₹{value:.2f}"
 
 
+NUMBER_RANGE = range(100)
+_RESERVATION_LINE = re.compile(r"^\s*(\d{1,2})\s*[-–:]\s*(.+?)\s*$")
+
+
+def _reserved_numbers(d):
+    # {number: name it's held for} — numbers a host has promised someone
+    # outside the app (e.g. claimed on Discord before they registered).
+    out = {}
+    for k, v in (d.get("reserved_numbers") or {}).items():
+        try:
+            out[int(k)] = v
+        except (TypeError, ValueError):
+            pass
+    return out
+
+
+def _taken_numbers(d, for_name, orders, exclude_order_id=None):
+    # {number: who has it}. A reservation doesn't block the person it's
+    # reserved FOR — matched against their account name, not the
+    # free-text "Name" box, so nobody can claim one just by typing it.
+    taken = {
+        n: f"reserved for {who}" for n, who in _reserved_numbers(d).items()
+        if (who or "").strip().lower() != (for_name or "").strip().lower()
+    }
+    for o in orders:
+        if o["order_id"] != exclude_order_id:
+            taken[o["custom_number"]] = o["name"]
+    return taken
+
+
+def _fresh_drive_orders(drive_id):
+    # Straight from the database, not the 8-second cache — used right
+    # before saving a number, so two people submitting at the same moment
+    # can't both get it.
+    return client.table("merch_orders").select("order_id,name,custom_number").eq(
+        "drive_id", drive_id
+    ).execute().data
+
+
+def _render_taken_numbers(taken):
+    if not taken:
+        return
+    with st.expander(f":material/block: Numbers already taken ({len(taken)})"):
+        st.caption("  ·  ".join(f"**{n:02d}** {who}" for n, who in sorted(taken.items())))
+
+
 def _pending_changes():
     # merch_pending_changes is a brand-new table (see supabase_schema.sql)
     # that needs a migration run by hand before it exists — degrade to
@@ -177,6 +224,18 @@ def _apply_pending_change(action, payload, requested_by):
                     pass
         client.table("merch_drives").delete().eq("drive_id", payload["drive_id"]).execute()
     elif action == "edit_order":
+        new_number = payload["update"].get("custom_number")
+        order = next((oo for oo in all_orders if oo["order_id"] == payload["order_id"]), None)
+        if order and new_number is not None:
+            clash = next(
+                (x["name"] for x in _fresh_drive_orders(order["drive_id"])
+                 if x["custom_number"] == new_number and x["order_id"] != order["order_id"]),
+                None,
+            )
+            if clash:
+                # safe_write turns this into a clean inline error and
+                # nothing below runs, so the pending change stays pending.
+                raise ValueError(f"number {new_number:02d} now belongs to {clash}")
         client.table("merch_orders").update(payload["update"]).eq("order_id", payload["order_id"]).execute()
     elif action == "approve_order":
         order = next((oo for oo in all_orders if oo["order_id"] == payload["order_id"]), None)
@@ -373,9 +432,20 @@ def render_register_form(d):
     st.markdown("**Register for this drive**")
     name = st.text_input("Name", value=current_user_name, key=f"register_name_{d['drive_id']}")
     username = st.text_input("Username", key=f"register_username_{d['drive_id']}")
-    number = st.number_input(
-        "Your number (0-99)", min_value=0, max_value=99, step=1, key=f"register_number_{d['drive_id']}",
+    taken = _taken_numbers(d, current_user_name, orders_by_drive.get(d["drive_id"], []))
+    available = [n for n in NUMBER_RANGE if n not in taken]
+    mine = next(
+        (n for n, who in _reserved_numbers(d).items()
+         if (who or "").strip().lower() == (current_user_name or "").strip().lower() and n in available),
+        None,
     )
+    number = st.selectbox(
+        f"Your number — {len(available)} still available",
+        available, index=available.index(mine) if mine is not None else None,
+        format_func=lambda n: f"{n:02d}" + ("  (reserved for you)" if n == mine else ""),
+        placeholder="Pick an available number", key=f"register_number_{d['drive_id']}",
+    )
+    _render_taken_numbers(taken)
     size = st.selectbox(
         "Size", SIZES, index=None, placeholder="Select a size", key=f"register_size_{d['drive_id']}",
     )
@@ -396,8 +466,13 @@ def render_register_form(d):
     if st.button(
         "Register", key=f"register_btn_{d['drive_id']}", icon=":material/how_to_reg:", type="primary",
     ):
+        fresh_taken = _taken_numbers(d, current_user_name, _fresh_drive_orders(d["drive_id"]))
         if not name.strip() or not username.strip():
             st.error("Name and username are required.")
+        elif number is None:
+            st.error("Pick a number.")
+        elif number in fresh_taken:
+            st.error(f"Sorry — {number:02d} was just taken ({fresh_taken[number]}). Pick another.")
         elif size is None:
             st.error("Pick a size.")
         elif payment_method == "UPI" and screenshot is None:
@@ -515,8 +590,20 @@ def render_edit_order_form(d, o):
     st.markdown(f"**Editing {o['name']}'s registration**")
     edit_name = st.text_input("Name", value=o["name"], key=f"edit_order_name_{o['order_id']}")
     edit_username = st.text_input("Username", value=o["username"], key=f"edit_order_username_{o['order_id']}")
-    edit_number = st.number_input(
-        "Number (0-99)", min_value=0, max_value=99, step=1, value=o["custom_number"],
+    # Hosts can hand out a reserved number (they're the ones who reserved
+    # it), but never one another registration already holds.
+    held = {
+        x["custom_number"]: x["name"] for x in orders_by_drive.get(d["drive_id"], [])
+        if x["order_id"] != o["order_id"]
+    }
+    reserved = _reserved_numbers(d)
+    number_options = [n for n in NUMBER_RANGE if n not in held or n == o["custom_number"]]
+    edit_number = st.selectbox(
+        "Number", number_options, index=number_options.index(o["custom_number"]),
+        format_func=lambda n: f"{n:02d}" + (
+            f"  (also held by {held[n]} — change one)" if n in held
+            else f"  (reserved for {reserved[n]})" if n in reserved else ""
+        ),
         key=f"edit_order_number_{o['order_id']}",
     )
     edit_size = st.selectbox(
@@ -554,6 +641,14 @@ def render_edit_order_form(d, o):
             st.rerun()
         if edit_size is None:
             st.session_state.merch_message = ("error", "Pick a size.")
+            st.rerun()
+        clash = next(
+            (x["name"] for x in _fresh_drive_orders(d["drive_id"])
+             if x["custom_number"] == edit_number and x["order_id"] != o["order_id"]),
+            None,
+        )
+        if clash:
+            st.session_state.merch_message = ("error", f"{edit_number:02d} is already {clash}'s number — pick another.")
             st.rerun()
         update_row = {
             "name": edit_name.strip(),
@@ -803,6 +898,21 @@ for d in drives:
                 "Replace the QR code (optional)", type=list(ALLOWED_IMAGES),
                 key=f"edit_drive_qr_{d['drive_id']}", disabled=storage is None,
             )
+            # Only offered once the reserved_numbers migration has run —
+            # sending the key to a table without the column would fail
+            # the whole save.
+            has_reservations_column = "reserved_numbers" in d
+            if has_reservations_column:
+                edit_reserved = st.text_area(
+                    "Reserved numbers",
+                    value="\n".join(f"{n:02d} - {who}" for n, who in sorted(_reserved_numbers(d).items())),
+                    placeholder="33 - Adhiraj Jain\n19 - Aryamman ojha",
+                    help=(
+                        "One per line: number - name. Blocked for everyone except that person, "
+                        "matched against their account name. Remove a line to free the number."
+                    ),
+                    key=f"edit_drive_reserved_{d['drive_id']}",
+                )
             save_col, cancel_col = st.columns(2)
             if save_col.button(
                 "Save changes", key=f"save_drive_{d['drive_id']}", icon=":material/check:", type="primary"
@@ -817,6 +927,22 @@ for d in drives:
                     "upi_id": edit_upi_id.strip(),
                     "deadline": edit_deadline.isoformat(),
                 }
+                if has_reservations_column:
+                    reserved, bad_lines = {}, []
+                    for line in edit_reserved.splitlines():
+                        if not line.strip():
+                            continue
+                        m = _RESERVATION_LINE.match(line)
+                        if m and int(m.group(1)) in NUMBER_RANGE:
+                            reserved[str(int(m.group(1)))] = m.group(2)
+                        else:
+                            bad_lines.append(line.strip())
+                    if bad_lines:
+                        st.session_state.merch_message = (
+                            "error", f"Couldn't read: {', '.join(bad_lines)} — use \"33 - Name\".",
+                        )
+                        st.rerun()
+                    update_row["reserved_numbers"] = reserved
                 stamp = int(datetime.now(timezone.utc).timestamp())
                 with safe_write(f"update {edit_title.strip()}"):
                     if new_qr is not None:
