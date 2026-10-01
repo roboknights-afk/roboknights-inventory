@@ -65,6 +65,8 @@ if "show_new_drive" not in st.session_state:
     st.session_state.show_new_drive = False
 if "editing_drive_id" not in st.session_state:
     st.session_state.editing_drive_id = None
+if "editing_order_id" not in st.session_state:
+    st.session_state.editing_order_id = None
 
 drives = sorted(cached_table("merch_drives"), key=lambda d: d["created_at"], reverse=True)
 all_orders = cached_table("merch_orders")
@@ -370,6 +372,70 @@ def render_my_registration(d, order):
         st.caption("All set — your order is confirmed.")
 
 
+# --- Host: edit any field of someone's registration -----------------------
+def render_edit_order_form(d, o):
+    st.markdown(f"**Editing {o['name']}'s registration**")
+    edit_name = st.text_input("Name", value=o["name"], key=f"edit_order_name_{o['order_id']}")
+    edit_username = st.text_input("Username", value=o["username"], key=f"edit_order_username_{o['order_id']}")
+    edit_number = st.number_input(
+        "Number (0-99)", min_value=0, max_value=99, step=1, value=o["custom_number"],
+        key=f"edit_order_number_{o['order_id']}",
+    )
+    edit_size = st.selectbox(
+        "Size", SIZES, index=SIZES.index(o["size"]) if o.get("size") in SIZES else None,
+        key=f"edit_order_size_{o['order_id']}",
+    )
+    edit_quote = st.text_area("Quote", value=o.get("quote") or "", key=f"edit_order_quote_{o['order_id']}")
+    edit_method = st.radio(
+        "Payment method", ["UPI", "Cash"],
+        index=1 if o.get("payment_method") == "cash" else 0,
+        horizontal=True, key=f"edit_order_method_{o['order_id']}",
+    )
+    edit_status = st.selectbox(
+        "Status", list(STATUS_LABELS), format_func=lambda s: STATUS_LABELS[s],
+        index=list(STATUS_LABELS).index(o["status"]), key=f"edit_order_status_{o['order_id']}",
+    )
+    new_screenshot = None
+    if edit_method == "UPI":
+        new_screenshot = st.file_uploader(
+            "Replace the payment screenshot (optional)", type=list(ALLOWED_IMAGES),
+            key=f"edit_order_screenshot_{o['order_id']}", disabled=storage is None,
+        )
+    save_col, cancel_col = st.columns(2)
+    if save_col.button(
+        "Save changes", key=f"save_order_{o['order_id']}", icon=":material/check:", type="primary"
+    ):
+        if not edit_name.strip() or not edit_username.strip():
+            st.session_state.merch_message = ("error", "Name and username are required.")
+            st.rerun()
+        if edit_size is None:
+            st.session_state.merch_message = ("error", "Pick a size.")
+            st.rerun()
+        update_row = {
+            "name": edit_name.strip(),
+            "username": edit_username.strip(),
+            "custom_number": int(edit_number),
+            "size": edit_size,
+            "quote": edit_quote.strip(),
+            "payment_method": "cash" if edit_method == "Cash" else "upi",
+            "status": edit_status,
+        }
+        with safe_write(f"update {edit_name.strip()}'s registration"):
+            if edit_method == "UPI" and new_screenshot is not None:
+                update_row["payment_screenshot_path"] = _save_image(
+                    new_screenshot, f"proof_{d['drive_id']}_{o['user_id']}"
+                )
+                update_row["payment_screenshot_name"] = new_screenshot.name
+            client.table("merch_orders").update(update_row).eq("order_id", o["order_id"]).execute()
+            invalidate_cache()
+        st.session_state.merch_message = ("success", f"Updated {edit_name.strip()}'s registration.")
+        st.session_state.editing_order_id = None
+        st.rerun()
+    if cancel_col.button("Cancel", key=f"cancel_order_{o['order_id']}", icon=":material/close:"):
+        st.session_state.editing_order_id = None
+        st.rerun()
+
+
 # --- Host: review registrations / payments --------------------------------
 def render_registration_review(d, orders):
     if not orders:
@@ -378,12 +444,19 @@ def render_registration_review(d, orders):
     with st.expander(f":material/how_to_reg: Registrations ({len(orders)})", expanded=pending_count > 0):
         for o in sorted(orders, key=lambda o: (o["status"] != "pending_review", o["created_at"])):
             with st.container(border=True, key=f"rkcard_merchorder_{o['order_id']}"):
-                name_col, badge_col = st.columns([3, 1], vertical_alignment="center")
+                if st.session_state.editing_order_id == o["order_id"]:
+                    render_edit_order_form(d, o)
+                    continue
+
+                name_col, badge_col, edit_col = st.columns([3, 1, 1], vertical_alignment="center")
                 name_col.markdown(f"**{o['name']}** ({o['username']}) — #{o['custom_number']}, Size {o['size']}")
                 badge_col.badge(
                     STATUS_LABELS[o["status"]], color=STATUS_BADGE_COLOR[o["status"]],
                     icon=":material/how_to_reg:",
                 )
+                if edit_col.button("Edit", key=f"edit_order_{o['order_id']}", icon=":material/edit:"):
+                    st.session_state.editing_order_id = o["order_id"]
+                    st.rerun()
                 if o.get("quote"):
                     st.caption(f"“{o['quote']}”")
                 if o.get("payment_method") == "cash":
