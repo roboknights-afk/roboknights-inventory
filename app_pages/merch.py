@@ -49,11 +49,13 @@ CASH_CONTACT_NOTE = "Naitik Jindal via WhatsApp at +91 93112 59439"
 STATUS_LABELS = {
     "registered": "Registered",
     "pending_review": "Awaiting payment review",
+    "cash_awaited": "Cash payment awaited",
     "paid": "Paid",
     "rejected": "Rejected — resubmit",
 }
 STATUS_BADGE_COLOR = {
-    "registered": "blue", "pending_review": "orange", "paid": "green", "rejected": "red",
+    "registered": "blue", "pending_review": "orange", "cash_awaited": "violet",
+    "paid": "green", "rejected": "red",
 }
 
 st.title(":material/storefront: Merch")
@@ -278,7 +280,7 @@ def render_register_form(d):
                 "size": size,
                 "quote": quote.strip(),
                 "payment_method": "cash" if payment_method == "Cash" else "upi",
-                "status": "pending_review",
+                "status": "cash_awaited" if payment_method == "Cash" else "pending_review",
             }
             with safe_write("register for this drive"):
                 if payment_method == "UPI":
@@ -335,7 +337,7 @@ def render_payment_form(d, order):
             row = {
                 "quote": quote.strip(),
                 "payment_method": "cash" if payment_method == "Cash" else "upi",
-                "status": "pending_review",
+                "status": "cash_awaited" if payment_method == "Cash" else "pending_review",
             }
             with safe_write("submit your payment"):
                 if payment_method == "UPI":
@@ -368,6 +370,8 @@ def render_my_registration(d, order):
         render_payment_form(d, order)
     elif order["status"] == "pending_review":
         st.caption("Your payment is being reviewed by a host.")
+    elif order["status"] == "cash_awaited":
+        st.caption(f"Contact {CASH_CONTACT_NOTE} to pay — a host will confirm it once received.")
     elif order["status"] == "paid":
         st.caption("All set — your order is confirmed.")
 
@@ -395,11 +399,10 @@ def render_edit_order_form(d, o):
         "Status", list(STATUS_LABELS), format_func=lambda s: STATUS_LABELS[s],
         index=list(STATUS_LABELS).index(o["status"]), key=f"edit_order_status_{o['order_id']}",
     )
-    merch_role_options = ["", "core", "member"]
-    edit_merch_role = st.selectbox(
-        "Merch role", merch_role_options,
-        format_func=lambda r: {"": "— none —", "core": "Core", "member": "Member"}[r],
-        index=merch_role_options.index(o["merch_role"]) if o.get("merch_role") in merch_role_options else 0,
+    edit_merch_role = st.text_input(
+        "Merch role", value=o.get("merch_role") or "",
+        placeholder="e.g. core, member, alumni, staff...",
+        help="Shown on this registration and in the review list. Leave blank for none — type anything.",
         key=f"edit_order_merch_role_{o['order_id']}",
     )
     new_screenshot = None
@@ -426,7 +429,7 @@ def render_edit_order_form(d, o):
             "quote": edit_quote.strip(),
             "payment_method": "cash" if edit_method == "Cash" else "upi",
             "status": edit_status,
-            "merch_role": edit_merch_role or None,
+            "merch_role": edit_merch_role.strip() or None,
         }
         with safe_write(f"update {edit_name.strip()}'s registration"):
             if edit_method == "UPI" and new_screenshot is not None:
@@ -448,9 +451,11 @@ def render_edit_order_form(d, o):
 def render_registration_review(d, orders):
     if not orders:
         return
-    pending_count = sum(1 for o in orders if o["status"] == "pending_review")
+    pending_count = sum(1 for o in orders if o["status"] in ("pending_review", "cash_awaited"))
     with st.expander(f":material/how_to_reg: Registrations ({len(orders)})", expanded=pending_count > 0):
-        for o in sorted(orders, key=lambda o: (o["status"] != "pending_review", o["created_at"])):
+        for o in sorted(
+            orders, key=lambda o: (o["status"] not in ("pending_review", "cash_awaited"), o["created_at"])
+        ):
             with st.container(border=True, key=f"rkcard_merchorder_{o['order_id']}"):
                 if st.session_state.editing_order_id == o["order_id"]:
                     render_edit_order_form(d, o)
@@ -476,7 +481,7 @@ def render_registration_review(d, orders):
                         storage, BUCKET, o["payment_screenshot_path"], o.get("payment_screenshot_name"),
                         key_suffix=f"merchproof_{o['order_id']}",
                     )
-                if o["status"] == "pending_review":
+                if o["status"] in ("pending_review", "cash_awaited"):
                     approve_col, reject_col = st.columns(2)
                     if approve_col.button(
                         "Approve — paid", key=f"approve_order_{o['order_id']}",
@@ -518,11 +523,18 @@ def render_registration_review(d, orders):
                             invalidate_cache()
                         recipient = user_email_by_id.get(o["user_id"])
                         if recipient:
-                            send_email(
-                                recipient, f"Merch order needs a new screenshot: {d['title']}",
-                                f"Your payment screenshot for \"{d['title']}\" couldn't be confirmed. "
-                                "Please check the Merch page and resubmit.",
-                            )
+                            if o.get("payment_method") == "cash":
+                                send_email(
+                                    recipient, f"Merch payment issue: {d['title']}",
+                                    f"Your cash payment for \"{d['title']}\" couldn't be confirmed. "
+                                    "Please check the Merch page and get in touch to sort it out.",
+                                )
+                            else:
+                                send_email(
+                                    recipient, f"Merch order needs a new screenshot: {d['title']}",
+                                    f"Your payment screenshot for \"{d['title']}\" couldn't be confirmed. "
+                                    "Please check the Merch page and resubmit.",
+                                )
                         st.session_state.merch_message = ("success", "Marked rejected.")
                         st.rerun()
 
