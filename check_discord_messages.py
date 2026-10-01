@@ -110,7 +110,7 @@ AUTO_WARN_SEVERITY = "clear"
 MAX_WARNINGS_PER_RUN = 3
 
 DISCORD_GENERAL_WEBHOOK = os.environ.get("DISCORD_GENERAL_WEBHOOK_URL")
-DISCORD_AUTOMATED_MARKER = "\n\n***This is automated message***"
+DISCORD_AUTOMATED_MARKER = "\n\n***This is an automated message***"
 # Same values as DISCORD_BOT_USERNAME/DISCORD_BOT_AVATAR_URL in shared.py -
 # kept in sync by hand since this script deliberately doesn't import that
 # module (see post_to_general()'s own comment). Without these, a webhook

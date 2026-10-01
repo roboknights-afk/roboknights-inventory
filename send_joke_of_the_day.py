@@ -40,7 +40,7 @@ client = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
 GROQ_MODEL = "openai/gpt-oss-120b"
 
 DISCORD_GENERAL_WEBHOOK = os.environ.get("DISCORD_GENERAL_WEBHOOK_URL")
-DISCORD_AUTOMATED_MARKER = "\n\n***This is automated message***"
+DISCORD_AUTOMATED_MARKER = "\n\n***This is an automated message***"
 # Same values as shared.py's DISCORD_BOT_USERNAME/DISCORD_BOT_AVATAR_URL -
 # kept in sync by hand, since this script deliberately doesn't import
 # shared.py (pulls in Streamlit, same reasoning as every other cron

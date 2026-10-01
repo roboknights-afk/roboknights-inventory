@@ -48,7 +48,7 @@ DISCORD_BOT_USERNAME = "roboknightsbot"
 DISCORD_BOT_AVATAR_URL = (
     "https://cdn.discordapp.com/avatars/1536836032329416724/5ebc6d79217e395322b1faf5107e095f.png"
 )
-DISCORD_AUTOMATED_MARKER = "\n\n***This is automated message***"
+DISCORD_AUTOMATED_MARKER = "\n\n***This is an automated message***"
 
 
 def discord_role_tags():

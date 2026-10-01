@@ -1300,7 +1300,7 @@ def discord_role_tags():
 #
 # Added centrally here (not at each call site) so the footer can't be
 # forgotten by a future call site.
-DISCORD_AUTOMATED_MARKER = "\n\n***This is automated message***"
+DISCORD_AUTOMATED_MARKER = "\n\n***This is an automated message***"
 
 
 def discord_message_suffix(channel):
