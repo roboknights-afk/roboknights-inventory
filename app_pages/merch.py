@@ -320,11 +320,8 @@ def render_my_registration(d, order):
     if order["status"] in ("registered", "rejected"):
         if order["status"] == "rejected":
             st.warning("Your payment screenshot was rejected. Fix it and resubmit below.")
-        if d.get("payment_phase_open"):
-            render_payment_details(d)
-            render_payment_form(d, order)
-        else:
-            st.caption("Payment details will be sent once the drive is ready to collect payment.")
+        render_payment_details(d)
+        render_payment_form(d, order)
     elif order["status"] == "pending_review":
         st.caption("Your payment is being reviewed by a host.")
     elif order["status"] == "paid":
@@ -389,57 +386,6 @@ def render_registration_review(d, orders):
                             )
                         st.session_state.merch_message = ("success", "Marked rejected.")
                         st.rerun()
-
-
-# --- Host: open/close payment collection -----------------------------------
-# The moment this flips on, every current registrant gets emailed — this
-# IS "the payment link being sent to people who registered," just done as
-# an in-app reveal (price/QR/UPI) plus an email pointing them to it, since
-# there's no separate external payment link to send.
-def render_payment_toggle(d):
-    if d.get("payment_phase_open"):
-        toggle_col, close_col = st.columns([3, 1], vertical_alignment="center")
-        toggle_col.badge("Payment collection open", color="green", icon=":material/payments:")
-        if close_col.button("Close", key=f"close_payment_{d['drive_id']}", icon=":material/lock:"):
-            with safe_write("close payment collection"):
-                client.table("merch_drives").update({"payment_phase_open": False}).eq(
-                    "drive_id", d["drive_id"]
-                ).execute()
-                invalidate_cache()
-            st.session_state.merch_message = ("success", "Payment collection closed.")
-            st.rerun()
-    else:
-        payment_ready = _price_value(d) > 0 and bool(d.get("qr_image_path")) and bool(d.get("upi_id"))
-        if not payment_ready:
-            st.caption(
-                ":material/info: Add a price, a UPI QR code, and a UPI ID (Edit) "
-                "before you can open payment collection."
-            )
-        if st.button(
-            "Open payment collection", key=f"open_payment_{d['drive_id']}",
-            icon=":material/payments:", type="primary", disabled=not payment_ready,
-        ):
-            with safe_write("open payment collection"):
-                client.table("merch_drives").update({"payment_phase_open": True}).eq(
-                    "drive_id", d["drive_id"]
-                ).execute()
-                invalidate_cache()
-            registrants = [
-                o for o in orders_by_drive.get(d["drive_id"], [])
-                if o["status"] in ("registered", "rejected")
-            ]
-            for o in registrants:
-                recipient = user_email_by_id.get(o["user_id"])
-                if recipient:
-                    send_email(
-                        recipient, f"Time to pay: {d['title']}",
-                        f"Payment collection is now open for \"{d['title']}\" ({_price_text(d)}).\n"
-                        "Log in to the dashboard's Merch page to pay via UPI and upload your payment screenshot.",
-                    )
-            st.session_state.merch_message = (
-                "success", f"Payment collection open — emailed {len(registrants)} registrant(s)."
-            )
-            st.rerun()
 
 
 # --- Layout ----------------------------------------------------------------
@@ -594,7 +540,6 @@ for d in drives:
                 st.caption(":material/error: Couldn't load the size chart right now.")
 
         if is_host:
-            render_payment_toggle(d)
             render_payment_details(d)
 
         if has_access:
