@@ -232,6 +232,7 @@ def render_payment_details(d):
 
 # --- Phase 1: register interest -------------------------------------------
 def render_register_form(d):
+    render_payment_details(d)
     st.markdown("**Register for this drive**")
     name = st.text_input("Name", value=current_user_name, key=f"register_name_{d['drive_id']}")
     username = st.text_input("Username", key=f"register_username_{d['drive_id']}")
@@ -241,6 +242,13 @@ def render_register_form(d):
     size = st.selectbox(
         "Size", SIZES, index=None, placeholder="Select a size", key=f"register_size_{d['drive_id']}",
     )
+    quote = st.text_area("Quote (optional)", key=f"register_quote_{d['drive_id']}")
+    screenshot = st.file_uploader(
+        "Payment screenshot (optional — you can also add this after registering)",
+        type=list(ALLOWED_IMAGES), key=f"register_screenshot_{d['drive_id']}",
+        help=f"Pay via the QR above first if you're ready to. PNG or JPG, up to {MAX_MB} MB.",
+        disabled=storage is None,
+    )
     if st.button(
         "Register", key=f"register_btn_{d['drive_id']}", icon=":material/how_to_reg:", type="primary",
     ):
@@ -249,24 +257,36 @@ def render_register_form(d):
         elif size is None:
             st.error("Pick a size.")
         else:
+            row = {
+                "drive_id": d["drive_id"],
+                "user_id": current_user_id,
+                "name": name.strip(),
+                "username": username.strip(),
+                "custom_number": int(number),
+                "size": size,
+                "quote": quote.strip(),
+                "status": "registered",
+            }
             with safe_write("register for this drive"):
-                client.table("merch_orders").insert({
-                    "drive_id": d["drive_id"],
-                    "user_id": current_user_id,
-                    "name": name.strip(),
-                    "username": username.strip(),
-                    "custom_number": int(number),
-                    "size": size,
-                    "status": "registered",
-                }).execute()
+                if screenshot is not None:
+                    row["payment_screenshot_path"] = _save_image(
+                        screenshot, f"proof_{d['drive_id']}_{current_user_id}"
+                    )
+                    row["payment_screenshot_name"] = screenshot.name
+                    row["status"] = "pending_review"
+                client.table("merch_orders").insert(row).execute()
                 invalidate_cache()
+            paid_already = row["status"] == "pending_review"
             for email in HOST_EMAILS:
                 send_email(
                     email, f"Merch registration: {d['title']}",
-                    f"{name.strip()} registered interest in \"{d['title']}\".",
+                    f"{name.strip()} registered for \"{d['title']}\""
+                    + (" and submitted payment proof — needs review." if paid_already else "."),
                 )
             st.session_state.merch_message = (
-                "success", "Registered — you'll be told once it's time to pay."
+                "success",
+                "Registered and payment submitted for review." if paid_already
+                else "Registered — pay via the QR above whenever you're ready, then attach your screenshot.",
             )
             st.rerun()
 
