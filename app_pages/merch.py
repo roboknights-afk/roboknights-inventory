@@ -552,9 +552,13 @@ for d in drives:
 
         if d.get("size_chart_image_path") and storage is not None:
             try:
-                st.image(
-                    storage.storage.from_(BUCKET).download(d["size_chart_image_path"]),
-                    width=450, caption="Size chart",
+                size_chart_bytes = storage.storage.from_(BUCKET).download(d["size_chart_image_path"])
+                st.image(size_chart_bytes, use_container_width=True, caption="Size chart")
+                size_chart_ext = d["size_chart_image_path"].rsplit(".", 1)[-1]
+                st.download_button(
+                    "Download size chart", data=size_chart_bytes,
+                    file_name=f"size_chart.{size_chart_ext}", icon=":material/download:",
+                    key=f"download_sizechart_{d['drive_id']}",
                 )
             except Exception:
                 st.caption(":material/error: Couldn't load the size chart right now.")
