@@ -972,6 +972,9 @@ create table if not exists merch_orders (
                                               -- enforced in the app
     quote                    text not null default '',  -- filled in at
                                      -- payment time, not registration
+    payment_method           text not null default 'upi',  -- 'upi' / 'cash'
+                                     -- — cash has no screenshot, a host
+                                     -- confirms it by hand off-dashboard
     payment_screenshot_path  text,
     payment_screenshot_name  text,  -- the ORIGINAL filename, since the path
                                      -- is keyed by drive_id/user_id
@@ -1026,3 +1029,8 @@ update merch_orders set status = 'registered' where status = 'pending_review' an
 -- forward.
 alter table merch_drives add column if not exists size_chart_image_path text;
 alter table merch_orders add column if not exists size text not null default 'M';
+
+-- Merch: a cash payment option, alongside UPI (2026-10-01). Cash has no
+-- screenshot — a host confirms it by hand (WhatsApp/in person) and then
+-- marks the order paid from the Registrations review list.
+alter table merch_orders add column if not exists payment_method text not null default 'upi';

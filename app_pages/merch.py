@@ -44,6 +44,7 @@ BUCKET = "merch-assets"
 ALLOWED_IMAGES = {"png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg"}
 MAX_MB = 5
 SIZES = ["XS", "S", "M", "L", "XL", "XXL", "3XL"]
+CASH_CONTACT_NOTE = "Naitik Jindal via WhatsApp at +91 93112 59439"
 
 STATUS_LABELS = {
     "registered": "Registered",
@@ -243,12 +244,19 @@ def render_register_form(d):
         "Size", SIZES, index=None, placeholder="Select a size", key=f"register_size_{d['drive_id']}",
     )
     quote = st.text_area("Quote (optional)", key=f"register_quote_{d['drive_id']}")
-    screenshot = st.file_uploader(
-        "Payment screenshot (optional — you can also add this after registering)",
-        type=list(ALLOWED_IMAGES), key=f"register_screenshot_{d['drive_id']}",
-        help=f"Pay via the QR above first if you're ready to. PNG or JPG, up to {MAX_MB} MB.",
-        disabled=storage is None,
+    payment_method = st.radio(
+        "How will you pay?", ["UPI", "Cash"], horizontal=True, key=f"register_method_{d['drive_id']}",
     )
+    screenshot = None
+    if payment_method == "UPI":
+        screenshot = st.file_uploader(
+            "Payment screenshot (optional — you can also add this after registering)",
+            type=list(ALLOWED_IMAGES), key=f"register_screenshot_{d['drive_id']}",
+            help=f"Pay via the QR above first if you're ready to. PNG or JPG, up to {MAX_MB} MB.",
+            disabled=storage is None,
+        )
+    else:
+        st.info(f":material/call: Paying in cash — contact {CASH_CONTACT_NOTE} to arrange payment.")
     if st.button(
         "Register", key=f"register_btn_{d['drive_id']}", icon=":material/how_to_reg:", type="primary",
     ):
@@ -265,10 +273,13 @@ def render_register_form(d):
                 "custom_number": int(number),
                 "size": size,
                 "quote": quote.strip(),
+                "payment_method": "cash" if payment_method == "Cash" else "upi",
                 "status": "registered",
             }
             with safe_write("register for this drive"):
-                if screenshot is not None:
+                if payment_method == "Cash":
+                    row["status"] = "pending_review"
+                elif screenshot is not None:
                     row["payment_screenshot_path"] = _save_image(
                         screenshot, f"proof_{d['drive_id']}_{current_user_id}"
                     )
@@ -281,12 +292,19 @@ def render_register_form(d):
                 send_email(
                     email, f"Merch registration: {d['title']}",
                     f"{name.strip()} registered for \"{d['title']}\""
-                    + (" and submitted payment proof — needs review." if paid_already else "."),
+                    + (
+                        f" and will pay by {row['payment_method']} — needs review." if paid_already
+                        else "."
+                    ),
                 )
             st.session_state.merch_message = (
                 "success",
-                "Registered and payment submitted for review." if paid_already
-                else "Registered — pay via the QR above whenever you're ready, then attach your screenshot.",
+                (
+                    "Registered — contact Naitik to pay by cash, and a host will confirm it."
+                    if payment_method == "Cash"
+                    else "Registered and payment submitted for review." if paid_already
+                    else "Registered — pay via the QR above whenever you're ready, then attach your screenshot."
+                ),
             )
             st.rerun()
 
@@ -297,36 +315,48 @@ def render_payment_form(d, order):
     quote = st.text_area(
         "Quote (optional)", value=order.get("quote") or "", key=f"pay_quote_{order['order_id']}"
     )
-    screenshot = st.file_uploader(
-        "Payment screenshot", type=list(ALLOWED_IMAGES), key=f"pay_screenshot_{order['order_id']}",
-        help=f"Pay via the QR above first, then attach proof here. PNG or JPG, up to {MAX_MB} MB.",
-        disabled=storage is None,
+    default_method_index = 1 if order.get("payment_method") == "cash" else 0
+    payment_method = st.radio(
+        "How will you pay?", ["UPI", "Cash"], index=default_method_index, horizontal=True,
+        key=f"pay_method_{order['order_id']}",
     )
+    screenshot = None
+    if payment_method == "UPI":
+        screenshot = st.file_uploader(
+            "Payment screenshot", type=list(ALLOWED_IMAGES), key=f"pay_screenshot_{order['order_id']}",
+            help=f"Pay via the QR above first, then attach proof here. PNG or JPG, up to {MAX_MB} MB.",
+            disabled=storage is None,
+        )
+    else:
+        st.info(f":material/call: Paying in cash — contact {CASH_CONTACT_NOTE} to arrange payment.")
     if st.button(
-        "Submit payment proof", key=f"pay_submit_{order['order_id']}", icon=":material/send:", type="primary",
+        "Submit payment proof" if payment_method == "UPI" else "I've arranged cash payment",
+        key=f"pay_submit_{order['order_id']}", icon=":material/send:", type="primary",
     ):
-        if screenshot is None:
+        if payment_method == "UPI" and screenshot is None:
             st.error("Attach your payment screenshot before submitting.")
-        elif storage is None:
+        elif payment_method == "UPI" and storage is None:
             st.error("File uploads aren't set up on this server yet — tell a host.")
         else:
             row = {
                 "quote": quote.strip(),
-                "payment_screenshot_name": screenshot.name,
+                "payment_method": "cash" if payment_method == "Cash" else "upi",
                 "status": "pending_review",
             }
-            with safe_write("submit your payment proof"):
-                row["payment_screenshot_path"] = _save_image(
-                    screenshot, f"proof_{d['drive_id']}_{current_user_id}"
-                )
+            with safe_write("submit your payment"):
+                if payment_method == "UPI":
+                    row["payment_screenshot_path"] = _save_image(
+                        screenshot, f"proof_{d['drive_id']}_{current_user_id}"
+                    )
+                    row["payment_screenshot_name"] = screenshot.name
                 client.table("merch_orders").update(row).eq("order_id", order["order_id"]).execute()
                 invalidate_cache()
             for email in HOST_EMAILS:
                 send_email(
                     email, f"Merch payment: {d['title']}",
-                    f"{order['name']} submitted payment proof for \"{d['title']}\" and needs review.",
+                    f"{order['name']} submitted a {row['payment_method']} payment for \"{d['title']}\" and needs review.",
                 )
-            st.session_state.merch_message = ("success", "Payment proof submitted — a host will review it.")
+            st.session_state.merch_message = ("success", "Submitted — a host will review it.")
             st.rerun()
 
 
@@ -364,7 +394,9 @@ def render_registration_review(d, orders):
                 )
                 if o.get("quote"):
                     st.caption(f"“{o['quote']}”")
-                if o.get("payment_screenshot_path"):
+                if o.get("payment_method") == "cash":
+                    st.caption(":material/payments: Paying by cash — confirm with Naitik before approving.")
+                elif o.get("payment_screenshot_path"):
                     render_file_open_and_download(
                         storage, BUCKET, o["payment_screenshot_path"], o.get("payment_screenshot_name"),
                         key_suffix=f"merchproof_{o['order_id']}",
