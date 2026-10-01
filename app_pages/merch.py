@@ -250,9 +250,9 @@ def render_register_form(d):
     screenshot = None
     if payment_method == "UPI":
         screenshot = st.file_uploader(
-            "Payment screenshot (optional — you can also add this after registering)",
+            "Payment screenshot",
             type=list(ALLOWED_IMAGES), key=f"register_screenshot_{d['drive_id']}",
-            help=f"Pay via the QR above first if you're ready to. PNG or JPG, up to {MAX_MB} MB.",
+            help=f"Pay via the QR above first. PNG or JPG, up to {MAX_MB} MB.",
             disabled=storage is None,
         )
     else:
@@ -264,6 +264,8 @@ def render_register_form(d):
             st.error("Name and username are required.")
         elif size is None:
             st.error("Pick a size.")
+        elif payment_method == "UPI" and screenshot is None:
+            st.error("Attach your payment screenshot.")
         else:
             row = {
                 "drive_id": d["drive_id"],
@@ -274,37 +276,27 @@ def render_register_form(d):
                 "size": size,
                 "quote": quote.strip(),
                 "payment_method": "cash" if payment_method == "Cash" else "upi",
-                "status": "registered",
+                "status": "pending_review",
             }
             with safe_write("register for this drive"):
-                if payment_method == "Cash":
-                    row["status"] = "pending_review"
-                elif screenshot is not None:
+                if payment_method == "UPI":
                     row["payment_screenshot_path"] = _save_image(
                         screenshot, f"proof_{d['drive_id']}_{current_user_id}"
                     )
                     row["payment_screenshot_name"] = screenshot.name
-                    row["status"] = "pending_review"
                 client.table("merch_orders").insert(row).execute()
                 invalidate_cache()
-            paid_already = row["status"] == "pending_review"
             for email in HOST_EMAILS:
                 send_email(
                     email, f"Merch registration: {d['title']}",
-                    f"{name.strip()} registered for \"{d['title']}\""
-                    + (
-                        f" and will pay by {row['payment_method']} — needs review." if paid_already
-                        else "."
-                    ),
+                    f"{name.strip()} registered for \"{d['title']}\" and will pay by "
+                    f"{row['payment_method']} — needs review.",
                 )
             st.session_state.merch_message = (
                 "success",
-                (
-                    "Registered — contact Naitik to pay by cash, and a host will confirm it."
-                    if payment_method == "Cash"
-                    else "Registered and payment submitted for review." if paid_already
-                    else "Registered — pay via the QR above whenever you're ready, then attach your screenshot."
-                ),
+                "Registered — contact Naitik to pay by cash, and a host will confirm it."
+                if payment_method == "Cash"
+                else "Registered and payment submitted for review.",
             )
             st.rerun()
 
