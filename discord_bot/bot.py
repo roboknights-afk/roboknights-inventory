@@ -1130,7 +1130,7 @@ def _find_logged_message(message_id):
     try:
         rows = (
             supabase.table("discord_channel_log")
-            .select("discord_display_name,content")
+            .select("discord_display_name,discord_user_id,content")
             .eq("discord_message_id", str(message_id))
             .limit(1)
             .execute()
@@ -1139,6 +1139,34 @@ def _find_logged_message(message_id):
         return rows[0] if rows else None
     except Exception:
         return None
+
+
+async def _find_deleter(guild, channel_id, author_id):
+    # Discord's gateway delete event never says who performed a deletion —
+    # only the guild audit log does, and even then ONLY when a moderator
+    # (not the message's own author) removed it via the Manage Messages
+    # permission. A message deleted by its own author creates NO audit log
+    # entry at all, so finding nothing here means "self-deleted," not "the
+    # lookup failed." Needs the bot's role to have "View Audit Log" on the
+    # server — silently returns None without it, same best-effort spirit as
+    # every other Discord call in this file (missing permission isn't a
+    # crash, it's just "we can't know who deleted this one").
+    if guild is None or author_id is None:
+        return None
+    try:
+        async for entry in guild.audit_logs(action=discord.AuditLogAction.message_delete, limit=15):
+            entry_channel = getattr(entry.extra, "channel", None)
+            entry_channel_id = getattr(entry_channel, "id", entry_channel)
+            if (
+                entry.target
+                and str(entry.target.id) == str(author_id)
+                and str(entry_channel_id) == str(channel_id)
+                and (datetime.now(timezone.utc) - entry.created_at).total_seconds() < 15
+            ):
+                return entry.user.display_name if entry.user else None
+    except Exception:
+        pass
+    return None
 
 
 # Passive per-channel activity — EVERY message the bot can see (not just
@@ -2057,6 +2085,7 @@ async def on_raw_message_delete(payload):
         return
 
     author = None
+    author_id = None
     content = None
     if payload.cached_message is not None:
         # Deliberately NOT skipped for a bot author (unlike every other
@@ -2069,19 +2098,34 @@ async def on_raw_message_delete(payload):
         # skipping it defeated the feature. Found 2026-09-20 when a host
         # noticed the bot's own deleted messages never showed up here.
         author = payload.cached_message.author.display_name
+        author_id = payload.cached_message.author.id
         content = payload.cached_message.content
     else:
         logged = _find_logged_message(payload.message_id)
         if logged:
             author = logged.get("discord_display_name")
+            author_id = logged.get("discord_user_id")
             content = logged.get("content")
 
     author = author or "unknown"
     body = content if content else "*(no text on file — an attachment-only or unlogged message)*"
 
+    # Who actually clicked delete is a SEPARATE question from who wrote the
+    # message — conflating them is exactly what read as "the host/bot
+    # deleted it" for a message that the host/bot had merely AUTHORED
+    # (e.g. an announcement) before some other member deleted it. Try the
+    # audit log for the real deleter; a moderator deletion resolves it, a
+    # self-deletion (the common case) leaves nothing to find — say so
+    # plainly instead of implying the author was the one who deleted it.
+    deleter = await _find_deleter(client.get_guild(payload.guild_id), payload.channel_id, author_id)
+    if deleter and deleter != author:
+        deleted_by_line = f"Deleted by **{deleter}**"
+    else:
+        deleted_by_line = "Deleted by: **themselves, or unavailable** (Discord only logs moderator deletions)"
+
     report = (
         f":wastebasket: **Message deleted** in <#{payload.channel_id}>\n"
-        f"By **{author}**:\n>>> {body}"
+        f"Posted by **{author}** — {deleted_by_line}:\n>>> {body}"
     )
     try:
         channel = client.get_channel(int(DISCORD_LOGS_CHANNEL_ID)) or await client.fetch_channel(
