@@ -43,7 +43,7 @@ if not is_host and not has_access:
 BUCKET = "merch-assets"
 ALLOWED_IMAGES = {"png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg"}
 MAX_MB = 5
-SIZES = ["XS", "S", "M", "L", "XL"]
+SIZES = ["XS", "S", "M", "L", "XL", "XXL", "3XL"]
 
 STATUS_LABELS = {
     "registered": "Registered",
