@@ -678,6 +678,115 @@ _MERCH_SHEET_STATUS_LABELS = {
 }
 
 
+# Muted RGB pairs (background, text) per status, 0-1 scale (Sheets API,
+# not 0-255) — soft enough to stay readable, not a wall of neon. Matched
+# to the same badge colors app_pages/merch.py already uses on the
+# dashboard itself (STATUS_BADGE_COLOR there), just restated as actual
+# RGB since the Sheets API takes colors, not Streamlit color names.
+_MERCH_SHEET_STATUS_COLORS = {
+    "Registered": ({"red": 0.85, "green": 0.91, "blue": 1.0}, {"red": 0.10, "green": 0.25, "blue": 0.55}),
+    "Awaiting payment review": (
+        {"red": 1.0, "green": 0.90, "blue": 0.75}, {"red": 0.55, "green": 0.35, "blue": 0.05},
+    ),
+    "Cash payment awaited": (
+        {"red": 0.92, "green": 0.86, "blue": 1.0}, {"red": 0.40, "green": 0.15, "blue": 0.55},
+    ),
+    "Paid": ({"red": 0.82, "green": 0.95, "blue": 0.85}, {"red": 0.10, "green": 0.45, "blue": 0.20}),
+    "Rejected": ({"red": 1.0, "green": 0.85, "blue": 0.85}, {"red": 0.60, "green": 0.10, "blue": 0.10}),
+}
+
+# RoboKnights' own "knight gold" accent (config.toml primaryColor) — the
+# header uses the exact same color the dashboard itself does, so the
+# sheet reads as the same brand rather than a generic spreadsheet.
+_MERCH_SHEET_GOLD = {"red": 0xE8 / 255, "green": 0xB3 / 255, "blue": 0x3D / 255}
+
+
+def _merch_sheet_style_requests(sheet_id, num_cols, statuses):
+    # Everything here SETS a property to a value (never appends a rule),
+    # so re-running this on every single sync is safe — it can't pile up
+    # duplicate conditional formats or banding the way an "add a rule"
+    # API call would if called repeatedly. That's why status coloring is
+    # done as plain per-cell background/text color here, computed fresh
+    # from the data already in hand, rather than a Sheets conditional
+    # format rule.
+    num_rows = len(statuses) + 1  # +1 for the header row
+    requests = [
+        # Bold, centered, gold header — frozen so it stays visible on
+        # scroll.
+        {
+            "updateSheetProperties": {
+                "properties": {"sheetId": sheet_id, "gridProperties": {"frozenRowCount": 1}},
+                "fields": "gridProperties.frozenRowCount",
+            }
+        },
+        {
+            "repeatCell": {
+                "range": {"sheetId": sheet_id, "startRowIndex": 0, "endRowIndex": 1, "startColumnIndex": 0, "endColumnIndex": num_cols},
+                "cell": {
+                    "userEnteredFormat": {
+                        "backgroundColor": _MERCH_SHEET_GOLD,
+                        "horizontalAlignment": "CENTER",
+                        "textFormat": {"bold": True, "foregroundColor": {"red": 0.15, "green": 0.11, "blue": 0.02}},
+                    }
+                },
+                "fields": "userEnteredFormat(backgroundColor,horizontalAlignment,textFormat)",
+            }
+        },
+        # A clean grid border over the whole table, header included.
+        {
+            "updateBorders": {
+                "range": {"sheetId": sheet_id, "startRowIndex": 0, "endRowIndex": num_rows, "startColumnIndex": 0, "endColumnIndex": num_cols},
+                **{
+                    side: {"style": "SOLID", "width": 1, "color": {"red": 0.75, "green": 0.75, "blue": 0.75}}
+                    for side in ("top", "bottom", "left", "right", "innerHorizontal", "innerVertical")
+                },
+            }
+        },
+        # Auto-size every column to fit its longest value instead of
+        # leaving Sheets' default fixed width (what actually made a plain
+        # sync look like a raw data dump rather than a real sheet).
+        {
+            "autoResizeDimensions": {
+                "dimensions": {"sheetId": sheet_id, "dimension": "COLUMNS", "startIndex": 0, "endIndex": num_cols}
+            }
+        },
+        # Reset any stale per-cell formatting from a previous sync (e.g. a
+        # row that no longer exists after a delete) before repainting the
+        # status column below — otherwise leftover color from a longer
+        # previous sync could survive underneath shorter current data.
+        {
+            "repeatCell": {
+                "range": {"sheetId": sheet_id, "startRowIndex": 1, "startColumnIndex": 0, "endColumnIndex": num_cols},
+                "cell": {"userEnteredFormat": {}},
+                "fields": "userEnteredFormat",
+            }
+        },
+    ]
+    # Status lives in column G (index 6) — color just that cell per row,
+    # a light tint rather than the whole row, so the sheet stays easy to
+    # read instead of turning into a wall of color.
+    status_col_index = 6
+    for i, status in enumerate(statuses):
+        bg, fg = _MERCH_SHEET_STATUS_COLORS.get(status, ({"red": 1, "green": 1, "blue": 1}, {"red": 0, "green": 0, "blue": 0}))
+        row_index = i + 1  # +1 to skip the header row
+        requests.append({
+            "repeatCell": {
+                "range": {
+                    "sheetId": sheet_id, "startRowIndex": row_index, "endRowIndex": row_index + 1,
+                    "startColumnIndex": status_col_index, "endColumnIndex": status_col_index + 1,
+                },
+                "cell": {
+                    "userEnteredFormat": {
+                        "backgroundColor": bg,
+                        "textFormat": {"bold": True, "foregroundColor": fg},
+                    }
+                },
+                "fields": "userEnteredFormat(backgroundColor,textFormat)",
+            }
+        })
+    return requests
+
+
 def sync_merch_orders_to_sheet():
     # A plain, read-only-for-humans mirror of every merch registration
     # (every drive, not just one), so a host can hand MERCH_SHEET_ID to
@@ -723,9 +832,14 @@ def sync_merch_orders_to_sheet():
                 format_ist(o["created_at"]),
             ])
 
-        ws = gc.open_by_key(MERCH_SHEET_ID).sheet1
+        sh = gc.open_by_key(MERCH_SHEET_ID)
+        ws = sh.sheet1
         ws.clear()
-        ws.update("A1", rows)
+        ws.update(rows, "A1")
+
+        statuses = [row[6] for row in rows[1:]]  # column G, same order as written above
+        requests = _merch_sheet_style_requests(ws.id, len(header), statuses)
+        sh.batch_update({"requests": requests})
     except Exception:
         pass
 
