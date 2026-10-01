@@ -222,7 +222,7 @@ def render_payment_details(d):
         try:
             st.image(
                 storage.storage.from_(BUCKET).download(d["qr_image_path"]),
-                width=220, caption="Pay via UPI",
+                width=400, caption="Pay via UPI",
             )
         except Exception:
             st.caption(":material/error: Couldn't load the QR code right now.")
@@ -554,7 +554,7 @@ for d in drives:
             try:
                 st.image(
                     storage.storage.from_(BUCKET).download(d["size_chart_image_path"]),
-                    width=220, caption="Size chart",
+                    width=450, caption="Size chart",
                 )
             except Exception:
                 st.caption(":material/error: Couldn't load the size chart right now.")
