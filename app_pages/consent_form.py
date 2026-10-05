@@ -2,8 +2,7 @@
 # event at a competition gets a printable, pre-filled copy of the school's
 # own form starting 2 days before the competition. They check the details
 # (everything is editable), download it, have a guardian fill in and sign
-# the rest by hand, and bring it on the day. Only ever for the signed-in
-# account's own student. The fill-in itself lives in
+# the rest by hand, and bring it on the day. The fill-in itself lives in
 # consent_docx.py; this page is just the gate, the confirm step and the
 # download.
 
@@ -16,7 +15,9 @@ from shared import cached_table, today_ist
 
 OPENS_DAYS_BEFORE = 2
 
+is_host = st.session_state.is_host
 current_user_id = st.session_state.current_user_id
+user_name_by_id = st.session_state.user_name_by_id
 
 st.title(":material/description: Consent form")
 
@@ -42,10 +43,20 @@ for v in cached_table("event_volunteers"):
     if v.get("selected") and comp_id in competitions:
         selected_competitions.setdefault(v["user_id"], set()).add(comp_id)
 
-# Always the logged-in account's own student, never anyone else's — not
-# even a host's: there's no student picker, so a form can only ever be
-# generated for the account that's signed in.
-target_id = current_user_id
+if is_host:
+    # Hosts can open the form for any selected student, at any time, so it
+    # can be checked and reprinted for someone who lost theirs. Students
+    # themselves only ever see their own.
+    student_ids = sorted(selected_competitions, key=lambda uid: user_name_by_id.get(uid, "").lower())
+    if not student_ids:
+        st.caption("Nobody is selected for an upcoming competition yet.")
+        st.stop()
+    target_id = st.selectbox(
+        "Student", student_ids, format_func=lambda uid: user_name_by_id.get(uid, "Unknown"),
+        key="consent_target_student",
+    )
+else:
+    target_id = current_user_id
 
 st.caption(
     "Fill in and check the details below, download the form, print it, have your guardian complete "
@@ -77,11 +88,13 @@ for comp in mine:
         else:
             badge_col.badge(f"Opens {opens_on.strftime('%d %b')}", color="grey", icon=":material/lock:")
 
-        if not is_open:
+        if not is_open and not is_host:
             st.caption(
                 f"Your form opens on {opens_on.strftime('%A, %d %b')}, {OPENS_DAYS_BEFORE} days before the event."
             )
             continue
+        if not is_open:
+            st.caption(f"Host preview — it opens for the student on {opens_on.strftime('%d %b')}.")
 
         key = f"{comp['competition_id']}_{target_id}"
         name = st.text_input("Student name", value=student.get("name") or "", key=f"consent_name_{key}")
