@@ -1080,3 +1080,10 @@ create table if not exists merch_pending_changes (
 -- Blocked for everyone except the person named, matched against their
 -- account name. Host-editable from the drive's Edit form.
 alter table merch_drives add column if not exists reserved_numbers jsonb not null default '{}'::jsonb;
+
+-- Merch: manual registrations for people with no account (2026-10-05). A
+-- host can add an entry linked to a real member (works without this) or to
+-- nobody at all — someone who paid or claimed a number outside the app.
+-- Needs user_id nullable; unique (drive_id, user_id) still holds for real
+-- members because Postgres treats NULLs as distinct.
+alter table merch_orders alter column user_id drop not null;

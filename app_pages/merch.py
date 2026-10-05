@@ -82,6 +82,8 @@ if "editing_drive_id" not in st.session_state:
     st.session_state.editing_drive_id = None
 if "editing_order_id" not in st.session_state:
     st.session_state.editing_order_id = None
+if "manual_entry_drive_id" not in st.session_state:
+    st.session_state.manual_entry_drive_id = None
 
 drives = sorted(cached_table("merch_drives"), key=lambda d: d["created_at"], reverse=True)
 all_orders = cached_table("merch_orders")
@@ -223,6 +225,15 @@ def _apply_pending_change(action, payload, requested_by):
                 except Exception:
                     pass
         client.table("merch_drives").delete().eq("drive_id", payload["drive_id"]).execute()
+    elif action == "manual_order":
+        clash = next(
+            (x["name"] for x in _fresh_drive_orders(payload["drive_id"])
+             if x["custom_number"] == payload["custom_number"]),
+            None,
+        )
+        if clash:
+            raise ValueError(f"number {payload['custom_number']:02d} is already {clash}'s")
+        client.table("merch_orders").insert(payload).execute()
     elif action == "edit_order":
         new_number = payload["update"].get("custom_number")
         order = next((oo for oo in all_orders if oo["order_id"] == payload["order_id"]), None)
@@ -585,6 +596,85 @@ def render_my_registration(d, order):
         st.caption("All set — your order is confirmed.")
 
 
+# --- Host: add a registration by hand --------------------------------------
+# For someone who paid or registered outside the app (cash handed over in
+# person, a number claimed on Discord, a person with no account at all).
+# Optionally linked to a real member; with no member picked the order has
+# no user_id, which needs the "user_id drop not null" migration at the end
+# of supabase_schema.sql. A co-host's entry is staged for approval like
+# everything else they do here.
+@st.dialog("Add a manual registration", on_dismiss=lambda: st.session_state.update(manual_entry_drive_id=None))
+def render_manual_entry(d):
+    drive_orders = orders_by_drive.get(d["drive_id"], [])
+    has_order = {o["user_id"] for o in drive_orders}
+    member_options = [None] + [
+        u["user_id"] for u in sorted(all_users, key=lambda u: (u.get("name") or "").lower())
+        if u["user_id"] not in has_order
+    ]
+    member_id = st.selectbox(
+        "Link to a member (optional)", member_options,
+        format_func=lambda uid: "— no account / outside the app —" if uid is None
+        else st.session_state.user_name_by_id.get(uid, "Unknown"),
+        key=f"manual_member_{d['drive_id']}",
+        help="Members who already have a registration for this drive aren't listed.",
+    )
+    member = next((u for u in all_users if u["user_id"] == member_id), None)
+    k = f"{d['drive_id']}_{member_id}"  # fresh defaults whenever the member changes
+    name = st.text_input("Name", value=(member or {}).get("name") or "", key=f"manual_name_{k}")
+    username = st.text_input("Username", key=f"manual_username_{k}")
+    held = {o["custom_number"]: o["name"] for o in drive_orders}
+    reserved = _reserved_numbers(d)
+    numbers = [n for n in NUMBER_RANGE if n not in held]
+    number = st.selectbox(
+        f"Number — {len(numbers)} still free", numbers, index=None, placeholder="Pick a number",
+        format_func=lambda n: f"{n:02d}" + (f"  (reserved for {reserved[n]})" if n in reserved else ""),
+        key=f"manual_number_{k}",
+    )
+    size = st.selectbox("Size", SIZES, index=None, placeholder="Select a size", key=f"manual_size_{k}")
+    quote = st.text_area("Quote (optional)", key=f"manual_quote_{k}")
+    method = st.radio("Payment method", ["UPI", "Cash"], horizontal=True, key=f"manual_method_{k}")
+    status = st.selectbox(
+        "Status", list(STATUS_LABELS), format_func=lambda s: STATUS_LABELS[s],
+        index=list(STATUS_LABELS).index("paid"), key=f"manual_status_{k}",
+    )
+    default_role = "" if member is None else ("core" if member.get("role") == "core_member" else "member")
+    merch_role = st.text_input("Merch role", value=default_role, key=f"manual_role_{k}")
+    if st.button("Add registration" if is_host else "Submit for approval", icon=":material/person_add:",
+                 type="primary", key=f"manual_submit_{k}"):
+        clash = next((x["name"] for x in _fresh_drive_orders(d["drive_id"]) if x["custom_number"] == number), None)
+        if not name.strip() or not username.strip():
+            st.error("Name and username are required.")
+        elif number is None:
+            st.error("Pick a number.")
+        elif clash:
+            st.error(f"{number:02d} was just taken by {clash}. Pick another.")
+        elif size is None:
+            st.error("Pick a size.")
+        else:
+            row = {
+                "drive_id": d["drive_id"], "user_id": member_id, "name": name.strip(),
+                "username": username.strip(), "custom_number": int(number), "size": size,
+                "quote": quote.strip(), "payment_method": "cash" if method == "Cash" else "upi",
+                "status": status, "merch_role": merch_role.strip() or None,
+            }
+            with safe_write("add this registration"):
+                if is_host:
+                    _apply_pending_change("manual_order", row, current_user_id)
+                    invalidate_cache()
+                    sync_merch_orders_to_sheet()
+                else:
+                    _stage_pending_change(
+                        "manual_order", f"Add a manual registration: {row['name']} (#{number:02d})", row,
+                    )
+                    invalidate_cache()
+            st.session_state.merch_message = (
+                ("success", f"Added {row['name']}.") if is_host
+                else ("success", "Submitted — a host needs to approve this.")
+            )
+            st.session_state.manual_entry_drive_id = None
+            st.rerun()
+
+
 # --- Host: edit any field of someone's registration -----------------------
 def render_edit_order_form(d, o):
     st.markdown(f"**Editing {o['name']}'s registration**")
@@ -795,7 +885,7 @@ def render_pending_approvals():
                             "reviewed_at": datetime.now(timezone.utc).isoformat(),
                         }).eq("pending_id", p["pending_id"]).execute()
                         invalidate_cache()
-                        if p["action"] in ("delete_drive", "edit_order", "approve_order", "reject_order"):
+                        if p["action"] in ("delete_drive", "edit_order", "approve_order", "reject_order", "manual_order"):
                             sync_merch_orders_to_sheet()
                     st.session_state.merch_message = ("success", "Approved and applied.")
                     st.rerun()
@@ -1037,6 +1127,10 @@ for d in drives:
 
         if can_manage_merch:
             render_payment_details(d)
+            if st.button("Add manual registration", icon=":material/person_add:", key=f"open_manual_{d['drive_id']}"):
+                st.session_state.manual_entry_drive_id = d["drive_id"]
+            if st.session_state.manual_entry_drive_id == d["drive_id"]:
+                render_manual_entry(d)
 
         if has_access:
             if my_order is None:
