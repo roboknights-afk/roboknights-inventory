@@ -1703,6 +1703,13 @@ club_pages = []
 if not st.session_state.is_exun:
     club_pages.append(st.Page("app_pages/inventory.py", title="Inventory", icon=":material/inventory_2:"))
 club_pages.append(st.Page("app_pages/competitions.py", title="Competitions", icon=":material/emoji_events:"))
+# Consent form: for students selected to compete (and hosts, to reprint
+# one). Exun and the viewer account have no users row and never compete
+# for us, same exclusion as Merch below.
+if not st.session_state.is_exun and not st.session_state.is_viewer and (
+    st.session_state.is_host or current_user_row
+):
+    club_pages.append(st.Page("app_pages/consent_form.py", title="Consent form", icon=":material/description:"))
 if not st.session_state.is_exun:
     club_pages.append(st.Page("app_pages/announcements.py", title="Announcements", icon=":material/campaign:"))
 club_pages.append(st.Page("app_pages/meetings.py", title="Meetings", icon=":material/groups:"))
