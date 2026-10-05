@@ -1,7 +1,7 @@
 # Parent's consent form for inter-school events. A student SELECTED for any
 # event at a competition gets a printable, pre-filled copy of the school's
 # own form starting 2 days before the competition. They check the details
-# (everything is editable), download it, have a guardian fill in and sign
+# (only the date is editable), download it, have a guardian fill in and sign
 # the rest by hand, and bring it on the day. The fill-in itself lives in
 # consent_docx.py; this page is just the gate, the confirm step and the
 # download.
@@ -59,7 +59,7 @@ else:
     target_id = current_user_id
 
 st.caption(
-    "Fill in and check the details below, download the form, print it, have your guardian complete "
+    "Check the details below (the date is the only thing you can change), download the form, print it, have your guardian complete "
     "and sign the rest, and **bring it with you on the day of the event**."
 )
 
@@ -97,14 +97,20 @@ for comp in mine:
             st.caption(f"Host preview — it opens for the student on {opens_on.strftime('%d %b')}.")
 
         key = f"{comp['competition_id']}_{target_id}"
-        name = st.text_input("Student name", value=student.get("name") or "", key=f"consent_name_{key}")
+        # Fixed, not editable: these come straight from the student's own
+        # account and the competition record, so a form can't be made out
+        # for a different name, class or event. Only the date can change.
+        name = student.get("name") or ""
+        grade = str(student.get("grade") or "")
+        section = student.get("section") or ""
+        admission_no = student.get("admission_no") or ""
+        competition_name = comp["name"]
+        st.text_input("Student name", value=name, disabled=True, key=f"consent_name_{key}")
         grade_col, section_col, adm_col = st.columns(3)
-        grade = grade_col.text_input("Class", value=str(student.get("grade") or ""), key=f"consent_grade_{key}")
-        section = section_col.text_input("Section", value=student.get("section") or "", key=f"consent_section_{key}")
-        admission_no = adm_col.text_input(
-            "Admission no.", value=student.get("admission_no") or "", key=f"consent_adm_{key}",
-        )
-        competition_name = st.text_input("Name of the competition", value=comp["name"], key=f"consent_comp_{key}")
+        grade_col.text_input("Class", value=grade, disabled=True, key=f"consent_grade_{key}")
+        section_col.text_input("Section", value=section, disabled=True, key=f"consent_section_{key}")
+        adm_col.text_input("Admission no.", value=admission_no, disabled=True, key=f"consent_adm_{key}")
+        st.text_input("Name of the competition", value=competition_name, disabled=True, key=f"consent_comp_{key}")
         chosen_date = st.date_input(
             "Date you're competing", value=comp_date, key=f"consent_date_{key}",
             help="Competing on a different day (for example day 2 of a two-day event)? Change it here.",
@@ -115,7 +121,10 @@ for comp in mine:
             ("name", name), ("class", grade), ("section", section), ("admission number", admission_no),
         ) if not value.strip()]
         if missing:
-            st.warning(f"Missing: {', '.join(missing)} — fill it in above, or it'll be blank on the form.")
+            st.warning(
+                f"Your account is missing: {', '.join(missing)}. Ask a host to update your details "
+                "on the Members page, then reload — until then it'll be blank on the form."
+            )
 
         confirmed = st.checkbox(
             "I've checked these details and the date are correct", key=f"consent_confirm_{key}",
