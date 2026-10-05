@@ -105,12 +105,14 @@ for comp in mine:
         section = student.get("section") or ""
         admission_no = student.get("admission_no") or ""
         competition_name = comp["name"]
+        venue = (comp.get("venue") or "").strip()
         st.text_input("Student name", value=name, disabled=True, key=f"consent_name_{key}")
         grade_col, section_col, adm_col = st.columns(3)
         grade_col.text_input("Class", value=grade, disabled=True, key=f"consent_grade_{key}")
         section_col.text_input("Section", value=section, disabled=True, key=f"consent_section_{key}")
         adm_col.text_input("Admission no.", value=admission_no, disabled=True, key=f"consent_adm_{key}")
         st.text_input("Name of the competition", value=competition_name, disabled=True, key=f"consent_comp_{key}")
+        st.text_input("Venue", value=venue, disabled=True, key=f"consent_venue_{key}")
         chosen_date = st.date_input(
             "Date you're competing", value=comp_date, key=f"consent_date_{key}",
             help="Competing on a different day (for example day 2 of a two-day event)? Change it here.",
@@ -133,13 +135,13 @@ for comp in mine:
             "Download consent form", icon=":material/download:", type="primary",
             data=build_consent_docx(
                 name.strip(), admission_no.strip(), grade.strip(), section.strip(),
-                competition_name.strip(), chosen_date.strftime("%A"), chosen_date.strftime("%d %b %Y"),
+                competition_name.strip(), chosen_date.strftime("%A"), chosen_date.strftime("%d %b %Y"), venue,
             ),
             file_name=f"Consent form - {competition_name.strip() or comp['name']} - {name.strip() or 'student'}.docx",
             mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             disabled=not confirmed, key=f"consent_download_{key}",
         )
         st.caption(
-            "Opens in Word or Google Docs. Your guardian fills in the venue (if blank), their own name, "
-            "relation, mobile, email, the date of consent, and signs."
+            "Opens in Word or Google Docs. Your guardian fills in their own name, relation, mobile, "
+            "email, the date of consent, and signs."
         )

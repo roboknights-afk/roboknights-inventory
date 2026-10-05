@@ -43,15 +43,14 @@ def _run(rpr, text):
     return f'<w:r>{rpr}<w:t xml:space="preserve">{escape(text)}</w:t></w:r>'
 
 
-def build_consent_docx(student_name, admission_no, grade, section, competition, day, date_text):
-    # Venue is deliberately left as the form's own blank (the second-to-last
-    # of the nine): it's long enough that the printed blank is the safer
-    # place for it, and it wasn't asked for.
+def build_consent_docx(student_name, admission_no, grade, section, competition, day, date_text, venue=""):
+    # venue falls back to the form's own printed blank when the competition
+    # has none on record.
     values = [
         student_name, admission_no, grade, section,
         competition,   # "participate in ____ ____ (name of competition)": first blank...
         "",            # ...second blank dropped, the name goes in one
-        None,          # venue: keep the printed blank
+        venue or None, # venue (None keeps the printed blank)
         day, date_text,
     ]
     with zipfile.ZipFile(TEMPLATE_PATH) as src:
@@ -65,6 +64,7 @@ def build_consent_docx(student_name, admission_no, grade, section, competition, 
             raise ValueError("The consent form template changed: its blanks no longer match.")
 
         counter = iter(values)
+        index, venue_filled = [0], [False]
 
         def rebuild(run_match):
             run = run_match.group(0)
@@ -78,8 +78,14 @@ def build_consent_docx(student_name, admission_no, grade, section, competition, 
             out, pos, text = [], 0, texts[0]
             for blank in _BLANK.finditer(text):
                 if blank.start() > pos:
-                    out.append(_run(plain_rpr, text[pos:blank.start()]))
+                    gap = text[pos:blank.start()]
+                    if venue_filled[0]:
+                        gap = re.sub(r" {3,}", " ", gap)
+                        venue_filled[0] = False
+                    out.append(_run(plain_rpr, gap))
                 value = next(counter)
+                venue_filled[0] = index[0] == 6 and bool(value)
+                index[0] += 1
                 if value is None:
                     out.append(_run(plain_rpr, blank.group(0)))
                 elif value != "":
