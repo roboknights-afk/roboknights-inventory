@@ -9,6 +9,7 @@
 # instead, since those need to run on a schedule, not a page view.
 # Announcements moved to their own page (app_pages/announcements.py).
 
+from contextlib import contextmanager
 from datetime import date, datetime
 
 import streamlit as st
@@ -16,13 +17,23 @@ import streamlit as st
 from e2c_import import find_e2c_competition, scan_e2c_sheet
 from shared import (
     EXUN_EMAILS, HOST_EMAILS, IST, cached_table, discord_role_tags, get_client, invalidate_cache,
-    notify_if_roster_complete, safe_write, send_discord_message, send_email, send_whatsapp,
+    notify_if_roster_complete, request_nike_list_sync, safe_write, send_discord_message,
+    send_email, send_whatsapp,
 )
 
 # The page-local name everything below already uses — the implementation
 # moved to shared.py so Inventory and the other pages get the same
 # crash-proofing without a second copy to keep in sync.
-_safe_write = safe_write
+#
+# Every write on this page goes through it, so it's also the one place that
+# asks for Nike's List to be rebuilt afterwards (volunteering, withdrawing,
+# selections, edits, imports, status flips — all of it). A read-only
+# account never gets past safe_write's st.stop(), so it never triggers one.
+@contextmanager
+def _safe_write(description, **kwargs):
+    with safe_write(description, **kwargs):
+        yield
+    request_nike_list_sync()
 
 client = get_client()
 is_host = st.session_state.is_host
@@ -1234,7 +1245,7 @@ if st.session_state.volunteer_message:
 # them, so nothing stays stale for long.
 today_ist = datetime.now(IST).date()
 if not is_read_only:
-    with _safe_write("check for newly-past competitions"):
+    with safe_write("check for newly-past competitions"):
         stale_ids = [
             c["competition_id"] for c in cached_table("competitions")
             if not c.get("is_past") and c.get("competition_date")
@@ -1245,6 +1256,7 @@ if not is_read_only:
                 "competition_id", stale_ids
             ).execute()
             invalidate_cache()
+            request_nike_list_sync()  # moves them into the sheet's PAST section
 
 competitions = sorted(
     cached_table("competitions"),

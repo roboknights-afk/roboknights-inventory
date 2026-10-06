@@ -7,6 +7,9 @@ import json
 import os
 import re
 import smtplib
+import subprocess
+import sys
+import threading
 import time
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
@@ -667,6 +670,56 @@ def sync_member_to_clio_sheet(
         ws.insert_row(
             row, index=marker_row - CLIO_ADHOC_GAP_ROWS, inherit_from_before=True,
         )
+
+
+# Nike's List ("2026-27 (bot)" tab) is rebuilt in full from the database by
+# nike_list_sync.py. That script also runs daily on GitHub Actions, but a
+# daily refresh left the sheet stale for up to a day after every volunteer,
+# selection or edit, so the Competitions page now asks for a rebuild right
+# after any change (2026-10-06).
+#
+# It runs the script as a subprocess in a background thread, rather than
+# importing it: the script is a module-level program (it builds and writes
+# on import) and deliberately doesn't import this file. The request is
+# debounced - changes in the next few seconds fold into the same run - and
+# only one rebuild runs at a time, with one more queued if something
+# changed while it was running, so a burst of clicks can't stack up
+# overlapping full-sheet rewrites (the Sheets API rate-limits those).
+_NIKE_SYNC_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "nike_list_sync.py")
+_NIKE_SYNC_DEBOUNCE_SECONDS = 15
+_nike_sync_lock = threading.Lock()
+_nike_sync_state = {"dirty": False, "running": False}
+
+
+def _nike_sync_worker():
+    while True:
+        time.sleep(_NIKE_SYNC_DEBOUNCE_SECONDS)
+        with _nike_sync_lock:
+            if not _nike_sync_state["dirty"]:
+                _nike_sync_state["running"] = False
+                return
+            _nike_sync_state["dirty"] = False
+        try:
+            result = subprocess.run(
+                [sys.executable, _NIKE_SYNC_SCRIPT], capture_output=True, text=True, timeout=300,
+                cwd=os.path.dirname(_NIKE_SYNC_SCRIPT),
+            )
+            if result.returncode != 0:
+                # Not swallowed silently: this project has been bitten by
+                # invisible sync failures before (the Clio sheet).
+                print(f"Nike's List sync failed ({result.returncode}): {result.stderr[-500:]}", file=sys.stderr)
+        except Exception as e:
+            print(f"Nike's List sync could not run: {e!r}", file=sys.stderr)
+
+
+def request_nike_list_sync():
+    # Cheap and non-blocking - safe to call after every write.
+    with _nike_sync_lock:
+        _nike_sync_state["dirty"] = True
+        if _nike_sync_state["running"]:
+            return
+        _nike_sync_state["running"] = True
+    threading.Thread(target=_nike_sync_worker, daemon=True).start()
 
 
 _MERCH_SHEET_STATUS_LABELS = {
