@@ -157,7 +157,10 @@ def render_competition(top, comp):
     links.sort(key=lambda l: (LINK_ORDER.index(l["label"])
                               if l["label"] in LINK_ORDER else 99, l["label"]))
 
-    status = comp.get("priority_label") or ("NOT ATTENDING" if comp.get("not_attending") else "")
+    # "Not attending" has to win over the imported E2C label: a competition
+    # can carry both ("TO BE CONQUERED" came in with the import, then the
+    # club decided not to go), and the sheet kept saying TO BE CONQUERED.
+    status = "NOT ATTENDING" if comp.get("not_attending") else (comp.get("priority_label") or "")
     col_a = [(comp["name"], 22, INK), (comp.get("mode") or "", 22, INK),
              (status, 22, GOLD_DARK), None]
     for text, colour in [
