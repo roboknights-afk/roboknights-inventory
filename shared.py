@@ -766,6 +766,8 @@ _MERCH_SHEET_COLUMN_WIDTHS = [190, 170, 150, 80, 70, 110, 190, 120, 320, 200]
 _MERCH_SHEET_CENTERED_COLUMNS = {3, 4, 5, 6, 7}  # Number, Size, Payment, Status, Merch Role
 _MERCH_SHEET_QUOTE_COLUMN = 8
 _MERCH_SHEET_STATUS_COLUMN = 6
+_MERCH_SHEET_ROLE_COLUMN = 7
+_MERCH_SHEET_ALUMNI_BG = {"red": 0.82, "green": 0.94, "blue": 0.92}
 
 
 def _merch_sheet_range(sheet_id, start_row, end_row, start_col, end_col):
@@ -777,7 +779,7 @@ def _merch_sheet_range(sheet_id, start_row, end_row, start_col, end_col):
     return rng
 
 
-def _merch_sheet_style_requests(sheet_id, num_cols, statuses, existing_banding_ids):
+def _merch_sheet_style_requests(sheet_id, num_cols, statuses, existing_banding_ids, alumni_rows=()):
     # Re-run on every sync, so everything here either SETS a property to a
     # value or first deletes what it's about to re-add (the banding) —
     # nothing can pile up duplicates across thousands of syncs. Order
@@ -917,6 +919,39 @@ def _merch_sheet_style_requests(sheet_id, num_cols, statuses, existing_banding_i
                     }
                 }
             },
+            # 8b. Alumni rows: a soft teal across the whole row (no other
+            #     color on the sheet is teal, so they stand out from the
+            #     zebra stripes and status tints), with the role in bold.
+            #     Set after the banding so the explicit color wins over it.
+            *[
+                request
+                for i in alumni_rows
+                for request in (
+                    {
+                        "repeatCell": {
+                            "range": _merch_sheet_range(
+                                sheet_id, _MERCH_SHEET_FIRST_DATA_ROW + i, _MERCH_SHEET_FIRST_DATA_ROW + i + 1,
+                                0, num_cols,
+                            ),
+                            "cell": {"userEnteredFormat": {"backgroundColor": _MERCH_SHEET_ALUMNI_BG}},
+                            "fields": "userEnteredFormat.backgroundColor",
+                        }
+                    },
+                    {
+                        "repeatCell": {
+                            "range": _merch_sheet_range(
+                                sheet_id, _MERCH_SHEET_FIRST_DATA_ROW + i, _MERCH_SHEET_FIRST_DATA_ROW + i + 1,
+                                _MERCH_SHEET_ROLE_COLUMN, _MERCH_SHEET_ROLE_COLUMN + 1,
+                            ),
+                            "cell": {"userEnteredFormat": {"textFormat": {
+                                "fontFamily": _MERCH_SHEET_FONT, "fontSize": 10, "bold": True,
+                                "foregroundColor": {"red": 0.05, "green": 0.38, "blue": 0.36},
+                            }}},
+                            "fields": "userEnteredFormat.textFormat",
+                        }
+                    },
+                )
+            ],
             # 9. Quotes in italic grey, wrapped so long ones aren't cut off.
             {
                 "repeatCell": {
@@ -1024,10 +1059,15 @@ def sync_merch_orders_to_sheet():
         paid = statuses.count("Paid")
         awaiting = sum(s in ("Awaiting payment review", "Cash payment awaited") for s in statuses)
         rejected = statuses.count("Rejected")
+        alumni_rows = [
+            i for i, row in enumerate(data_rows)
+            if str(row[_MERCH_SHEET_ROLE_COLUMN]).strip().lower() == "alumni"
+        ]
         updated = datetime.now(IST).strftime("%d %b %Y, %I:%M %p IST")
         summary = (
             f"{len(data_rows)} registrations   ·   {paid} paid   ·   {awaiting} awaiting payment   ·   "
-            f"{rejected} rejected   ·   Last updated {updated}"
+            f"{rejected} rejected" + (f"   ·   {len(alumni_rows)} alumni" if alumni_rows else "")
+            + f"   ·   Last updated {updated}"
         )
         blank = [""] * (len(header) - 1)
         rows = [["ROBOKNIGHTS MERCH  —  REGISTRATIONS"] + blank, [summary] + blank, header] + data_rows
@@ -1044,7 +1084,7 @@ def sync_merch_orders_to_sheet():
         ]
         ws.clear()
         ws.update(rows, "A1")
-        sh.batch_update({"requests": _merch_sheet_style_requests(ws.id, len(header), statuses, banding_ids)})
+        sh.batch_update({"requests": _merch_sheet_style_requests(ws.id, len(header), statuses, banding_ids, alumni_rows)})
     except Exception:
         pass
 

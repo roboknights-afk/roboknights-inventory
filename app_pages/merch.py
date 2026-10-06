@@ -637,8 +637,17 @@ def render_manual_entry(d):
         "Status", list(STATUS_LABELS), format_func=lambda s: STATUS_LABELS[s],
         index=list(STATUS_LABELS).index("paid"), key=f"manual_status_{k}",
     )
-    default_role = "" if member is None else ("core" if member.get("role") == "core_member" else "member")
-    merch_role = st.text_input("Merch role", value=default_role, key=f"manual_role_{k}")
+    is_alumni = st.checkbox(
+        "This is an alumnus / alumna", key=f"manual_alumni_{k}",
+        help="Marks the entry as Alumni and highlights its row in the Google Sheet.",
+    )
+    default_role = (
+        "Alumni" if is_alumni
+        else "" if member is None
+        else ("core" if member.get("role") == "core_member" else "member")
+    )
+    # Keyed on the checkbox so ticking it refreshes the suggested role.
+    merch_role = st.text_input("Merch role", value=default_role, key=f"manual_role_{k}_{is_alumni}")
     if st.button("Add registration" if is_host else "Submit for approval", icon=":material/person_add:",
                  type="primary", key=f"manual_submit_{k}"):
         clash = next((x["name"] for x in _fresh_drive_orders(d["drive_id"]) if x["custom_number"] == number), None)
