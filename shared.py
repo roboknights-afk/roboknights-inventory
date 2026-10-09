@@ -1808,6 +1808,68 @@ def custom_discord_send_allowed():
     return True
 
 
+_DISCORD_API = "https://discord.com/api/v10"
+
+
+@st.cache_resource
+def _webhook_channel_ids():
+    return {}
+
+
+def _discord_bot_headers():
+    token = os.environ.get("DISCORD_BOT_TOKEN")
+    return {"Authorization": f"Bot {token}"} if token else None
+
+
+def _discord_channel_id(channel, webhook_url):
+    # A webhook is bound to exactly one channel, so asking it which one is
+    # how the bot learns where to post - no second set of channel ids to
+    # keep in sync with the webhook urls. Cached: it never changes.
+    ids = _webhook_channel_ids()
+    if channel not in ids:
+        try:
+            ids[channel] = requests.get(webhook_url, timeout=10).json().get("channel_id")
+        except Exception:
+            return None
+    return ids.get(channel)
+
+
+def _post_as_bot(channel, webhook_url, content):
+    # Posts as the RoboKnights bot itself (its own name, avatar and role)
+    # instead of through the webhook, which can't carry a role. Returns the
+    # message id, or None so the caller falls back to the webhook - e.g. no
+    # bot token on this host, or the bot can't speak in that channel.
+    headers = _discord_bot_headers()
+    channel_id = _discord_channel_id(channel, webhook_url) if headers else None
+    if not channel_id:
+        return None
+    try:
+        response = requests.post(
+            f"{_DISCORD_API}/channels/{channel_id}/messages",
+            headers=headers, json={"content": content}, timeout=10,
+        )
+        return response.json().get("id") if response.ok else None
+    except Exception:
+        return None
+
+
+def _bot_message_request(method, channel, webhook_url, message_id, **kwargs):
+    # Edit/delete for a message the BOT posted - a webhook can only touch
+    # its own, so the webhook attempt fails on these and lands here.
+    headers = _discord_bot_headers()
+    channel_id = _discord_channel_id(channel, webhook_url) if headers else None
+    if not channel_id:
+        return False
+    try:
+        response = requests.request(
+            method, f"{_DISCORD_API}/channels/{channel_id}/messages/{message_id}",
+            headers=headers, timeout=10, **kwargs,
+        )
+        return response.ok
+    except Exception:
+        return False
+
+
 def send_discord_message(content, channel="competitions"):
     # A Discord Incoming Webhook is a plain HTTP POST — unlike a real bot,
     # it needs no persistent gateway connection or separate 24/7 process,
@@ -1830,17 +1892,19 @@ def send_discord_message(content, channel="competitions"):
         return None
     full_content = f"{content}{discord_message_suffix(channel)}"
     try:
-        response = requests.post(
-            webhook_url,
-            json={
-                "content": full_content,
-                "username": DISCORD_BOT_USERNAME,
-                "avatar_url": DISCORD_BOT_AVATAR_URL,
-            },
-            params={"wait": "true"},
-            timeout=10,
-        )
-        message_id = response.json().get("id")
+        message_id = _post_as_bot(channel, webhook_url, full_content)
+        if not message_id:
+            response = requests.post(
+                webhook_url,
+                json={
+                    "content": full_content,
+                    "username": DISCORD_BOT_USERNAME,
+                    "avatar_url": DISCORD_BOT_AVATAR_URL,
+                },
+                params={"wait": "true"},
+                timeout=10,
+            )
+            message_id = response.json().get("id")
         if message_id:
             get_client().table("discord_messages").insert({
                 "message_id": message_id, "content": full_content, "channel": channel,
@@ -1860,7 +1924,9 @@ def delete_discord_message(channel, message_id):
     if not webhook_url or not message_id:
         return
     try:
-        requests.delete(f"{webhook_url}/messages/{message_id}", timeout=10)
+        response = requests.delete(f"{webhook_url}/messages/{message_id}", timeout=10)
+        if response.status_code >= 400:
+            _bot_message_request("DELETE", channel, webhook_url, message_id)
         get_client().table("discord_messages").delete().eq("message_id", message_id).execute()
     except Exception:
         pass
@@ -1881,7 +1947,9 @@ def edit_discord_message(channel, message_id, new_content):
         response = requests.patch(
             f"{webhook_url}/messages/{message_id}", json={"content": full_content}, timeout=10
         )
-        if response.status_code >= 400:
+        if response.status_code >= 400 and not _bot_message_request(
+            "PATCH", channel, webhook_url, message_id, json={"content": full_content}
+        ):
             return False
         get_client().table("discord_messages").update(
             {"content": full_content}
