@@ -493,8 +493,11 @@ def log_action(action, table_name=None, target=None, summary=None, detail=None,
         _raw_client().table("audit_log").insert(row).execute()
     except Exception:
         # Most likely the audit_log migration has not been run yet. Stay
-        # quiet and stop trying for five minutes.
-        _audit_off_until[0] = time.time() + 300
+        # quiet and stop trying for half a minute - it used to be five
+        # minutes, which made the log look dead right after the migration
+        # was run (2026-10-11). The Audit Log page also clears this the
+        # moment it can read the table.
+        _audit_off_until[0] = time.time() + 30
 
 
 def _audit_record_write(table_name, op, payload, response, filters):

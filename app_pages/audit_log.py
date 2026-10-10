@@ -19,7 +19,9 @@ from datetime import datetime, timedelta, timezone
 
 import streamlit as st
 
-from shared import AUDIT_DEVICE_DATA_DAYS, IST, get_client, today_ist
+from shared import (
+    AUDIT_DEVICE_DATA_DAYS, IST, _audit_actor, _audit_off_until, _raw_client, get_client, today_ist,
+)
 
 is_host = st.session_state.is_host
 
@@ -86,6 +88,10 @@ except Exception:
     )
     st.stop()
 
+# The table is readable, so recording is possible: lift any pause the app
+# put on itself while the table was missing.
+_audit_off_until[0] = 0.0
+
 
 def _ist(timestamp):
     posted = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
@@ -120,6 +126,22 @@ else:
         "Download as CSV", buffer.getvalue(), file_name="audit_log.csv",
         mime="text/csv", icon=":material/download:",
     )
+
+with st.expander("Test the recording", icon=":material/fact_check:"):
+    st.caption(
+        "Writes one test entry under your name, so you can see whether recording works "
+        "and, if it doesn't, why. The entry stays in the log (it can't be deleted)."
+    )
+    if st.button("Write a test entry", icon=":material/play_arrow:", key="audit_selftest"):
+        user_id, email, name = _audit_actor()
+        try:
+            _raw_client().table("audit_log").insert({
+                "actor_user_id": user_id, "actor_email": email, "actor_name": name,
+                "action": "audit.selftest", "summary": f"Test entry written by {name or email or 'unknown'}",
+            }).execute()
+            st.success("Recorded. Change a filter or reload to see it in the table above.")
+        except Exception as e:
+            st.error(f"Couldn't write to the audit log: {str(e)[:300]}")
 
 st.caption(
     f"The Device column (address and browser) appears only on sign-in and sign-out rows and "
