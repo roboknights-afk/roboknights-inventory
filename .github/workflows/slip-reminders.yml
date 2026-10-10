@@ -1,0 +1,35 @@
+name: Slip reminders
+
+# 12:00 AM IST on the day before each competition, the RoboKnights bot asks
+# the Exun-server RoboKnights channel to get the permission slip signed.
+# See send_slip_reminders.py. Its own workflow because every other job in
+# due-reminders.yml runs at daytime hours.
+on:
+  schedule:
+    # 18:30 UTC = 12:00 AM IST - the reminder itself.
+    - cron: "30 18 * * *"
+    # 19:30 UTC = 1:00 AM IST - only matters if the run above was dropped or
+    # failed (GitHub can skip scheduled runs under load). Harmless
+    # otherwise: a competition that already got its reminder is skipped.
+    - cron: "30 19 * * *"
+  workflow_dispatch: # lets us trigger it manually from the Actions tab, for testing
+
+jobs:
+  send-slip-reminders:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install supabase python-dotenv requests
+      - run: python send_slip_reminders.py
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
+          # Add this secret (the Exun RoboKnights channel's id). If it's
+          # missing the script falls back to asking the webhook below which
+          # channel it belongs to - a lookup only, nothing posts through it.
+          DISCORD_EXUN_CHANNEL_ID: ${{ secrets.DISCORD_EXUN_CHANNEL_ID }}
+          DISCORD_EXUN_WEBHOOK_URL: ${{ secrets.DISCORD_EXUN_WEBHOOK_URL }}

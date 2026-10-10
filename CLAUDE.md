@@ -2552,3 +2552,34 @@ where the logged-in account is in `st.session_state`.
 - **Not covered:** the Discord bot (separate VPS process) and the GitHub
   Actions scripts use their own clients and are not audited; their rows
   would show no actor anyway.
+
+## Slip reminders — midnight before every competition (2026-10-11)
+
+Host request: "at 12am 1 day before the comps ... a message goes in the
+Exun server roboknights channel saying hoping the slip for the {event
+name} on {date}{day} is signed, if not then please get it done today
+asap" — then, mid-build: "the message should go by roboknights bot not any
+webhook".
+
+- **`send_slip_reminders.py`** + **`.github/workflows/slip-reminders.yml`**
+  (cron `30 18 * * *` = 12:00 AM IST, plus a `30 19 * * *` fallback in case
+  GitHub drops the first). Standalone like `send_meeting_reminders.py` — no
+  `shared.py` import. Finds competitions whose date is tomorrow (IST) and
+  `not_attending = false`; the "event name" in the wording is the
+  competition name (e.g. "nCrypt 2026"), since a slip is per competition.
+- **Posts as the bot itself** via `DISCORD_BOT_TOKEN` and the REST API —
+  there is deliberately NO webhook fallback (a webhook can't carry the bot's
+  role, and the host asked for the bot). If the bot can't post, nothing is
+  marked sent and the run exits 1 so the failure shows in Actions. The
+  channel id comes from the `DISCORD_EXUN_CHANNEL_ID` secret, or failing
+  that from a GET on `DISCORD_EXUN_WEBHOOK_URL` (lookup only).
+- **"Already sent" is `competitions.slip_reminded_for` (a date)**, not a
+  boolean: it holds the competition date the reminder was for, so editing a
+  competition's date later re-arms it without any page resetting a flag.
+  Migration is at the end of `supabase_schema.sql` — **not yet run**; until
+  it is, the script exits 1 with a message instead of posting.
+- Logs the post to `discord_messages` (channel `exun_rk`) so the Discord
+  Messages page can edit/delete it. A competition added or moved to
+  "tomorrow" after midnight gets no reminder (the next run is the following
+  midnight, by which time it is competition day) — post one by hand.
+- Test: `python send_slip_reminders.py --dry-run --today YYYY-MM-DD`.

@@ -1131,3 +1131,11 @@ create policy audit_log_select on audit_log for select to anon, authenticated us
 -- Who disabled an account, and when, on the account row itself too.
 alter table users add column if not exists disabled_at timestamptz;
 alter table users add column if not exists disabled_by text;
+
+-- Slip reminders (2026-10-11): send_slip_reminders.py posts "hoping the slip
+-- for <competition> on <date> is signed" to the Exun-server RoboKnights
+-- channel at 12 AM IST the day before. This records the competition DATE a
+-- reminder went out for (not a true/false), so a competition whose date is
+-- edited later gets a fresh reminder for the new date. Until this is run the
+-- script refuses to post anything rather than risk repeating itself.
+alter table competitions add column if not exists slip_reminded_for date;
