@@ -16,8 +16,9 @@ import streamlit as st
 from shared import (
     EXUN_EMAILS, MEETING_EXCLUDED_STAFF_EMAILS, cached_table, get_client, google_calendar_link,
     invalidate_cache, is_meeting_visible, meeting_email_body, meeting_invited_ids,
-    meeting_invitee_rows, notify_meeting_discord, plain_text_from_rich_html, render_rich_html_editor,
-    safe_write, sanitize_rich_html, send_email, send_whatsapp, today_ist, wrap_rich_html_for_storage,
+    meeting_invitee_rows, notify_meeting_discord, plain_text_from_rich_html, relative_days_label,
+    render_rich_html_editor, safe_write, sanitize_rich_html, send_email, send_whatsapp, today_ist,
+    wrap_rich_html_for_storage,
 )
 
 # Meta requires one pre-approved template per DISTINCT message shape, not
@@ -429,27 +430,27 @@ def render_meeting_card(m):
                 st.rerun()
 
         else:
-            title_col, badge_col, edit_col, delete_col = st.columns(
-                [3, 1, 1, 1], vertical_alignment="center"
-            )
-            title_col.markdown(f"### {m['title']}")
-            # Where you stand on this one, without reading the names list —
-            # plus a loud "Today" flag so the one meeting that matters right
-            # now stands out from the rest of the list.
-            if m["meeting_date"] == today_iso:
-                badge_col.badge("Today", color="primary", icon=":material/today:")
-            if already_checked_in:
-                badge_col.badge("Attended", color="green", icon=":material/how_to_reg:")
-            elif already_rsvpd:
-                badge_col.badge("Going", color="green", icon=":material/check:")
-            else:
-                badge_col.badge("Not RSVP'd", color="blue", icon=":material/help:")
+            # Host actions sit behind one "Manage" popover (same as the
+            # Competitions cards) - four columns squeezed the title and
+            # left two cramped buttons. A member just sees the title.
             if is_host:
-                if edit_col.button("Edit", key=f"edit_btn_meeting_{m['meeting_id']}", icon=":material/edit:"):
+                title_col, manage_col = st.columns([5, 1], vertical_alignment="center")
+                edit_col = delete_col = manage_col.popover(
+                    "Manage", icon=":material/settings:", width="stretch"
+                )
+            else:
+                title_col, manage_col = st.container(), None
+            title_col.markdown(f"### {m['title']}")
+            if is_host:
+                if edit_col.button(
+                    "Edit", key=f"edit_btn_meeting_{m['meeting_id']}", icon=":material/edit:",
+                    width="stretch",
+                ):
                     st.session_state.editing_meeting_id = m["meeting_id"]
                     st.rerun()
                 if delete_col.button(
-                    "Delete", key=f"delete_meeting_{m['meeting_id']}", icon=":material/delete:"
+                    "Delete", key=f"delete_meeting_{m['meeting_id']}", icon=":material/delete:",
+                    width="stretch",
                 ):
                     with safe_write(f"delete {m['title']}"):
                         client.table("meetings").delete().eq("meeting_id", m["meeting_id"]).execute()
@@ -457,13 +458,30 @@ def render_meeting_card(m):
                     st.session_state.meeting_message = ("success", f"Deleted {m['title']}.")
                     st.rerun()
 
-            info_bits = [
-                f":material/event: {date.fromisoformat(m['meeting_date']).strftime('%d %b %Y')}"
-            ]
-            if m.get("meeting_time"):
-                # Comes back from Postgres as "HH:MM:SS".
-                info_bits.append(f":material/schedule: {m['meeting_time'][:5]}")
-            st.caption("  •  ".join(info_bits))
+            # Where you stand on this one, when it is and what time - one
+            # row of badges instead of a grey caption, with a loud "Today"
+            # flag so the one meeting that matters right now stands out.
+            meeting_day = date.fromisoformat(m["meeting_date"])
+            days_away = (meeting_day - today_ist()).days
+            when = meeting_day.strftime("%d %b %Y")
+            if days_away > 0:  # "Today" already has its own badge
+                when += f" ({relative_days_label(days_away)})"
+            with st.container(horizontal=True):
+                if m["meeting_date"] == today_iso:
+                    st.badge("Today", color="primary", icon=":material/today:")
+                if already_checked_in:
+                    st.badge("Attended", color="green", icon=":material/how_to_reg:")
+                elif already_rsvpd:
+                    st.badge("Going", color="green", icon=":material/check:")
+                else:
+                    st.badge("Not RSVP'd", color="blue", icon=":material/help:")
+                st.badge(
+                    when, icon=":material/event:",
+                    color="orange" if 0 <= days_away <= 3 else ("gray" if days_away < 0 else "blue"),
+                )
+                if m.get("meeting_time"):
+                    # Comes back from Postgres as "HH:MM:SS".
+                    st.badge(m["meeting_time"][:5], icon=":material/schedule:", color="gray")
 
             # Shown to everyone who can see the meeting, not just the host:
             # if you're in a small invited group it matters that you know
@@ -499,10 +517,13 @@ def render_meeting_card(m):
             if m["meeting_date"] == today_iso and not already_checked_in:
                 st.info(":material/how_to_reg: **This meeting is today** — check in below once you're there.")
 
-            if rsvp_names:
-                st.caption(f":material/group: Going ({len(rsvp_names)}): " + ", ".join(rsvp_names))
-            else:
+            if not rsvp_names:
                 st.caption(":material/group: No one has RSVP'd yet")
+            elif len(rsvp_names) > 6:
+                with st.expander(f"Going ({len(rsvp_names)})", icon=":material/group:"):
+                    st.caption(", ".join(rsvp_names))
+            else:
+                st.caption(f":material/group: Going ({len(rsvp_names)}): " + ", ".join(rsvp_names))
 
             # Exun can see everything above (details, join link, who's
             # going) but never RSVPs or checks in themselves — view only.
