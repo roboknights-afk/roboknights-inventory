@@ -1,4 +1,4 @@
-# Posts a "hoping the permission slip is signed" reminder to the RoboKnights
+# Posts a "hoping the perm slip is signed" reminder to the RoboKnights
 # channel in the Exun server at 12:00 AM IST on the day BEFORE each
 # competition (so a competition on 12 October gets its reminder just after
 # midnight on 11 October).
@@ -37,7 +37,6 @@ load_dotenv()
 
 IST = timezone(timedelta(hours=5, minutes=30))
 DISCORD_API = "https://discord.com/api/v10"
-DISCORD_AUTOMATED_MARKER = "\n\n***This is an automated message***"
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--dry-run", action="store_true")
@@ -81,8 +80,10 @@ def post_as_bot(channel_id, content):
 
 def slip_message(name, comp_date):
     when = f"{comp_date.day} {comp_date:%B}, {comp_date:%A}"
+    # Plain text on purpose: a reminder and nothing else - no emoji, no
+    # link, no "automated message" footer (host's request, 2026-10-11).
     return (
-        f":memo: Hoping the slip for **{name}** on **{when}** is signed. "
+        f"Hoping the perm slip for {name} on {when} is signed. "
         f"If not, please get it done today, ASAP!"
     )
 
@@ -119,7 +120,7 @@ if not channel_id:
 
 failed = False
 for comp in due:
-    content = slip_message(comp["name"], tomorrow) + DISCORD_AUTOMATED_MARKER
+    content = slip_message(comp["name"], tomorrow)
     if args.dry_run:
         print(f"[dry run] would post to channel {channel_id}:\n{content}\n")
         continue

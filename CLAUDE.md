@@ -2582,4 +2582,8 @@ webhook".
   Messages page can edit/delete it. A competition added or moved to
   "tomorrow" after midnight gets no reminder (the next run is the following
   midnight, by which time it is competition day) — post one by hand.
+- **Wording is plain on purpose** (host: "its abt perm slip, no button or
+  anything, js a reminder msg"): "Hoping the perm slip for {competition} on
+  {date}, {weekday} is signed. If not, please get it done today, ASAP!" —
+  no emoji, link or "automated message" footer.
 - Test: `python send_slip_reminders.py --dry-run --today YYYY-MM-DD`.
