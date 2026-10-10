@@ -326,13 +326,18 @@ with browse:
 
     achievements = sorted(all_achievements, key=lambda a: a["created_at"], reverse=True)
 
-    achievement_search = st.text_input(
+    search_col, filter_col = st.columns([2, 1], vertical_alignment="center")
+    achievement_search = search_col.text_input(
         "Search achievements",
         key="achievement_search",
         placeholder="Search by member, competition, event, or position",
         icon=":material/search:",
         label_visibility="collapsed",
     )
+    achievement_scope = filter_col.segmented_control(
+        "Show", ["All", "Mine"], default="All", key="achievement_scope",
+        label_visibility="collapsed",
+    ) or "All"  # deselecting every pill returns None - treat that as "All"
 
     if not achievements:
         st.caption("No achievements logged yet.")
@@ -370,56 +375,87 @@ with browse:
                 )
             }
 
+        if achievement_scope == "Mine":
+            groups = {
+                key: group for key, group in groups.items()
+                if any(a["user_id"] == current_user_id for a in group)
+            }
+
         if not groups:
-            st.caption("No achievements match your search.")
+            st.caption(
+                "You haven't logged a result yet." if achievement_scope == "Mine" and not achievement_search
+                else "No achievements match your search."
+            )
 
         for group in groups.values():
             first = group[0]
             with st.container(border=True, key=f"rkcard_achievement_{first['achievement_id']}"):
-                col1, col2 = st.columns([5, 1], vertical_alignment="center")
                 member_names = ", ".join(user_name_by_id.get(a["user_id"], "Unknown") for a in group)
                 comp_name = comp_name_by_id_all.get(first["competition_id"], "Unknown competition")
                 event_name = event_name_by_id_all.get(first["event_id"], "Unknown event")
-                col1.markdown(f"**{member_names}** — {comp_name} ({event_name})")
-
-                if first.get("position"):
-                    # A medal-colored badge reads much faster than plain text
-                    # when scanning the list — gold (our primary) for a win,
-                    # then per-place colors, grey for everything else
-                    # (finalist, participation, etc.).
-                    pos_lower = first["position"].lower()
-                    if "1st" in pos_lower or "first" in pos_lower or "winner" in pos_lower:
-                        st.badge(first["position"], color="primary", icon=":material/emoji_events:")
-                    elif "2nd" in pos_lower or "second" in pos_lower:
-                        st.badge(first["position"], color="blue", icon=":material/military_tech:")
-                    elif "3rd" in pos_lower or "third" in pos_lower:
-                        st.badge(first["position"], color="orange", icon=":material/military_tech:")
-                    else:
-                        st.badge(first["position"], color="grey", icon=":material/military_tech:")
-                if first.get("media_link"):
-                    st.markdown(f"[View attachment]({first['media_link']})")
 
                 # Only a host, or anyone actually in this result, can remove it
-                # — removing it takes out every teammate's entry together.
+                # - removing it takes out every teammate's entry together.
                 can_delete = is_host or any(a["user_id"] == current_user_id for a in group)
                 if can_delete:
-                    if col2.button("Delete", key=f"delete_achievement_{first['achievement_id']}", icon=":material/delete:"):
-                        with safe_write("delete this achievement"):
-                            for a in group:
-                                client.table("achievements").delete().eq("achievement_id", a["achievement_id"]).execute()
-                            invalidate_cache()
-                        st.session_state.achievement_message = "Deleted."
-                        st.rerun()
+                    head_col, manage_col = st.columns([5, 1], vertical_alignment="center")
+                else:
+                    head_col, manage_col = st.container(), None
 
-                # Approving/declining for the website happens in one place now
-                # — the host-only "Website" page — rather than scattered
-                # across every card here. A small status badge is enough
-                # context on this page; the review queue is where it's
-                # actually acted on.
-                status = first.get("website_status") or "pending"
-                if status == "approved":
-                    st.caption(":material/public: On the website")
-                elif status == "declined":
-                    st.caption(":material/public_off: Declined for the website")
-                elif is_host:
-                    st.caption(":material/hourglass_empty: Waiting for review on the Website page")
+                # The event is what was won, so it leads; who and where
+                # follow underneath.
+                head_col.markdown(f"**{event_name}** · {comp_name}")
+                head_col.caption(f":material/group: {member_names}")
+
+                # One row of badges: how it went, at what level, and where it
+                # stands for the website - plus the attachment, if any.
+                with st.container(horizontal=True):
+                    if first.get("position"):
+                        # A medal-colored badge reads much faster than plain
+                        # text when scanning the list - gold (our primary)
+                        # for a win, then per-place colors, grey for
+                        # everything else (finalist, participation, etc.).
+                        pos_lower = first["position"].lower()
+                        if "1st" in pos_lower or "first" in pos_lower or "winner" in pos_lower:
+                            st.badge(first["position"], color="primary", icon=":material/emoji_events:")
+                        elif "2nd" in pos_lower or "second" in pos_lower:
+                            st.badge(first["position"], color="blue", icon=":material/military_tech:")
+                        elif "3rd" in pos_lower or "third" in pos_lower:
+                            st.badge(first["position"], color="orange", icon=":material/military_tech:")
+                        else:
+                            st.badge(first["position"], color="grey", icon=":material/military_tech:")
+                    if first.get("level"):
+                        st.badge(first["level"], color="gray", icon=":material/flag:")
+
+                    # Approving/declining for the website happens in one place
+                    # - the host-only "Website" page - so a badge is enough
+                    # context here; the review queue is where it's acted on.
+                    status = first.get("website_status") or "pending"
+                    if status == "approved":
+                        st.badge("On the website", color="green", icon=":material/public:")
+                    elif status == "declined":
+                        st.badge("Declined for the website", color="red", icon=":material/public_off:")
+                    elif is_host:
+                        st.badge("Waiting for review", color="gray", icon=":material/hourglass_empty:")
+
+                    if first.get("media_link"):
+                        media_url = first["media_link"]
+                        st.link_button(
+                            "Attachment",
+                            media_url if media_url.startswith(("http://", "https://")) else "https://" + media_url,
+                            icon=":material/attachment:", type="tertiary",
+                            key=f"achievement_link_{first['achievement_id']}",
+                        )
+
+                if manage_col is not None:
+                    with manage_col.popover("Manage", icon=":material/settings:", width="stretch"):
+                        if st.button(
+                            "Delete", key=f"delete_achievement_{first['achievement_id']}",
+                            icon=":material/delete:", width="stretch",
+                        ):
+                            with safe_write("delete this achievement"):
+                                for a in group:
+                                    client.table("achievements").delete().eq("achievement_id", a["achievement_id"]).execute()
+                                invalidate_cache()
+                            st.session_state.achievement_message = "Deleted."
+                            st.rerun()
