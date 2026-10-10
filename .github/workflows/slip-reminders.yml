@@ -1,7 +1,8 @@
 name: Slip reminders
 
-# 12:00 AM IST on the day before each competition, the RoboKnights bot asks
-# the Exun-server RoboKnights channel to get the permission slip signed.
+# 12:00 AM IST on the day before each competition, the RoboKnights bot checks
+# the club's perm slip Google Doc and tells the Exun-server RoboKnights
+# channel whether the slip is there.
 # See send_slip_reminders.py. Its own workflow because every other job in
 # due-reminders.yml runs at daytime hours.
 on:
@@ -22,7 +23,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install supabase python-dotenv requests
+      - run: pip install supabase python-dotenv requests google-auth
       - run: python send_slip_reminders.py
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
@@ -33,3 +34,8 @@ jobs:
           # channel it belongs to - a lookup only, nothing posts through it.
           DISCORD_EXUN_CHANNEL_ID: ${{ secrets.DISCORD_EXUN_CHANNEL_ID }}
           DISCORD_EXUN_WEBHOOK_URL: ${{ secrets.DISCORD_EXUN_WEBHOOK_URL }}
+          # The perm slip Google Doc (its full url), shared with the service
+          # account below as Viewer. Without these two the script falls back
+          # to just asking whether the slip is signed.
+          PERM_SLIP_DOC_URL: ${{ secrets.PERM_SLIP_DOC_URL }}
+          GOOGLE_SERVICE_ACCOUNT_JSON_B64: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON_B64 }}

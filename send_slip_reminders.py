@@ -1,7 +1,15 @@
-# Posts a "hoping the perm slip is signed" reminder to the RoboKnights
-# channel in the Exun server at 12:00 AM IST on the day BEFORE each
-# competition (so a competition on 12 October gets its reminder just after
-# midnight on 11 October).
+# At 12:00 AM IST on the day BEFORE each competition (so a competition on 12
+# October is checked just after midnight on 11 October), looks in the club's
+# perm slip Google Doc and tells the RoboKnights channel in the Exun server
+# whether that competition's slip is there - or, if no doc is configured,
+# just asks whether it has been signed. Competitions marked not-attending
+# are skipped.
+#
+# The doc check lives in perm_slip_check.py: the competition's block must
+# have Event, Organising, Mode and Date filled and at least 2 names listed.
+# The bot reads the doc as the Google service account, which has Viewer
+# access only. It never prints or posts a student's details - the repo and
+# its Actions logs are public.
 #
 # Like send_meeting_reminders.py this is NOT part of app.py: it runs from a
 # GitHub Actions schedule (.github/workflows/slip-reminders.yml) whether or
@@ -17,11 +25,14 @@
 # "Sent already" is competitions.slip_reminded_for: the competition date a
 # reminder went out for. Storing the date rather than a true/false means a
 # competition whose date is edited afterwards gets a fresh reminder for the
-# new date without any page having to remember to reset a flag.
+# new date without any page having to remember to reset a flag. If the doc
+# can't be read, NOTHING is posted (a wrong "isn't there" would be worse than
+# silence) and the run fails so it shows in Actions; the 1 AM run retries.
 #
-# To test on your own laptop (needs the same .env app.py uses):
+# To test on your own laptop (needs the same .env app.py uses, plus
+# PERM_SLIP_DOC_URL and GOOGLE_SERVICE_ACCOUNT_JSON_B64):
 #   python send_slip_reminders.py --dry-run
-#   python send_slip_reminders.py --dry-run --today 2026-10-23
+#   python send_slip_reminders.py --dry-run --today 2026-10-11
 # --dry-run prints what would be posted and posts nothing, marks nothing.
 
 import argparse
@@ -32,6 +43,8 @@ from datetime import date, datetime, timedelta, timezone
 import requests
 from dotenv import load_dotenv
 from supabase import create_client
+
+import perm_slip_check
 
 load_dotenv()
 
@@ -78,35 +91,67 @@ def post_as_bot(channel_id, content):
     return response.json().get("id")
 
 
-def slip_message(name, comp_date):
-    when = f"{comp_date.day} {comp_date:%B}, {comp_date:%A}"
+def _when(comp_date):
+    return f"{comp_date.day} {comp_date:%B}, {comp_date:%A}"
+
+
+def slip_message(name, comp_date, verdict=None, missing=()):
     # Plain text on purpose: a reminder and nothing else - no emoji, no
     # link, no "automated message" footer (host's request, 2026-10-11).
+    # verdict None = no perm slip doc configured: just ask if it is signed.
+    when = _when(comp_date)
+    if verdict == "ready":
+        return f"The perm slip for {name} on {when} is there, kindly check."
+    if verdict == "incomplete":
+        return (
+            f"The perm slip for {name} on {when} isn't complete yet "
+            f"(missing: {', '.join(missing)}), kindly check ASAP."
+        )
+    if verdict == "missing":
+        return f"The perm slip for {name} on {when} isn't there, kindly check ASAP."
     return (
         f"Hoping the perm slip for {name} on {when} is signed. "
         f"If not, please get it done today, ASAP!"
     )
 
 
+def selected_count(competition_id):
+    # How many students are selected for the competition, so a competition
+    # sending a single student isn't told its slip is incomplete for having
+    # one name instead of two.
+    events = client.table("competition_events").select("event_id").eq("competition_id", competition_id).execute().data
+    ids = [e["event_id"] for e in events]
+    if not ids:
+        return 0
+    rows = client.table("event_volunteers").select("user_id").in_("event_id", ids).eq("selected", True).execute().data
+    return len({r["user_id"] for r in rows})
+
+
 today = date.fromisoformat(args.today) if args.today else datetime.now(IST).date()
 tomorrow = today + timedelta(days=1)
 
 # Not-attending competitions are skipped: nobody is being sent, so no slip.
+def read_competitions(columns):
+    return (
+        client.table("competitions").select(columns)
+        .eq("competition_date", tomorrow.isoformat()).eq("not_attending", False)
+        .execute().data
+    )
+
+
 try:
-    competitions = (
-        client.table("competitions")
-        .select("competition_id, name, competition_date, slip_reminded_for")
-        .eq("competition_date", tomorrow.isoformat())
-        .eq("not_attending", False)
-        .execute()
-        .data
-    )
+    competitions = read_competitions("competition_id, name, competition_date, slip_reminded_for")
 except Exception as e:
-    print(
-        "Couldn't read competitions. If this mentions slip_reminded_for, the migration at the "
-        f"end of supabase_schema.sql hasn't been run yet. ({str(e)[:200]})"
-    )
-    sys.exit(1)
+    if args.dry_run:
+        # So the check can be tried before the slip_reminded_for migration.
+        print("(slip_reminded_for doesn't exist yet - treating everything as not reminded)")
+        competitions = read_competitions("competition_id, name, competition_date")
+    else:
+        print(
+            "Couldn't read competitions. If this mentions slip_reminded_for, the migration at the "
+            f"end of supabase_schema.sql hasn't been run yet. ({str(e)[:200]})"
+        )
+        sys.exit(1)
 
 due = [c for c in competitions if c.get("slip_reminded_for") != tomorrow.isoformat()]
 if not due:
@@ -118,9 +163,29 @@ if not channel_id:
     print("Can't tell which channel to post in: set DISCORD_EXUN_CHANNEL_ID (or DISCORD_EXUN_WEBHOOK_URL).")
     sys.exit(1)
 
+doc_url = os.environ.get("PERM_SLIP_DOC_URL")
+service_account = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON_B64")
+blocks = None
+if doc_url and service_account:
+    try:
+        blocks = perm_slip_check.parse_blocks(
+            perm_slip_check.fetch_doc(perm_slip_check.doc_id_from_url(doc_url), service_account)
+        )
+        print(f"Read the perm slip doc: {len(blocks)} competition block(s).")
+    except Exception as e:
+        print(f"Couldn't read the perm slip doc, so nothing was posted ({str(e)[:300]}).")
+        sys.exit(1)
+else:
+    print("PERM_SLIP_DOC_URL / GOOGLE_SERVICE_ACCOUNT_JSON_B64 not set - asking whether the slip is signed instead.")
+
 failed = False
 for comp in due:
-    content = slip_message(comp["name"], tomorrow)
+    verdict, missing = None, []
+    if blocks is not None:
+        needed = min(perm_slip_check.MIN_NAMES, max(1, selected_count(comp["competition_id"])))
+        verdict, missing = perm_slip_check.judge(comp["name"], tomorrow, blocks, needed)
+        print(f"{comp['name']}: slip {verdict}{' - missing ' + ', '.join(missing) if missing else ''}")
+    content = slip_message(comp["name"], tomorrow, verdict, missing)
     if args.dry_run:
         print(f"[dry run] would post to channel {channel_id}:\n{content}\n")
         continue

@@ -2586,4 +2586,32 @@ webhook".
   anything, js a reminder msg"): "Hoping the perm slip for {competition} on
   {date}, {weekday} is signed. If not, please get it done today, ASAP!" —
   no emoji, link or "automated message" footer.
+- **Follow-up (same day): it now CHECKS the perm slip Google Doc.** Host:
+  "give view only access to rk bot for perm slip google docs document, where
+  it automatically checks if the perm slip is ready with all details filled
+  1 day before ... and for events not going this shouldn't work."
+  `perm_slip_check.py` (new, no Streamlit) reads the one shared doc
+  ("Inter School Event Permissions 2026-27") through the Google Docs API as
+  the service account (`roboknights-clio@roboknights-dashboard.iam...`,
+  Viewer, scope `documents.readonly`; the Docs API had to be enabled in the
+  Google Cloud project). The doc is one block per competition: a 6x2
+  Event/Organising/Mode/Date/On-Duty Staff/Department table, then a
+  participants table (S No | Adm. No. | Name | ...), sometimes a second one.
+  **Ready = Event, Organising, Mode, Date filled and at least 2 names**
+  (`MIN_NAMES`; lowered to the number selected on the dashboard if that is
+  fewer, so a one-student competition isn't flagged). A block belongs to a
+  competition when its Event is >= 0.6 similar to the dashboard name and its
+  Date, if readable, equals the competition date. Messages (plain): "...is
+  there, kindly check." / "...isn't there, kindly check ASAP." / "...isn't
+  complete yet (missing: ...), kindly check ASAP." Signatures are not
+  checkable and not checked.
+- **Config:** secrets `PERM_SLIP_DOC_URL` (the doc url) and
+  `GOOGLE_SERVICE_ACCOUNT_JSON_B64` (already there for Nike's List). With
+  either missing the script falls back to the old "hoping it is signed"
+  text. If the doc can't be read it posts NOTHING and exits 1 (a wrong
+  "isn't there" is worse than silence).
+- **Privacy:** the doc holds students' names and phone numbers and the repo
+  and its Actions logs are public. `perm_slip_check.py` only ever counts
+  names; nothing may print or post a participant's details. The doc url is a
+  secret, not hardcoded.
 - Test: `python send_slip_reminders.py --dry-run --today YYYY-MM-DD`.
