@@ -17,9 +17,11 @@ import streamlit as st
 from e2c_import import find_e2c_competition, scan_e2c_sheet
 from shared import (
     EXUN_EMAILS, HOST_EMAILS, IST, cached_table, discord_role_tags, get_client, invalidate_cache,
-    notify_if_roster_complete, request_nike_list_sync, safe_write, send_discord_message,
-    send_email, send_whatsapp,
+    notify_if_roster_complete, relative_days_label, request_nike_list_sync, safe_write,
+    send_discord_message, send_email, send_whatsapp,
 )
+
+_relative_days = relative_days_label
 
 # The page-local name everything below already uses — the implementation
 # moved to shared.py so Inventory and the other pages get the same
@@ -1678,18 +1680,6 @@ def render_finalize_dialog(comp, e, event_volunteers, cap, label_by_uid):
 
 # --- Small display helpers for the cards --------------------------------------
 _MODE_BADGE_COLOR = {"offline": "blue", "online": "green", "hybrid": "violet"}
-
-
-def _relative_days(days):
-    if days == 0:
-        return "today"
-    if days == 1:
-        return "tomorrow"
-    if days > 1:
-        return f"in {days} days"
-    if days == -1:
-        return "yesterday"
-    return f"{-days} days ago"
 
 
 def _link_icon(label):

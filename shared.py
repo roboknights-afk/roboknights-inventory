@@ -1767,6 +1767,20 @@ def is_meeting_visible(meeting, invited_by_meeting, user_id, is_host=False, is_e
 IST = timezone(timedelta(hours=5, minutes=30))
 
 
+def relative_days_label(days):
+    # "today" / "tomorrow" / "in 5 days" / "3 days ago" - for badges that
+    # tell a member how close something is without making them count.
+    if days == 0:
+        return "today"
+    if days == 1:
+        return "tomorrow"
+    if days > 1:
+        return f"in {days} days"
+    if days == -1:
+        return "yesterday"
+    return f"{-days} days ago"
+
+
 def today_ist():
     # "Today" as the people using this app experience it — NOT the
     # server's own date. Streamlit Cloud and GitHub Actions both run in

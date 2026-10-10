@@ -17,7 +17,7 @@ import streamlit as st
 
 from shared import (
     cached_table, format_ist, get_client, invalidate_cache, is_meeting_visible,
-    meeting_invited_ids, meeting_invitee_rows, safe_write, today_ist,
+    meeting_invited_ids, meeting_invitee_rows, relative_days_label, safe_write, today_ist,
 )
 
 # Read-only page — every table it needs goes through the shared 8-second
@@ -167,8 +167,6 @@ m4.metric(
     help="Upcoming events you've volunteered for or been selected for",
 )
 
-st.divider()
-
 feed_col, side_col = st.columns([2, 1], gap="medium")
 
 
@@ -246,10 +244,28 @@ with feed_col:
                 else:
                     badge_col.badge("Volunteered", color="violet", icon=":material/front_hand:")
                 comp_date = comp.get("competition_date")
-                date_label = (
-                    date.fromisoformat(comp_date).strftime("%d %b %Y") if comp_date else "date TBD"
-                )
-                st.caption(f":material/event: {date_label}   •   :material/location_on: {comp.get('venue') or 'venue TBD'}")
+                date_badge = ":gray-badge[:material/event: date TBD]"
+                days_away = None
+                if comp_date:
+                    comp_day = date.fromisoformat(comp_date)
+                    days_away = (comp_day - today).days
+                    date_badge = (
+                        f":{'orange' if 0 <= days_away <= 3 else 'blue'}-badge"
+                        f"[:material/event: {comp_day.strftime('%d %b %Y')} ({relative_days_label(days_away)})]"
+                    )
+                st.markdown(date_badge)
+                st.caption(f":material/location_on: {comp.get('venue') or 'venue TBD'}")
+                # The consent form opens 2 days before and members kept
+                # asking where it was - so say so right here, for the ones
+                # it applies to (selected, form open, a real student account).
+                if (
+                    v.get("selected") and days_away is not None and 0 <= days_away <= 2
+                    and not (is_read_only or is_exun or is_viewer)
+                ):
+                    st.page_link(
+                        "app_pages/consent_form.py", label="Your consent form is open",
+                        icon=":material/description:",
+                    )
         st.page_link("app_pages/competitions.py", label="All competitions", icon=":material/arrow_forward:")
 
     if my_borrowed:
@@ -274,10 +290,13 @@ with feed_col:
                     badge_col.badge("Going", color="green", icon=":material/check:")
                 else:
                     badge_col.badge("No RSVP", color="blue", icon=":material/help:")
-                when = date.fromisoformat(m["meeting_date"]).strftime("%d %b %Y")
+                meeting_day = date.fromisoformat(m["meeting_date"])
+                when = meeting_day.strftime("%d %b %Y")
                 if m.get("meeting_time"):
                     when += f" at {m['meeting_time']}"
-                st.caption(f":material/event: {when}")
+                st.caption(
+                    f":material/event: {when} ({relative_days_label((meeting_day - today).days)})"
+                )
         st.page_link("app_pages/meetings.py", label="All meetings", icon=":material/arrow_forward:")
 
 
