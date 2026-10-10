@@ -56,6 +56,13 @@ GRADE_OPTIONS = [7, 8, 9, 10, 11, 12]
 # and set them by hand — not something to force a choice on immediately.
 STANDING_LABELS = {"core_member": "Core member", "member": "Member", "adhoc": "Ad hoc", None: ""}
 STANDING_VALUES = {v: k for k, v in STANDING_LABELS.items()}
+def _is_missing_details(u):
+    # Staff accounts aren't expected to have grade/section/admission no.
+    return not u.get("is_staff") and not (
+        u.get("grade") and u.get("section") and u.get("admission_no") and u.get("phone_no")
+    )
+
+
 m1, m2, m3, m4 = st.columns(4)
 m1.metric("Members", len(users), border=True)
 m2.metric(
@@ -63,11 +70,7 @@ m2.metric(
 )
 m3.metric(
     "Missing details",
-    sum(
-        1 for u in users
-        if not u.get("is_staff")
-        and not (u.get("grade") and u.get("section") and u.get("admission_no") and u.get("phone_no"))
-    ),
+    sum(1 for u in users if _is_missing_details(u)),
     border=True,
     help="Students with at least one blank field (staff accounts aren't expected to have grade/section/admission no.)",
 )
@@ -126,6 +129,13 @@ else:
         placeholder="All standings", label_visibility="collapsed",
     )
 
+    # The metrics up top say HOW MANY are missing details / unverified /
+    # disabled; this is how to get to those people.
+    attention_filter = st.segmented_control(
+        "Needs attention", ["All", "Missing details", "Not verified", "Disabled"],
+        default="All", key="member_attention_filter", label_visibility="collapsed",
+    ) or "All"  # deselecting every pill returns None - treat that as "All"
+
     visible_users = []
     for u in users:
         haystack = " ".join([
@@ -134,6 +144,12 @@ else:
         if member_search and member_search.lower() not in haystack:
             continue
         if grade_filter and u.get("grade") not in grade_filter:
+            continue
+        if attention_filter == "Missing details" and not _is_missing_details(u):
+            continue
+        if attention_filter == "Not verified" and (u.get("details_verified") or u.get("is_staff")):
+            continue
+        if attention_filter == "Disabled" and not u.get("is_disabled"):
             continue
         if standing_filter:
             label = STANDING_LABELS.get(u.get("role")) or "Not set"
@@ -167,7 +183,6 @@ else:
             # way until they choose otherwise).
             "Photo": bool(u.get("photo_path")),
             "On site": bool(u.get("photo_public")),
-            "Note": "⚠️ Account disabled" if u.get("is_disabled") else "",
             "Disabled": bool(u.get("is_disabled")),
         }
         for u in visible_users
@@ -182,7 +197,10 @@ else:
     if is_read_only:
         # View-only tiers: the same roster a host sees (minus the private
         # columns for viewers, per above), with no editing at all.
-        st.dataframe(table_rows, hide_index=True, width="stretch")
+        st.dataframe(
+            table_rows, hide_index=True, width="stretch",
+            column_config={"Name": st.column_config.TextColumn("Name", pinned=True)},
+        )
     else:
         # Editable straight in the table. num_rows="fixed" so hosts can't
         # add/delete rows here — a "member" only ever comes from someone
@@ -193,7 +211,7 @@ else:
             width="stretch",
             num_rows="fixed",
             column_config={
-                "Name": st.column_config.TextColumn("Name", width="medium"),
+                "Name": st.column_config.TextColumn("Name", width="medium", pinned=True),
                 "Role": st.column_config.TextColumn("Role", width="small", disabled=True),
                 "Standing": st.column_config.SelectboxColumn(
                     "Standing", width="small",
@@ -228,7 +246,6 @@ else:
                          "on Your profile. Not the same as Photo: someone can upload one "
                          "and keep it dashboard-only.",
                 ),
-                "Note": st.column_config.TextColumn("Note", width="medium", disabled=True),
                 "Disabled": st.column_config.CheckboxColumn(
                     "Disabled", width="small",
                     help="Blocks them from logging in entirely (they see \"account disabled, "
@@ -292,7 +309,6 @@ else:
             )
             st.rerun()
 
-        st.divider()
         with st.expander(":material/person_remove: Delete a member"):
             st.caption(
                 "Removes their profile from this app only — it does **not** delete their "
