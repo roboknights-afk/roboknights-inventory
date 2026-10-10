@@ -31,6 +31,7 @@ load_dotenv()
 from shared import (
     APP_URL, EXUN_CHANNEL_MEMBERS, EXUN_EMAILS, HOST_EMAILS, HOST_ROLES, VIEWER_EMAILS, cached_table,
     get_client, has_unread_chats, has_unread_exun_channel, has_unread_queries, invalidate_cache,
+    _audit_purge_device_data, log_action, request_client_info,
     safe_write, send_email,
     sync_member_to_clio_sheet,
 )
@@ -1201,6 +1202,16 @@ _disabled_row = next(
     (u for u in cached_table("users") if u["user_id"] == st.session_state.auth_user["id"]), None
 )
 if _disabled_row and _disabled_row.get("is_disabled"):
+    # Recorded once per browser session, so a disabled account hammering
+    # the page does not flood the log. Written BEFORE auth_user is cleared:
+    # the row has to name the account that tried.
+    if not st.session_state.get("audit_blocked_logged"):
+        st.session_state.audit_blocked_logged = True
+        _ip, _agent = request_client_info()
+        log_action(
+            "session.blocked_disabled", "session", st.session_state.auth_user["email"],
+            "A disabled account tried to sign in", client_ip=_ip, user_agent=_agent,
+        )
     st.session_state.auth_user = None
     _clear_remember_token()
     st.error("This account has been disabled. Please contact the admin.")
@@ -1250,6 +1261,19 @@ st.session_state.current_user_id = st.session_state.auth_user["id"]
 st.session_state.current_user_name = st.session_state.user_name_by_id.get(
     st.session_state.current_user_id, st.session_state.auth_user["email"]
 )
+
+# Sign-in record: once per browser session, here rather than in each of the
+# login paths (password, Google, "remember me") so none can be missed. The
+# visitor's address and browser are kept only on these rows, and wiped
+# after AUDIT_DEVICE_DATA_DAYS.
+if not st.session_state.get("audit_login_logged"):
+    st.session_state.audit_login_logged = True
+    _ip, _agent = request_client_info()
+    log_action(
+        "session.login", "session", st.session_state.auth_user["email"],
+        "Signed in to the dashboard", client_ip=_ip, user_agent=_agent,
+    )
+    _audit_purge_device_data()
 st.session_state.current_user_grade = st.session_state.user_grade_by_id.get(st.session_state.current_user_id)
 st.session_state.current_user_is_staff = st.session_state.user_is_staff_by_id.get(st.session_state.current_user_id, False)
 st.session_state.is_host = st.session_state.auth_user["email"] in HOST_EMAILS
@@ -1485,6 +1509,12 @@ with st.sidebar:
 
         st.divider()
         if st.button("Log out", icon=":material/logout:", width="stretch"):
+            _ip, _agent = request_client_info()
+            log_action(
+                "session.logout", "session", st.session_state.auth_user["email"],
+                "Signed out of the dashboard", client_ip=_ip, user_agent=_agent,
+            )
+            st.session_state.audit_login_logged = False
             client.auth.sign_out()
             st.session_state.auth_user = None
             # A logout should genuinely log out — without this, "remember
@@ -1795,6 +1825,8 @@ if st.session_state.is_host:
     # Assistant page), so a bad answer can be looked at without opening
     # Supabase directly.
     host_pages.append(st.Page("app_pages/ai_logs.py", title="AI Logs", icon=":material/history:"))
+    # Who changed what, and when - every dashboard write, plus sign-ins.
+    host_pages.append(st.Page("app_pages/audit_log.py", title="Audit Log", icon=":material/policy:"))
 
 # "Exun Channel": the private RoboKnights <> Exun channel — only the
 # specific hand-picked people in EXUN_CHANNEL_MEMBERS ever see this page

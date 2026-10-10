@@ -2505,3 +2505,50 @@ feature now, not ruled out.)
    directly. Verify features another way instead: direct database
    queries that replicate the exact app logic, or ask the student to
    test and report back.
+
+## Audit trail — who changed what, and when (2026-10-10)
+
+Built after a member's account was disabled and nobody could say when or by
+whom. The Members page stored a bare `is_disabled` true/false. Every write
+from this app reaches Supabase through ONE shared key, so Supabase's own
+logs cannot tell one host from another (and keep only ~a day); its auth
+sessions record the Streamlit Cloud server's IP and `python-httpx`, never
+the person's device. **The only place "who" is knowable is in the app**,
+where the logged-in account is in `st.session_state`.
+
+- **`get_client()` now returns `AuditedClient`** (shared.py), which wraps
+  every insert/update/delete/upsert and records it to `audit_log` after it
+  succeeds. Wrapping the client — not editing ~150 write sites — means a
+  write added later is recorded automatically. `_raw_client()` is the
+  unwrapped one; the audit insert itself uses it.
+- **`log_action()`** records the rest: sign-in/out (once per browser
+  session, in `app.py` where `current_user_id` is set, so password, Google
+  and "remember me" are all covered), blocked sign-ins by disabled
+  accounts, and Discord posts/edits/deletes sent from the dashboard.
+- **Skipped on purpose** (`AUDIT_SKIP_TABLES`): the log itself, private
+  conversation content (queries, chats, Exun channel), and click-noise
+  (RSVPs, read receipts). Member personal details (phone, admission no.,
+  emails, links) log only that they changed, never the value; long text
+  logs its size.
+- **Best-effort, like every sender here:** a failure to record never fails
+  a real save. If the migration hasn't been run, recording switches itself
+  off for 5 minutes at a time. Tested against the real database with the
+  table absent: writes still succeed.
+- **Host-only "Audit Log" page** (`app_pages/audit_log.py`), IST, filters,
+  CSV. Read-only.
+- **Device data** (address + browser) is stored on sign-in/out rows only
+  and blanked after `AUDIT_DEVICE_DATA_DAYS` (60) by
+  `_audit_purge_device_data()`, using the service-role client. It is the
+  app server's view of the request headers: a hint about which browser a
+  session used, **never proof of who a person is** — don't present it as
+  such.
+- **Append-only for the normal key** via RLS (insert + select policies, no
+  update/delete) — in the migration at the end of `supabase_schema.sql`,
+  which also adds `users.disabled_at`/`disabled_by`. Members.py only writes
+  those two columns if they exist on the fetched row, since an unknown
+  column would fail the whole save.
+- **Not yet run:** that migration needs running in the Supabase SQL editor
+  before anything is recorded.
+- **Not covered:** the Discord bot (separate VPS process) and the GitHub
+  Actions scripts use their own clients and are not audited; their rows
+  would show no actor anyway.

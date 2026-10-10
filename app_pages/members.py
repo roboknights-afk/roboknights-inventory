@@ -5,6 +5,8 @@
 # but guarded here too in case someone hits the URL directly, since that's
 # the one thing st.navigation's page list alone doesn't stop.
 
+from datetime import datetime, timezone
+
 import streamlit as st
 
 from shared import cached_table, get_client, invalidate_cache, safe_write
@@ -267,6 +269,17 @@ else:
                         updates["details_verified"] = edited["Verified"]
                     if edited["Disabled"] != bool(original.get("is_disabled")):
                         updates["is_disabled"] = edited["Disabled"]
+                        # Who and when, on the row itself as well as in the
+                        # audit log. Only written if the migration that adds
+                        # these columns has been run - an unknown column
+                        # would fail the whole save.
+                        if "disabled_at" in original:
+                            updates["disabled_at"] = (
+                                datetime.now(timezone.utc).isoformat() if edited["Disabled"] else None
+                            )
+                            updates["disabled_by"] = (
+                                st.session_state.auth_user["email"] if edited["Disabled"] else None
+                            )
 
                     if updates:
                         client.table("users").update(updates).eq("user_id", original["user_id"]).execute()

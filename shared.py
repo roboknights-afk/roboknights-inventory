@@ -326,11 +326,275 @@ WHATSAPP_HELP_NUMBER = os.environ.get("WHATSAPP_HELP_NUMBER", "")
 
 
 @st.cache_resource
+def _raw_client():
+    # The plain Supabase client. Kept separate so the audit trail below can
+    # write its own rows without going back through the audited wrapper.
+    return create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
+
+
+@st.cache_resource
 def get_client():
     # Talks to Supabase over the internet instead of opening a local file.
     # @st.cache_resource means this only actually runs once per app
     # process, not once per page load — Streamlit reuses the same client.
-    return create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
+    #
+    # Returned inside AuditedClient, which behaves exactly like the real
+    # client but records every insert/update/delete/upsert to the
+    # audit_log table (who, what, when). Wrapping the client rather than
+    # editing the ~150 write sites means a new write added later is
+    # recorded without anyone having to remember to.
+    return AuditedClient(_raw_client())
+
+
+# ---------------------------------------------------------------------------
+# Audit trail
+#
+# Why this exists (2026-10-10): a member's account was disabled and there
+# was no way to say when, or by whom. The Members page stored a bare
+# true/false, and every write from this app reaches Supabase through the
+# same shared key, so Supabase's own logs cannot tell one host from
+# another - they only keep about a day, and sign-in rows carry the app
+# server's address, not the person's device. The only place "who" can be
+# known is here, in the app, where the logged-in account is in
+# st.session_state.
+#
+# Everything here is best-effort, like send_email/send_discord_message: a
+# failure to record must never turn a real save into an error. If the
+# audit_log migration has not been run, recording quietly switches itself
+# off for a few minutes at a time instead of failing every write.
+# ---------------------------------------------------------------------------
+
+# Tables whose writes are not recorded. Private conversation content
+# (queries, chats, the Exun channel) is left out on purpose - the log is
+# for "who changed what", not a second copy of people's messages. The rest
+# are either the log itself, plumbing, or one-click noise (RSVPs, read
+# receipts, login handshake rows).
+AUDIT_SKIP_TABLES = {
+    "audit_log", "ai_chat_messages", "discord_channel_log", "discord_messages",
+    "query_messages", "queries", "chat_messages", "chat_threads",
+    "chat_participants", "chat_reads", "exun_channel_messages",
+    "exun_channel_reads", "google_pkce_state", "meeting_rsvps",
+}
+
+# Fields whose VALUE is never written to the log - only that they changed.
+# These are personal details of members, most of them minors.
+_AUDIT_PRIVATE_FIELDS = {
+    "phone_no", "phone_no_2", "personal_email", "admission_no", "email",
+    "photo_path", "instagram", "linkedin", "github", "website",
+    "password", "token", "refresh_token",
+}
+# Long free-text fields: log the size, not the text.
+_AUDIT_TEXT_FIELDS = {
+    "body", "content", "description", "agenda", "details", "note", "notes",
+    "host_notes", "website_note", "summary", "quote",
+}
+
+# Days that the visitor's address/browser (recorded on sign-in events only)
+# is kept before being wiped. The who/what/when rows themselves stay.
+AUDIT_DEVICE_DATA_DAYS = 60
+
+_audit_off_until = [0.0]
+_audit_purged_on = [None]
+_AUDIT_LABEL_KEYS = ("name", "title", "subject", "part_number", "event_name")
+
+
+def request_client_info():
+    # The visitor's address and browser, from the request headers
+    # Streamlit passes along. Used ONLY on sign-in/out events and wiped
+    # after AUDIT_DEVICE_DATA_DAYS - it is personal data about students.
+    try:
+        headers = st.context.headers
+        forwarded = headers.get("X-Forwarded-For") or headers.get("X-Real-Ip") or ""
+        ip = forwarded.split(",")[0].strip() or None
+        agent = headers.get("User-Agent")
+        return ip, (agent[:300] if agent else None)
+    except Exception:
+        return None, None
+
+
+def _audit_actor():
+    # Who is acting, read from the logged-in session. Outside a Streamlit
+    # session (a script importing this module) there is no one, and the row
+    # says so rather than guessing.
+    try:
+        auth_user = st.session_state.get("auth_user")
+        if auth_user:
+            return (
+                auth_user.get("id"), auth_user.get("email"),
+                st.session_state.get("current_user_name"),
+            )
+    except Exception:
+        pass
+    return None, None, None
+
+
+def _audit_value(key, value):
+    if key in _AUDIT_PRIVATE_FIELDS:
+        return "(changed)"
+    if key in _AUDIT_TEXT_FIELDS and isinstance(value, str):
+        return f"(text, {len(value)} chars)"
+    if isinstance(value, (dict, list)):
+        text = json.dumps(value, default=str)
+        return text if len(text) <= 120 else f"(data, {len(text)} chars)"
+    if isinstance(value, str) and len(value) > 120:
+        return value[:117] + "..."
+    return value
+
+
+def _audit_describe_rows(rows):
+    # A short human label for each affected row: its name/title if it has
+    # one, plus its id. Capped so a bulk delete cannot write a novel.
+    labels = []
+    for row in (rows or [])[:8]:
+        if not isinstance(row, dict):
+            continue
+        label = next((str(row[k]) for k in _AUDIT_LABEL_KEYS if row.get(k)), None)
+        row_id = next((f"{k}={row[k]}" for k in row if k == "id" or k.endswith("_id")), None)
+        labels.append(" ".join(x for x in (label, f"({row_id})" if row_id else None) if x))
+    if rows and len(rows) > 8:
+        labels.append(f"...and {len(rows) - 8} more")
+    return "; ".join(labels)
+
+
+def _audit_purge_device_data():
+    # Once a day per server process: blank the address/browser on rows
+    # older than AUDIT_DEVICE_DATA_DAYS. Uses the service-role client
+    # because audit_log is append-only for the normal key (see the
+    # migration). Skipped silently if that client is unavailable.
+    today = date.today()
+    if _audit_purged_on[0] == today:
+        return
+    _audit_purged_on[0] = today
+    try:
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=AUDIT_DEVICE_DATA_DAYS)).isoformat()
+        get_storage_client().table("audit_log").update(
+            {"client_ip": None, "user_agent": None}
+        ).lt("at", cutoff).not_.is_("client_ip", "null").execute()
+    except Exception:
+        pass
+
+
+def log_action(action, table_name=None, target=None, summary=None, detail=None,
+               client_ip=None, user_agent=None, actor=None):
+    # Record one audit row. `actor` is (user_id, email, name) and only needs
+    # passing when the acting account is not the one in the session (e.g.
+    # a blocked sign-in by a disabled account).
+    if time.time() < _audit_off_until[0]:
+        return
+    try:
+        user_id, email, name = actor or _audit_actor()
+        row = {
+            "actor_user_id": user_id, "actor_email": email,
+            "actor_name": name, "action": action, "table_name": table_name,
+            "target": (target or "")[:500] or None,
+            "summary": (summary or "")[:1000] or None,
+            "detail": detail, "client_ip": client_ip, "user_agent": user_agent,
+        }
+        _raw_client().table("audit_log").insert(row).execute()
+    except Exception:
+        # Most likely the audit_log migration has not been run yet. Stay
+        # quiet and stop trying for five minutes.
+        _audit_off_until[0] = time.time() + 300
+
+
+def _audit_record_write(table_name, op, payload, response, filters):
+    if table_name in AUDIT_SKIP_TABLES:
+        return
+    rows = getattr(response, "data", None) or []
+    row_labels = _audit_describe_rows(rows)
+    action = f"{table_name}.{op}"
+    summary_parts = []
+    detail = None
+
+    if isinstance(payload, dict):
+        shown = {k: _audit_value(k, v) for k, v in payload.items()}
+        summary_parts.append(", ".join(f"{k}={v}" for k, v in shown.items()))
+        detail = {"set": shown}
+        # Named events for the changes people actually ask about later.
+        if table_name == "users" and op == "update":
+            if "is_disabled" in payload:
+                action = "account.disabled" if payload["is_disabled"] else "account.enabled"
+            elif "role" in payload:
+                action = "account.role_changed"
+    elif isinstance(payload, list):
+        summary_parts.append(f"{len(payload)} rows")
+        detail = {"rows": len(payload)}
+
+    target = row_labels or filters
+    summary = f"{action}: " + "; ".join(x for x in (target, *summary_parts) if x)
+    log_action(action, table_name, target, summary, detail)
+
+
+class _AuditedBuilder:
+    # Wraps a Supabase query builder. Everything (.eq, .in_, .select, ...)
+    # passes straight through; only .execute() additionally records the write.
+    def __init__(self, builder, table_name, op, payload):
+        self._b, self._table, self._op, self._payload = builder, table_name, op, payload
+
+    def __getattr__(self, name):
+        attr = getattr(self._b, name)
+        if not callable(attr):
+            return attr
+
+        def call(*args, **kwargs):
+            result = attr(*args, **kwargs)
+            if result is self._b:
+                return self
+            if hasattr(result, "execute"):
+                return _AuditedBuilder(result, self._table, self._op, self._payload)
+            return result
+        return call
+
+    def execute(self, *args, **kwargs):
+        response = self._b.execute(*args, **kwargs)
+        try:
+            try:
+                filters = str(self._b.request.params)
+            except Exception:
+                filters = ""
+            _audit_record_write(self._table, self._op, self._payload, response, filters)
+        except Exception:
+            pass
+        return response
+
+
+class _AuditedTable:
+    def __init__(self, table, name):
+        self._t, self._name = table, name
+
+    def __getattr__(self, attr):
+        return getattr(self._t, attr)
+
+    def _wrap(self, op, payload, *args, **kwargs):
+        builder = getattr(self._t, op)(payload, *args, **kwargs)
+        return _AuditedBuilder(builder, self._name, op, payload)
+
+    def insert(self, payload, *args, **kwargs):
+        return self._wrap("insert", payload, *args, **kwargs)
+
+    def update(self, payload, *args, **kwargs):
+        return self._wrap("update", payload, *args, **kwargs)
+
+    def upsert(self, payload, *args, **kwargs):
+        return self._wrap("upsert", payload, *args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        builder = self._t.delete(*args, **kwargs)
+        return _AuditedBuilder(builder, self._name, "delete", None)
+
+
+class AuditedClient:
+    # Looks like the Supabase client to every caller (auth, storage, rpc ...
+    # all pass straight through); only .table() is intercepted.
+    def __init__(self, client):
+        self._c = client
+
+    def __getattr__(self, name):
+        return getattr(self._c, name)
+
+    def table(self, name):
+        table = self._c.table(name)
+        return table if name in AUDIT_SKIP_TABLES else _AuditedTable(table, name)
 
 
 @st.cache_resource
@@ -1909,6 +2173,11 @@ def send_discord_message(content, channel="competitions"):
             get_client().table("discord_messages").insert({
                 "message_id": message_id, "content": full_content, "channel": channel,
             }).execute()
+            log_action(
+                "discord.send", "discord", f"{channel} #{message_id}",
+                f"Posted to {channel}: {_audit_value('content', content) if len(content) > 120 else content}",
+                {"channel": channel, "message_id": message_id, "chars": len(content)},
+            )
         return message_id
     except Exception:
         return None
@@ -1928,6 +2197,10 @@ def delete_discord_message(channel, message_id):
         if response.status_code >= 400:
             _bot_message_request("DELETE", channel, webhook_url, message_id)
         get_client().table("discord_messages").delete().eq("message_id", message_id).execute()
+        log_action(
+            "discord.delete", "discord", f"{channel} #{message_id}",
+            f"Deleted a message in {channel}", {"channel": channel, "message_id": message_id},
+        )
     except Exception:
         pass
 
@@ -1954,6 +2227,10 @@ def edit_discord_message(channel, message_id, new_content):
         get_client().table("discord_messages").update(
             {"content": full_content}
         ).eq("message_id", message_id).execute()
+        log_action(
+            "discord.edit", "discord", f"{channel} #{message_id}",
+            f"Edited a message in {channel}", {"channel": channel, "message_id": message_id},
+        )
         return True
     except Exception:
         return False
