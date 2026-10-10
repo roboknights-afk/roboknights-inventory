@@ -13,6 +13,9 @@ on:
     # failed (GitHub can skip scheduled runs under load). Harmless
     # otherwise: a competition that already got its reminder is skipped.
     - cron: "30 19 * * *"
+    # 3:30 UTC = 9:00 AM IST - the early nudge, 4 days before a competition:
+    # make the perm slip and get it signed.
+    - cron: "30 3 * * *"
   workflow_dispatch: # lets us trigger it manually from the Actions tab, for testing
 
 jobs:
@@ -24,7 +27,20 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install supabase python-dotenv requests google-auth
-      - run: python send_slip_reminders.py
+      # Which job runs is picked by the schedule that fired. A manual run
+      # (empty schedule) does both - each is safe to repeat.
+      - name: Early nudge (9am IST)
+        if: github.event.schedule != '30 18 * * *' && github.event.schedule != '30 19 * * *'
+        run: python send_slip_reminders.py --kind early
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
+          DISCORD_EXUN_CHANNEL_ID: ${{ secrets.DISCORD_EXUN_CHANNEL_ID }}
+          DISCORD_EXUN_WEBHOOK_URL: ${{ secrets.DISCORD_EXUN_WEBHOOK_URL }}
+      - name: Day-before slip check (12am IST)
+        if: github.event.schedule != '30 3 * * *'
+        run: python send_slip_reminders.py
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}

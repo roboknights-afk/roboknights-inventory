@@ -2614,4 +2614,20 @@ webhook".
   and its Actions logs are public. `perm_slip_check.py` only ever counts
   names; nothing may print or post a participant's details. The doc url is a
   secret, not hardcoded.
+- **Early nudge, 4 days before (2026-10-11).** Host: "also add a reminder to
+  be sent in roboknights channel 4 days before the event to make the slip
+  and get it signed." `send_slip_reminders.py --kind early`, run by the new
+  `30 3 * * *` cron (9:00 AM IST - the host gave no time; midnight would be
+  a poor moment for "go and make it") in `slip-reminders.yml`, which picks
+  the job by which schedule fired. Same Exun RoboKnights channel, same bot,
+  plain text: "Reminder: please make the perm slip for {competition} on
+  {date}, {weekday} and get it signed." Fires for competitions 2 to 4 days
+  out and not yet reminded (so a competition added late, or a dropped run,
+  still gets it; at 1 day the doc check takes over), skips not-attending.
+  Unconditional: it does not look at the doc first. Tracked in
+  `competitions.slip_early_reminded_for` (a date, like `slip_reminded_for`,
+  so moving the date re-arms it) - migration at the end of
+  `supabase_schema.sql`, **run it before the first 9 AM run that has
+  anything due** or the job exits 1.
 - Test: `python send_slip_reminders.py --dry-run --today YYYY-MM-DD`.
+  `--kind early` takes the same flags, e.g. `--dry-run --kind early --today 2026-10-20`.

@@ -29,10 +29,18 @@
 # can't be read, NOTHING is posted (a wrong "isn't there" would be worse than
 # silence) and the run fails so it shows in Actions; the 1 AM run retries.
 #
+# A second job, --kind early (9:00 AM IST), nudges the channel EARLIER: from 4
+# days before a competition, "please make the perm slip ... and get it
+# signed". Tracked in competitions.slip_early_reminded_for the same way. A
+# competition added with less than 4 days to go gets it on the next morning
+# run instead (any day from 4 days out to 2 days out), and a dropped run is
+# caught the next morning.
+#
 # To test on your own laptop (needs the same .env app.py uses, plus
 # PERM_SLIP_DOC_URL and GOOGLE_SERVICE_ACCOUNT_JSON_B64):
 #   python send_slip_reminders.py --dry-run
 #   python send_slip_reminders.py --dry-run --today 2026-10-11
+#   python send_slip_reminders.py --dry-run --kind early --today 2026-10-20
 # --dry-run prints what would be posted and posts nothing, marks nothing.
 
 import argparse
@@ -53,6 +61,8 @@ DISCORD_API = "https://discord.com/api/v10"
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--dry-run", action="store_true")
+parser.add_argument("--kind", choices=["check", "early"], default="check",
+                    help="check = the day-before doc check (default); early = the 4-days-before nudge")
 parser.add_argument("--today", help="pretend today (IST) is this date, YYYY-MM-DD - for testing")
 args = parser.parse_args()
 
@@ -129,6 +139,73 @@ def selected_count(competition_id):
 
 today = date.fromisoformat(args.today) if args.today else datetime.now(IST).date()
 tomorrow = today + timedelta(days=1)
+
+if args.kind == "early":
+    # "Make the perm slip and get it signed", from 4 days out. Window is 4 to
+    # 2 days before so a competition added late, or a dropped run, still gets
+    # it; at 1 day the doc check above takes over.
+    first, last = today + timedelta(days=2), today + timedelta(days=4)
+
+    def read_early(columns):
+        return (
+            client.table("competitions").select(columns)
+            .gte("competition_date", first.isoformat()).lte("competition_date", last.isoformat())
+            .eq("not_attending", False).execute().data
+        )
+
+    try:
+        upcoming = read_early("competition_id, name, competition_date, slip_early_reminded_for")
+    except Exception as e:
+        if args.dry_run:
+            print("(slip_early_reminded_for doesn't exist yet - treating everything as not reminded)")
+            upcoming = read_early("competition_id, name, competition_date")
+        else:
+            print(
+                "Couldn't read competitions. If this mentions slip_early_reminded_for, the migration "
+                f"at the end of supabase_schema.sql hasn't been run yet. ({str(e)[:200]})"
+            )
+            sys.exit(1)
+
+    due_early = [c for c in upcoming if c.get("slip_early_reminded_for") != c["competition_date"]]
+    if not due_early:
+        print(f"No early slip reminders due (nothing between {first} and {last}, or already reminded).")
+        sys.exit(0)
+
+    channel_id = exun_channel_id()
+    if not channel_id:
+        print("Can't tell which channel to post in: set DISCORD_EXUN_CHANNEL_ID (or DISCORD_EXUN_WEBHOOK_URL).")
+        sys.exit(1)
+
+    failed = False
+    for comp in sorted(due_early, key=lambda c: c["competition_date"]):
+        comp_date = date.fromisoformat(comp["competition_date"])
+        content = (
+            f"Reminder: please make the perm slip for {comp['name']} on {_when(comp_date)} "
+            f"and get it signed."
+        )
+        if args.dry_run:
+            print(f"[dry run] would post to channel {channel_id}:" + chr(10) + content + chr(10))
+            continue
+        message_id = post_as_bot(channel_id, content)
+        if not message_id:
+            failed = True  # not marked, so the next run retries
+            continue
+        try:
+            client.table("competitions").update({"slip_early_reminded_for": comp["competition_date"]}).eq(
+                "competition_id", comp["competition_id"]
+            ).execute()
+        except Exception as e:
+            failed = True
+            print(f"Posted for {comp['name']} but couldn't mark it as sent - the next run would repeat it ({e}).")
+        try:
+            client.table("discord_messages").insert({
+                "message_id": message_id, "content": content, "channel": "exun_rk",
+            }).execute()
+        except Exception as e:
+            print(f"Couldn't log the message for the Discord Messages page ({e}).")
+        print(f"Posted the early slip reminder for {comp['name']} ({comp['competition_date']}).")
+    sys.exit(1 if failed else 0)
+
 
 # Not-attending competitions are skipped: nobody is being sent, so no slip.
 def read_competitions(columns):

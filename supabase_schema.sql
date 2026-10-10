@@ -1139,3 +1139,9 @@ alter table users add column if not exists disabled_by text;
 -- edited later gets a fresh reminder for the new date. Until this is run the
 -- script refuses to post anything rather than risk repeating itself.
 alter table competitions add column if not exists slip_reminded_for date;
+
+-- Early slip reminder (2026-10-11): send_slip_reminders.py --kind early posts
+-- "please make the perm slip ... and get it signed" from 4 days before a
+-- competition. Holds the competition date it went out for, same idea as
+-- slip_reminded_for above.
+alter table competitions add column if not exists slip_early_reminded_for date;
