@@ -1676,6 +1676,68 @@ def render_finalize_dialog(comp, e, event_volunteers, cap, label_by_uid):
         st.rerun()
 
 
+# --- Small display helpers for the cards --------------------------------------
+_MODE_BADGE_COLOR = {"offline": "blue", "online": "green", "hybrid": "violet"}
+
+
+def _relative_days(days):
+    if days == 0:
+        return "today"
+    if days == 1:
+        return "tomorrow"
+    if days > 1:
+        return f"in {days} days"
+    if days == -1:
+        return "yesterday"
+    return f"{-days} days ago"
+
+
+def _link_icon(label):
+    # A recognisable icon per kind of link, so the row reads at a glance.
+    text = (label or "").lower()
+    for words, icon in (
+        (("web", "site"), ":material/language:"),
+        (("discord",), ":material/forum:"),
+        (("regist", "form", "sign"), ":material/app_registration:"),
+        (("brochure", "pdf", "rule", "doc", "detail"), ":material/description:"),
+    ):
+        if any(w in text for w in words):
+            return icon
+    return ":material/link:"
+
+
+def _competition_badges(comp):
+    # The facts a member scans a card for - when, how, and whether
+    # registration is still open - as badges instead of one grey line.
+    # Dates within 3 days turn orange, because that is when they matter.
+    badges = []
+    comp_day = date.fromisoformat(comp["competition_date"]) if comp.get("competition_date") else None
+    if comp_day:
+        when = comp_day.strftime("%d %b %Y")
+        color = "blue"
+        if not comp.get("is_past"):
+            days = (comp_day - today_ist).days
+            when += f" ({_relative_days(days)})"
+            if 0 <= days <= 3:
+                color = "orange"
+        badges.append(f":{color}-badge[:material/event: {when}]")
+    mode = (comp.get("mode") or "").strip()
+    if mode:
+        badges.append(f":{_MODE_BADGE_COLOR.get(mode.lower(), 'gray')}-badge[{mode}]")
+    # Registration only matters while the competition is still ahead.
+    if comp.get("registration_deadline") and not comp.get("is_past"):
+        reg_day = date.fromisoformat(comp["registration_deadline"])
+        days_left = (reg_day - today_ist).days
+        if days_left < 0:
+            badges.append(f":gray-badge[:material/lock_clock: Registration closed {reg_day:%d %b}]")
+        else:
+            color = "orange" if days_left <= 3 else "gray"
+            badges.append(
+                f":{color}-badge[:material/schedule: Register by {reg_day:%d %b} ({_relative_days(days_left)})]"
+            )
+    return badges
+
+
 def render_competition_card(comp):
     cid = comp["competition_id"]
     links = [l for l in all_links if l["competition_id"] == cid]
@@ -1839,18 +1901,12 @@ def render_competition_card(comp):
             if comp.get("not_attending"):
                 st.error(":material/event_busy: **ROBOKNIGHTS IS NOT ATTENDING THIS COMPETITION**")
 
+            badges = _competition_badges(comp)
+            if badges:
+                st.markdown("  ".join(badges))
             info_bits = []
             if comp.get("venue"):
                 info_bits.append(f":material/location_on: {comp['venue']}")
-            if comp.get("competition_date"):
-                info_bits.append(
-                    f":material/event: {date.fromisoformat(comp['competition_date']).strftime('%d %b %Y')}"
-                )
-            if comp.get("registration_deadline"):
-                info_bits.append(
-                    f":material/schedule: Register by "
-                    f"{date.fromisoformat(comp['registration_deadline']).strftime('%d %b %Y')}"
-                )
             if comp.get("student_incharge"):
                 info_bits.append(f":material/person: {comp['student_incharge']}")
             if info_bits:
@@ -1861,17 +1917,23 @@ def render_competition_card(comp):
                 # would otherwise be treated as relative to the app's
                 # own URL, sending clicks to localhost:8501/discord.com
                 # instead of the real site.
-                st.markdown(
-                    "**Links:** "
-                    + "  •  ".join(
-                        f"[{l['label']}]"
-                        f"({l['url'] if l['url'].startswith(('http://', 'https://')) else 'https://' + l['url']})"
-                        for l in links
-                    )
-                )
+                with st.container(horizontal=True):
+                    for link_no, l in enumerate(links):
+                        st.link_button(
+                            l["label"],
+                            l["url"] if l["url"].startswith(("http://", "https://")) else "https://" + l["url"],
+                            icon=_link_icon(l["label"]), type="tertiary",
+                            key=f"complink_{cid}_{link_no}",
+                        )
 
             if events:
-                st.markdown("**Events:**")
+                st.markdown("**Events**")
+                comp_event_ids = {e["event_id"] for e in events}
+                if any(v.get("team_no") for v in all_volunteers if v["event_id"] in comp_event_ids):
+                    st.caption(
+                        ":material/travel_explore: Team labels come from the E2C sheet and update "
+                        "automatically when it changes."
+                    )
                 for e in events:
                     grade_range = (
                         f"Grade {e['min_grade']}"
@@ -1926,12 +1988,29 @@ def render_competition_card(comp):
                     cap = e["team_size"] * e["max_teams"]
 
                     with st.container(border=True, key=f"rkcard_event_{e['event_id']}"):
-                        st.markdown(
-                            f"**{e['name']}** — {grade_range}, {e['team_size']} per team, "
-                            f"up to {e['max_teams']} team(s)"
+                        team_badge = "Solo" if e["team_size"] == 1 else f"{e['team_size']} per team"
+                        teams_badge = "1 team" if e["max_teams"] == 1 else f"up to {e['max_teams']} teams"
+                        header = (
+                            f"**{e['name']}**  :gray-badge[{grade_range}]  "
+                            f":gray-badge[{team_badge}]  :gray-badge[{teams_badge}]"
                         )
-                        if e.get("details"):
-                            st.caption(e["details"])
+                        my_event_row = next((v for v in event_volunteers if v["user_id"] == current_user_id), None)
+                        if my_event_row and my_event_row.get("selected"):
+                            header += (
+                                "  :green-badge[:material/verified: You went]" if comp.get("is_past")
+                                else "  :green-badge[:material/verified: You're selected]"
+                            )
+                        elif my_event_row and not comp.get("is_past"):
+                            header += "  :orange-badge[:material/front_hand: You volunteered]"
+                        st.markdown(header)
+                        # Rules and format can run to a paragraph or three -
+                        # long ones fold away so a card stays scannable.
+                        details_text = e.get("details") or ""
+                        if len(details_text) > 220:
+                            with st.expander("Event details", icon=":material/info:"):
+                                st.markdown(details_text)
+                        elif details_text:
+                            st.caption(details_text)
 
                         # Every event gets exactly two sections regardless of
                         # where its volunteers came from: who's actually
@@ -1939,8 +2018,6 @@ def render_competition_card(comp):
                         # volunteered but not (yet) picked. Team labels (from
                         # the E2C sheet) are appended per name so it's still
                         # clear who's grouped together within either section.
-                        teamed = [v for v in event_volunteers if _effective_team_no(v)]
-
                         def _label(v):
                             name = user_name_by_id.get(v["user_id"], "Unknown")
                             team_no = _effective_team_no(v)
@@ -1948,13 +2025,6 @@ def render_competition_card(comp):
 
                         finalized = [v for v in event_volunteers if v.get("selected")]
                         still_pending = [v for v in event_volunteers if not v.get("selected")]
-
-                        if teamed:
-                            st.caption(
-                                ":material/travel_explore: Team assignments are from the E2C "
-                                "sheet — kept in sync automatically, so this can change if the "
-                                "sheet does."
-                            )
 
                         # Past tense once it's over: on a finished competition
                         # "Finalized team" and "Volunteers" read as though it's
