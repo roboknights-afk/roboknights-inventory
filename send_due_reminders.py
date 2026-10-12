@@ -11,6 +11,7 @@
 import os
 import re
 import smtplib
+import sys
 from datetime import date, datetime, timedelta, timezone
 from email.mime.text import MIMEText
 
@@ -222,6 +223,73 @@ def send_competition_reminders():
                 print(f"Sent competition reminder to {user['name']} for {event['name']}")
 
 
+DISCORD_API = "https://discord.com/api/v10"
+# Set when a Discord post fails, so the run can finish everything else and
+# still end red in Actions - a missing Discord message must not be silent.
+discord_failures = []
+
+
+def _exun_channel_id():
+    explicit = (os.environ.get("DISCORD_EXUN_CHANNEL_ID") or "").strip()
+    if explicit:
+        return explicit
+    webhook_url = os.environ.get("DISCORD_EXUN_WEBHOOK_URL")
+    if not webhook_url:
+        return None
+    try:
+        return requests.get(webhook_url, timeout=10).json().get("channel_id")
+    except Exception:
+        return None
+
+
+def _registration_discord_message(comp, ping_user_id):
+    venue = (comp.get("venue") or "").split(",")[0].strip()
+    ping = f"<@{ping_user_id}> " if ping_user_id else ""
+    return (
+        f"{ping}Registration deadline today for {comp['name']}"
+        + (f" ({venue})" if venue else "")
+        + ". Please make sure registration is completed."
+    )
+
+
+def post_registration_deadline_to_discord(comp):
+    # Posts as the RoboKnights bot itself (never a webhook) in the Exun
+    # server's RoboKnights channel, pinging the one person named in
+    # REGISTRATION_PING_DISCORD_USER_ID. Best-effort for the email side, but
+    # a failure is recorded and printed, and fails the run at the end.
+    token = os.environ.get("DISCORD_BOT_TOKEN")
+    channel_id = _exun_channel_id()
+    if not token or not channel_id:
+        print(f"Can't post the {comp['name']} deadline to Discord: bot token or channel isn't set.")
+        discord_failures.append(comp["name"])
+        return
+    ping_user_id = (os.environ.get("REGISTRATION_PING_DISCORD_USER_ID") or "").strip()
+    content = _registration_discord_message(comp, ping_user_id)
+    payload = {"content": content}
+    if ping_user_id:
+        payload["allowed_mentions"] = {"users": [ping_user_id]}
+    try:
+        response = requests.post(
+            f"{DISCORD_API}/channels/{channel_id}/messages",
+            headers={"Authorization": f"Bot {token}"}, json=payload, timeout=10,
+        )
+    except Exception as e:
+        print(f"Couldn't reach Discord for the {comp['name']} deadline ({e}).")
+        discord_failures.append(comp["name"])
+        return
+    if not response.ok:
+        print(f"Discord refused the {comp['name']} deadline post ({response.status_code}): {response.text[:200]}")
+        discord_failures.append(comp["name"])
+        return
+    try:
+        client.table("discord_messages").insert({
+            "message_id": response.json().get("id"), "content": content, "channel": "exun_rk",
+        }).execute()
+    except Exception as e:
+        print(f"Couldn't log the Discord post for the Discord Messages page ({e}).")
+    print(f"Posted the {comp['name']} registration deadline to the Exun channel.")
+
+
 def send_registration_deadline_reminders():
     # Fires the morning (9am IST, same run as the other reminders below) a
     # competition's own registration_deadline arrives. Tries the named
@@ -272,6 +340,8 @@ def send_registration_deadline_reminders():
                 f"Sent registration deadline reminder for {comp['name']} to roboknights@/exun@ "
                 f"(no member matched student in-charge \"{incharge_name}\")"
             )
+
+        post_registration_deadline_to_discord(comp)
 
         client.table("competitions").update({"registration_reminder_sent": True}).eq(
             "competition_id", comp["competition_id"]
@@ -377,3 +447,7 @@ send_competition_reminders()
 send_registration_deadline_reminders()
 send_unread_query_reminders()
 send_unread_exun_reminders()
+
+if discord_failures:
+    print(f"Discord posts that did not go out: {', '.join(discord_failures)}")
+    sys.exit(1)

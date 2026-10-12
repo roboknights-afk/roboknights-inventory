@@ -18,7 +18,7 @@ from e2c_import import find_e2c_competition, scan_e2c_sheet
 from shared import (
     EXUN_EMAILS, HOST_EMAILS, IST, cached_table, discord_role_tags, get_client, invalidate_cache,
     notify_if_roster_complete, relative_days_label, request_nike_list_sync, safe_write,
-    send_discord_message, send_email, send_whatsapp,
+    send_discord_message, send_email, send_roster_to_exun, send_whatsapp,
 )
 
 _relative_days = relative_days_label
@@ -1878,6 +1878,13 @@ def render_competition_card(comp):
                         or [dict(BLANK_EVENT)]
                     )
                     st.rerun()
+                if edit_col.button(
+                    "Send roster to Exun", key=f"send_roster_{cid}", icon=":material/send:",
+                    width="stretch",
+                    help="Post who is selected for each event of this competition to the Exun server",
+                ):
+                    roster_ok, roster_text = send_roster_to_exun(cid)
+                    st.toast(roster_text, icon=":material/check_circle:" if roster_ok else ":material/error:")
                 # Destructive action last in the popover, so it's not the
                 # thing your cursor lands on by accident.
                 if delete_col.button(

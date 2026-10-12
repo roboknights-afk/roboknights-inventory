@@ -51,6 +51,11 @@ jobs:
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          # Registration-deadline reminders also post, as the bot, in the
+          # Exun server's RoboKnights channel and ping this one person.
+          DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
+          DISCORD_EXUN_CHANNEL_ID: ${{ secrets.DISCORD_EXUN_CHANNEL_ID }}
+          REGISTRATION_PING_DISCORD_USER_ID: ${{ secrets.REGISTRATION_PING_DISCORD_USER_ID }}
           SMTP_HOST: ${{ secrets.SMTP_HOST }}
           SMTP_PORT: ${{ secrets.SMTP_PORT }}
           SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}

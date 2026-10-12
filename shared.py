@@ -2372,6 +2372,93 @@ def notify_if_roster_complete(competition_id):
         pass
 
 
+def build_roster_messages(competition_id):
+    # The names selected for every event of one competition, as Discord
+    # messages (one message holds 2000 characters at most, and a competition
+    # with many events can pass that, so the list is cut between events).
+    # Names only - no class, phone or admission number - since this lands in
+    # another club's server. Read fresh from the database, not cached_table:
+    # the host clicks this right after finalizing teams.
+    client = get_client()
+    comp_rows = client.table("competitions").select("name, competition_date").eq(
+        "competition_id", competition_id
+    ).execute().data
+    if not comp_rows:
+        return []
+    comp = comp_rows[0]
+    events = client.table("competition_events").select(
+        "event_id, name, team_size, max_teams"
+    ).eq("competition_id", competition_id).order("event_id").execute().data
+    if not events:
+        return []
+    volunteers = client.table("event_volunteers").select(
+        "event_id, user_id, team_no"
+    ).in_("event_id", [e["event_id"] for e in events]).eq("selected", True).execute().data
+    if not volunteers:
+        return []
+    names = {
+        u["user_id"]: u["name"]
+        for u in client.table("users").select("user_id, name").in_(
+            "user_id", list({v["user_id"] for v in volunteers})
+        ).execute().data
+    }
+
+    header = f":busts_in_silhouette: **RoboKnights roster: {comp['name']}**"
+    if comp.get("competition_date"):
+        day = date.fromisoformat(comp["competition_date"])
+        header += f" ({day.day} {day:%B}, {day:%A})"
+
+    blocks = []
+    for event in events:
+        picked = [v for v in volunteers if v["event_id"] == event["event_id"]]
+        capacity = event["team_size"] * event["max_teams"]
+        title = f"**{event['name']}** ({len(picked)} of {capacity})"
+        if not picked:
+            blocks.append(f"{title}: nobody selected yet")
+        elif event["max_teams"] > 1 and any(v.get("team_no") for v in picked):
+            teams = {}
+            for v in picked:
+                teams.setdefault(v.get("team_no") or 0, []).append(names.get(v["user_id"], "Unknown"))
+            lines = [
+                f"- {'Team ' + str(no) if no else 'No team yet'}: {', '.join(sorted(members))}"
+                for no, members in sorted(teams.items())
+            ]
+            blocks.append(title + "\n" + "\n".join(lines))
+        else:
+            members = sorted(names.get(v["user_id"], "Unknown") for v in picked)
+            blocks.append(f"{title}: {', '.join(members)}")
+
+    messages, current = [], header
+    for block in blocks:
+        if len(current) + len(block) + 2 > 1800:  # leaves room for the automated footer
+            messages.append(current)
+            current = block
+        else:
+            current += "\n" + block
+    messages.append(current)
+    return messages
+
+
+def send_roster_to_exun(competition_id):
+    # Host button on every competition card: post who is selected for each
+    # event to the Exun server's RoboKnights channel. Returns (ok, text) for
+    # the toast. Goes through send_discord_message, so it is posted as the
+    # bot where possible, logged to discord_messages and written to the
+    # audit log like every other Discord post from the dashboard.
+    try:
+        messages = build_roster_messages(competition_id)
+    except Exception:
+        return False, "Couldn't read the roster just now - try again."
+    if not messages:
+        return False, "Nobody is selected for any event of this competition yet, so there's no roster to send."
+    sent = sum(1 for message in messages if send_discord_message(message, channel="exun_rk"))
+    if sent == len(messages):
+        return True, "Roster sent to Exun."
+    if sent:
+        return False, f"Only {sent} of {len(messages)} messages went through - check the Exun channel."
+    return False, "Couldn't post to the Exun channel (is its webhook set up on this host?)."
+
+
 def send_discord_dm(discord_user_id, content):
     # A DM channel can't be reached by any webhook — a webhook only ever
     # posts into the one channel it was created for. This uses the bot's

@@ -2631,3 +2631,28 @@ webhook".
   anything due** or the job exits 1.
 - Test: `python send_slip_reminders.py --dry-run --today YYYY-MM-DD`.
   `--kind early` takes the same flags, e.g. `--dry-run --kind early --today 2026-10-20`.
+
+## Registration-deadline post + "Send roster to Exun" (2026-10-12)
+
+- **Deadline reminder also goes to Discord.** Until now the morning
+  `send_registration_deadline_reminders()` in `send_due_reminders.py` was
+  email-only (a member asked why nCrypt's/Cyber Symphony's never reached
+  Discord). It now also posts, as the bot (not a webhook), in the Exun
+  server's RoboKnights channel: "<@ping> Registration deadline today for
+  {competition} ({venue}). Please make sure registration is completed."
+  The ping target is the `REGISTRATION_PING_DISCORD_USER_ID` repo secret
+  (one Discord user id, kept out of source - the repo is public). Logged to
+  `discord_messages` (channel `exun_rk`). A failed post is printed and makes
+  the run exit 1, but the emails and the other reminders still run first.
+- **Moving a registration deadline does not re-arm its reminder.**
+  `competitions.registration_reminder_sent` is a plain boolean (unlike
+  `slip_reminded_for`, which is a date), so after an extension someone has to
+  set it back to false or the new date gets no reminder (done by hand for
+  nCrypt 2026, deadline 12 -> 14 Oct). Converting it to a date column, like
+  the slip ones, would fix this properly - not done.
+- **"Send roster to Exun"** is a host-only button in each competition's
+  Manage popover. `send_roster_to_exun()` / `build_roster_messages()` in
+  `shared.py` post the selected names per event (grouped by team where an
+  event has several) to the `exun_rk` channel, split into several messages if
+  over 2000 characters. Names only - no class, phone or admission no.
+  One click posts; there is no confirmation step.
