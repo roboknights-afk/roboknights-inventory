@@ -53,8 +53,10 @@ def _load_access_roles():
         email = row["email"]
         if row.get("is_host"):
             host_emails.add(email)
-            if row.get("host_title"):
-                host_roles[email] = row["host_title"]
+        # A title is display-only and doesn't need host access behind it
+        # (2026-10-13, first use: a Vice President with member permissions).
+        if row.get("host_title"):
+            host_roles[email] = row["host_title"]
         if row.get("is_exun"):
             exun_emails.add(email)
         if row.get("is_viewer"):
@@ -74,8 +76,10 @@ def _load_access_roles():
 
 
 # HOST_EMAILS: full access, every host-only page and control.
-# HOST_ROLES: display title shown next to a host's name (sidebar account
-#   badge) — not used for permissions anywhere, purely who's-who.
+# HOST_ROLES: display title shown next to a name (sidebar account badge)
+#   — not used for permissions anywhere, purely who's-who. Usually a
+#   host's, but a non-host account can carry one too (never check
+#   `email in HOST_ROLES` to mean "is a host" — use HOST_EMAILS).
 # EXUN_EMAILS: RoboKnights' sister club — views Competitions, Meetings,
 #   Achievements, Members; never volunteers/RSVPs/logs an achievement/
 #   touches anything host-only.

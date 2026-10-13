@@ -703,8 +703,9 @@ alter table users add column if not exists website_note text;
 -- stay public without publishing who has elevated access or who's been
 -- banned from the AI. One row per privileged/flagged email; an email with
 -- every is_*/ai_banned flag false has no reason to be in this table at
--- all. host_title is display-only (the badge next to a host's name),
--- never used for permissions — matches how HOST_ROLES already worked.
+-- all. host_title is display-only (the badge next to a name; set with
+-- is_host false it labels a non-host, e.g. a Vice President), never used
+-- for permissions — matches how HOST_ROLES already worked.
 -- No `users` row is implied or required by a row here — these accounts
 -- deliberately work without one (see CLAUDE.md's Access tiers section).
 create table if not exists access_roles (

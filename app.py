@@ -1502,10 +1502,19 @@ with st.sidebar:
             st.badge("Staff", color="grey", icon=":material/badge:")
         else:
             grade = st.session_state.current_user_grade
-            st.badge(
-                f"Member • Grade {grade}" if grade else "Member",
-                color="grey", icon=":material/badge:",
-            )
+            # A title given to a non-host (e.g. Vice President) shows here;
+            # it changes nothing about what the account can do.
+            member_title = HOST_ROLES.get(st.session_state.auth_user["email"])
+            if member_title:
+                st.badge(
+                    f"{member_title} • Grade {grade}" if grade else member_title,
+                    color="primary", icon=":material/stars:",
+                )
+            else:
+                st.badge(
+                    f"Member • Grade {grade}" if grade else "Member",
+                    color="grey", icon=":material/badge:",
+                )
 
         st.divider()
         if st.button("Log out", icon=":material/logout:", width="stretch"):

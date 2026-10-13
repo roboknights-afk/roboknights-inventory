@@ -2656,3 +2656,20 @@ webhook".
   event has several) to the `exun_rk` channel, split into several messages if
   over 2000 characters. Names only - no class, phone or admission no.
   One click posts; there is no confirmation step.
+
+## Titles and access_roles (2026-10-13)
+
+- **Giving someone a title.** `access_roles.host_title` is display-only (the
+  sidebar badge). A title does not need `is_host`: a row with `is_host` false
+  and a `host_title` shows that title on a plain member's badge and grants
+  nothing (first use: Arhaan Gupta, Vice President, member permissions only).
+  Host access is `is_host` true, and nothing else. Uddhav Shankar Oberoi is
+  President with `is_host` true (host access requested separately).
+  `users.role` cannot hold a title: `users_role_check` only allows
+  `core_member` / `member` / `adhoc`.
+- **Changes to `access_roles` only take effect after the Streamlit process
+  restarts** - `shared.py` reads the table once at import time, not per
+  session. Reboot the app (or let a deploy do it) after adding a row.
+- **Audit-log names.** `actor_name` is `users.name` for the signed-in account's
+  auth id, so it is the full name as long as the person signs in with the email
+  that has a `users` row. An account with no `users` row logs its email instead.
