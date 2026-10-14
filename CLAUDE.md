@@ -2673,3 +2673,43 @@ webhook".
 - **Audit-log names.** `actor_name` is `users.name` for the signed-in account's
   auth id, so it is the full name as long as the person signs in with the email
   that has a `users` row. An account with no `users` row logs its email instead.
+
+## Locked-login accounts (2026-10-14)
+
+Host request: the shared host account's mailbox can be opened by other
+people, so "Sign in with Google" and "Forgot password" would hand them the
+dashboard. `access_roles.locked_login` (migration at the end of
+`supabase_schema.sql`, `LOCKED_LOGIN_EMAILS` in `shared.py`, lowercased) marks
+an account that can only sign in with its own password:
+
+- **Google sign-in is refused** in `handle_google_oauth_callback`, signing
+  out with `{"scope": "local"}`. The default scope is global and would also
+  have signed the real owner out of every device.
+- **"Forgot password" is refused** at both steps of `show_reset_screen`. The
+  second step checks whose code/link it was before calling `update_user`,
+  because a pasted link carries no email and could belong to a locked account
+  while the reset was started for another address.
+- **A per-page-load gate** drops any session that did not begin with a
+  password login. `login_via_password` is set by the password login paths and,
+  for the "remember me" restore, from the `amr` claim in the refreshed access
+  token (`_is_password_session`: needs `password`, nothing outside
+  `password`/`token_refresh`/`totp`, a missing claim counts as no). Needed
+  because that restore takes a refresh token from the URL, and one minted by a
+  Google login would otherwise bypass the Google check.
+- Each refusal writes a `session.blocked_locked` audit row with **no actor**
+  (the person trying is not the account's owner).
+- **It is the app's own check.** It holds because the Supabase key is
+  server-side only (checked: not in the repo or its history), so the app is the
+  only way to ask Supabase for a recovery email. Anyone holding the key could
+  still request one; a trigger on `auth.users` would close that, not done.
+- **No self-service reset exists for these accounts, on purpose.** Someone who
+  forgets the password needs the project owner: Supabase's dashboard "send
+  recovery" emails the very mailbox this is guarding against, so use the
+  service-role key (`auth.admin.update_user_by_id`) instead.
+- **Fails open until the column exists** (nobody is locked), same
+  best-effort loader as the other access-role flags. Verify after running the
+  migration by reading `locked_login` back.
+- Tested with `AppTest` (reset screen for a locked and an ordinary account,
+  the page-load gate) and unit tests of the `amr` rule, with every send and
+  audit write stubbed. **Not tested live:** the Google callback block and the
+  remember-me restore from a real token.

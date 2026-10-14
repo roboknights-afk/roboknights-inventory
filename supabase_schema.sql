@@ -1146,3 +1146,11 @@ alter table competitions add column if not exists slip_reminded_for date;
 -- competition. Holds the competition date it went out for, same idea as
 -- slip_reminded_for above.
 alter table competitions add column if not exists slip_early_reminded_for date;
+
+-- Locked-login accounts (2026-10-14): an account flagged here can only sign in
+-- with its own password. No Google sign-in, no session that began with Google
+-- or an emailed code, and no "Forgot password" from the app (app.py, "Locked-
+-- login accounts"). For an account whose mailbox other people can open. Set it
+-- per account with: update access_roles set locked_login = true where email = '...';
+-- Until this column exists nobody is locked (the app reads it best-effort).
+alter table access_roles add column if not exists locked_login boolean not null default false;

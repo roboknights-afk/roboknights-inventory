@@ -1,5 +1,6 @@
 import base64
 import datetime
+import json
 import os
 import secrets
 import time
@@ -29,7 +30,8 @@ from supabase_auth.helpers import generate_pkce_challenge, generate_pkce_verifie
 load_dotenv()
 
 from shared import (
-    APP_URL, EXUN_CHANNEL_MEMBERS, EXUN_EMAILS, HOST_EMAILS, HOST_ROLES, VIEWER_EMAILS, cached_table,
+    APP_URL, EXUN_CHANNEL_MEMBERS, EXUN_EMAILS, HOST_EMAILS, HOST_ROLES, LOCKED_LOGIN_EMAILS,
+    VIEWER_EMAILS, cached_table,
     get_client, has_unread_chats, has_unread_exun_channel, has_unread_queries, invalidate_cache,
     _audit_purge_device_data, log_action, request_client_info,
     safe_write, send_email,
@@ -496,6 +498,54 @@ def admission_no_input(key_prefix, default=""):
     return f"{prefix}{digits.strip()}"
 
 
+# --- Locked-login accounts ---------------------------------------------------
+# Some accounts (first use, 2026-10-14: the shared host account) sit behind a
+# mailbox other people can open, and "Sign in with Google" and "Forgot
+# password" both ultimately prove nothing more than "can open that mailbox".
+# An account flagged `locked_login` in access_roles therefore:
+#   - cannot sign in with Google (blocked in handle_google_oauth_callback),
+#   - cannot be reset from here (blocked in show_reset_screen, both steps),
+#   - is only let in when its session began with a PASSWORD login - checked
+#     again on every page load below, because the "remember me" restore
+#     accepts a refresh token from the URL, and a refresh token minted by a
+#     Google login would otherwise walk straight past the first check.
+# The only way to change its password is while signed in, or by the project
+# owner in Supabase. Everything here is the app's own check: it holds
+# because the Supabase key is server-side only, so the app is the only way in.
+def _is_locked_login(email):
+    return (email or "").strip().lower() in LOCKED_LOGIN_EMAILS
+
+
+def _sign_in_methods(access_token):
+    # The `amr` claim of a Supabase access token lists how its session began:
+    # "password", "oauth" (Google), "otp"/"recovery" (an emailed code), ...
+    # It is carried across token refreshes. Decoded without checking the
+    # signature on purpose: this token was handed to us by Supabase itself
+    # a moment ago, not by the visitor. Empty set when it can't be read.
+    try:
+        payload = access_token.split(".")[1]
+        payload += "=" * (-len(payload) % 4)
+        amr = json.loads(base64.urlsafe_b64decode(payload)).get("amr") or []
+        return {(m.get("method") if isinstance(m, dict) else m) for m in amr}
+    except Exception:
+        return set()
+
+
+def _is_password_session(access_token):
+    methods = _sign_in_methods(access_token)
+    return "password" in methods and methods <= {"password", "token_refresh", "totp"}
+
+
+def _log_locked_block(email, summary):
+    # No actor on purpose: the person doing this is NOT the account's owner,
+    # so the row must not read as if they were.
+    _ip, _agent = request_client_info()
+    log_action(
+        "session.blocked_locked", "session", email, summary,
+        client_ip=_ip, user_agent=_agent, actor=(None, None, None),
+    )
+
+
 # --- Login with Google -------------------------------------------------------
 # Requires Google enabled as a provider in Supabase (Authentication ->
 # Providers -> Google) with a Google Cloud OAuth client — see DEPLOY.md for
@@ -649,6 +699,17 @@ def handle_google_oauth_callback(client):
         st.session_state.google_login_error = (
             f"{result.user.email} isn't a {ALLOWED_EMAIL_DOMAIN} account — "
             "sign in with your school Google account instead."
+        )
+        return
+
+    if _is_locked_login(email):
+        # Local scope: revoke only the session this attempt just created.
+        # The default (global) would also sign the account's real owner out
+        # of every device.
+        client.auth.sign_out({"scope": "local"})
+        _log_locked_block(email, "Blocked a Google sign-in to a password-only account")
+        st.session_state.google_login_error = (
+            "This account can't sign in with Google. Use its email and password instead."
         )
         return
 
@@ -889,6 +950,7 @@ def show_login_signup(client):
                     try:
                         result = client.auth.sign_in_with_password({"email": email, "password": password})
                         st.session_state.auth_user = {"id": result.user.id, "email": result.user.email}
+                        st.session_state.login_via_password = True
                         if result.session and result.session.refresh_token:
                             # Always remembered now, same as the Google login
                             # path — the separate opt-in checkbox this used to
@@ -994,6 +1056,7 @@ def show_login_signup(client):
                                     # the email link first.
                                     login_result = client.auth.sign_in_with_password({"email": email, "password": password})
                                     st.session_state.auth_user = {"id": login_result.user.id, "email": login_result.user.email}
+                                    st.session_state.login_via_password = True
                                     # Balloons fly after the rerun lands them in
                                     # the app (fired there — anything drawn here
                                     # would be wiped by the rerun itself).
@@ -1066,6 +1129,12 @@ def show_reset_screen(client):
                 if st.button("Send reset code", icon=":material/send:", type="primary", width="stretch"):
                     if email == ALLOWED_EMAIL_DOMAIN:
                         st.error("Enter your username.")
+                    elif _is_locked_login(email):
+                        _log_locked_block(email, "Blocked a password reset request for a password-only account")
+                        st.error(
+                            "This account's password can't be reset from here. "
+                            "Ask the dashboard owner."
+                        )
                     else:
                         try:
                             client.auth.reset_password_for_email(email)
@@ -1094,20 +1163,32 @@ def show_reset_screen(client):
                         if "token_hash=" in entered:
                             # They pasted a link. Grab the token_hash=... value.
                             token_hash = entered.split("token_hash=")[1].split("&")[0]
-                            client.auth.verify_otp({"token_hash": token_hash, "type": "recovery"})
+                            verified = client.auth.verify_otp({"token_hash": token_hash, "type": "recovery"})
                         elif entered.startswith("http") and "token=" in entered:
                             # Older link style: ...verify?token=pkce_xxx&type=recovery
                             token_hash = entered.split("token=")[1].split("&")[0]
-                            client.auth.verify_otp({"token_hash": token_hash, "type": "recovery"})
+                            verified = client.auth.verify_otp({"token_hash": token_hash, "type": "recovery"})
                         else:
                             # A plain code they typed in.
-                            client.auth.verify_otp({
+                            verified = client.auth.verify_otp({
                                 "email": st.session_state.reset_sent_to,
                                 "token": entered,
                                 "type": "recovery",
                             })
-                        client.auth.update_user({"password": new_password})
-                        st.success("Password updated! Go back and log in with your new password.")
+                        # A pasted link carries no email, so check whose reset
+                        # this really is BEFORE touching the password: a link
+                        # for a locked account must not work via a reset that
+                        # was started for some other address.
+                        if verified.user and _is_locked_login(verified.user.email):
+                            client.auth.sign_out({"scope": "local"})
+                            _log_locked_block(
+                                verified.user.email,
+                                "Blocked a password reset code for a password-only account",
+                            )
+                            st.error("This account's password can't be reset from here. Ask the dashboard owner.")
+                        else:
+                            client.auth.update_user({"password": new_password})
+                            st.success("Password updated! Go back and log in with your new password.")
                     except Exception as e:
                         st.error(f"Couldn't update password: {e}")
 
@@ -1158,6 +1239,9 @@ if st.session_state.auth_user is None:
         try:
             result = client.auth.refresh_session(remembered_token)
             st.session_state.auth_user = {"id": result.user.id, "email": result.user.email}
+            st.session_state.login_via_password = bool(
+                result.session and _is_password_session(result.session.access_token)
+            )
             # Refresh tokens rotate on every use — the one we just spent is
             # already invalid, so the stored token has to move to the NEW
             # one or the next visit's silent restore would fail. Deferred
@@ -1190,6 +1274,24 @@ if st.session_state.auth_user is None:
         show_reset_screen(client)
     else:
         show_login_signup(client)
+    st.stop()
+
+# --- Locked-login gate -------------------------------------------------------
+# See "Locked-login accounts" above. Runs on every page load, so a session that
+# got in some other way (a remembered Google/recovery session) is dropped here.
+if _is_locked_login(st.session_state.auth_user["email"]) and not st.session_state.get("login_via_password"):
+    if not st.session_state.get("audit_locked_logged"):
+        st.session_state.audit_locked_logged = True
+        _log_locked_block(
+            st.session_state.auth_user["email"],
+            "Blocked a session that did not start with the password, on a password-only account",
+        )
+    st.session_state.auth_user = None
+    _clear_remember_token()
+    st.error(
+        "This account can only be signed in to with its email and password. "
+        "Reload the page and log in that way."
+    )
     st.stop()
 
 # --- Disabled account gate -------------------------------------------------
