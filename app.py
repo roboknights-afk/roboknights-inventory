@@ -509,9 +509,10 @@ def admission_no_input(key_prefix, default=""):
 #     again on every page load below, because the "remember me" restore
 #     accepts a refresh token from the URL, and a refresh token minted by a
 #     Google login would otherwise walk straight past the first check.
-# The only way to change its password is while signed in, or by the project
-# owner in Supabase. Everything here is the app's own check: it holds
-# because the Supabase key is server-side only, so the app is the only way in.
+# The app has no change-password screen, so its password can only be changed
+# by the project owner in Supabase. Everything here is the app's own check: it
+# holds because the Supabase key is server-side only, so the app is the only
+# way in.
 def _is_locked_login(email):
     return (email or "").strip().lower() in LOCKED_LOGIN_EMAILS
 
