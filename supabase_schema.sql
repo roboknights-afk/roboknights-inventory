@@ -1163,3 +1163,12 @@ alter table access_roles add column if not exists locked_login boolean not null 
 -- column exists the dialog still works: events start from their own name
 -- ("(Online)") or the competition's mode, and nothing is remembered.
 alter table competitions add column if not exists event_modes jsonb;
+
+-- Two-day competitions (2026-10-15): a competition that runs over two days gets
+-- one permission slip PER DAY, and the dialog's Day column says which day each
+-- event is on (read off the brochure). Saved the same way as event_modes: a
+-- JSON object keyed by lower-case event name whose value is the list of day
+-- numbers, e.g. {"battle bot": [1], "sakura": [2], "pygrammar": [1, 2]}. Until
+-- this column exists the dialog still works: every event starts on "Both days"
+-- and nothing is remembered.
+alter table competitions add column if not exists event_days jsonb;

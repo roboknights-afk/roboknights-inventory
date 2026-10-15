@@ -20,7 +20,7 @@
 import base64
 import json
 import re
-from datetime import date
+from datetime import date, timedelta
 
 import requests
 
@@ -254,36 +254,70 @@ def approvers_for(class_secs):
     return out + ["vp", "principal"]
 
 
-# --- the slip's date ---------------------------------------------------------------------
+# --- the days a competition runs, and which events are on which ---------------------------
 
 def _ordinal(n):
     return f"{n}{'th' if 10 <= n % 100 <= 20 else {1: 'st', 2: 'nd', 3: 'rd'}.get(n % 10, 'th')}"
 
 
-def format_date(day, e2c_date_text=""):
-    """The doc writes dates as "Friday, 16th October 2026". A two-day event
-    ("October 27 & 28, 2026" on E2C) becomes "Tuesday, 27th & Wednesday, 28th
-    October 2026"; anything else falls back to the single competition date."""
-    text = e2c_date_text or ""
-    # "October 27 & 28, 2026" (month first) or "23-24 October 2026" (day first)
-    sep = r"\s*(?:&|and|-|–|to)\s*"
-    month_first = re.search(rf"([A-Za-z]{{3,9}})\.?\s+(\d{{1,2}}){sep}(\d{{1,2}}),?\s+(\d{{4}})", text)
-    day_first = re.search(rf"(\d{{1,2}}){sep}(\d{{1,2}})\s+([A-Za-z]{{3,9}})\.?,?\s+(\d{{4}})", text)
-    if month_first:
-        month_word, a, b, year = month_first.group(1), month_first.group(2), month_first.group(3), month_first.group(4)
-    elif day_first:
-        a, b, month_word, year = day_first.group(1), day_first.group(2), day_first.group(3), day_first.group(4)
-    else:
-        month_word = None
-    if month_word:
-        months = ["january", "february", "march", "april", "may", "june", "july", "august",
-                  "september", "october", "november", "december"]
-        m = next((i for i, name in enumerate(months, 1) if name.startswith(month_word.lower()[:3])), None)
-        try:
-            d1, d2 = date(int(year), m, int(a)), date(int(year), m, int(b))
-            if d1 < d2 and (d2 - d1).days <= 6:
-                return (f"{d1.strftime('%A')}, {_ordinal(d1.day)} & {d2.strftime('%A')}, {_ordinal(d2.day)} "
-                        f"{d1.strftime('%B %Y')}")
-        except (TypeError, ValueError):
-            pass
+def format_date(day):
+    # The doc writes dates as "Friday, 16th October 2026".
     return f"{day.strftime('%A')}, {_ordinal(day.day)} {day.strftime('%B %Y')}"
+
+
+def day_label(number, day):
+    # "Day 2 - Sat 24 Oct": the dialog's tab and the Day column.
+    return f"Day {number} - {day.strftime('%a')} {day.day} {day.strftime('%b')}"
+
+
+def parse_days(day, e2c_date_text=""):
+    """Every day the competition runs, first to last, as dates. E2C writes a
+    two-day fest "October 27 & 28, 2026" or "23-24 October 2026"; a dash covers
+    each day between, an "&" just the two it names. Anything else (one day, or a
+    date the patterns don't read, like "8th-12th October & 15th October 2026")
+    is just `day`, the competition's own date, which a text that doesn't include
+    it is never allowed to move."""
+    text = e2c_date_text or ""
+    sep = r"\s*(&|and|-|–|to)\s*"
+    match = re.search(rf"([A-Za-z]{{3,9}})\.?\s+(\d{{1,2}}){sep}(\d{{1,2}}),?\s+(\d{{4}})", text)      # October 27 & 28, 2026
+    if match:
+        month_word, a, joiner, b, year = match.groups()
+    else:
+        match = re.search(rf"(\d{{1,2}}){sep}(\d{{1,2}})\s+([A-Za-z]{{3,9}})\.?,?\s+(\d{{4}})", text)  # 23-24 October 2026
+        if not match:
+            return [day]
+        a, joiner, b, month_word, year = match.groups()
+    months = ["january", "february", "march", "april", "may", "june", "july", "august",
+              "september", "october", "november", "december"]
+    month = next((i for i, name in enumerate(months, 1) if name.startswith(month_word.lower()[:3])), None)
+    try:
+        first, last = date(int(year), month, int(a)), date(int(year), month, int(b))
+    except (TypeError, ValueError):
+        return [day]
+    if not first < last or (last - first).days > 6:
+        return [day]
+    days = [first, last] if joiner in ("&", "and") else [first + timedelta(n) for n in range((last - first).days + 1)]
+    return days if day in days else [day]
+
+
+def day_choices(n_days):
+    # What the Day column offers: each day, then "every day".
+    return [f"Day {i}" for i in range(1, n_days + 1)] + ["Both days" if n_days == 2 else "All days"]
+
+
+def default_day(event_name, n_days, stored_days=None):
+    """The Day-column choice to start from: the single day the host saved for
+    the event, else every day. Not knowing is not a reason to leave a student
+    off a day's slip; a slip that lists someone a day early does no harm."""
+    saved = (stored_days or {}).get((event_name or "").strip().lower())
+    if isinstance(saved, list) and len(saved) == 1 and saved[0] in range(1, n_days + 1):
+        return f"Day {saved[0]}"
+    return day_choices(n_days)[-1]
+
+
+def days_of(choice, n_days):
+    # "Day 2" -> [2]; "Both days" / "All days" -> every day number.
+    match = re.fullmatch(r"Day (\d+)", choice or "")
+    if match and 1 <= int(match.group(1)) <= n_days:
+        return [int(match.group(1))]
+    return list(range(1, n_days + 1))

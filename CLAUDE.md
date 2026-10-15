@@ -2751,12 +2751,41 @@ hybrid events.
   everyone before the Principal fills the boxes in reading order, the Principal
   is always the last box of the second table (`approver_slots`). The older
   "Representative, 11" box is deliberately not added.
-- **Date.** `Friday, 16th October 2026`; a two-day event (E2C says "October 27 &
-  28" or "23-24 October") becomes `Tuesday, 27th & Wednesday, 28th October
-  2026`. `perm_slip_check.parse_doc_dates` reads such a date as covering both
-  days, so the reminder job still finds the slip on the first day. Mode says
-  Offline (as every existing slip does, even for hybrid competitions);
-  On-Duty Staff is left blank for the teacher; Department is Computer Science.
+- **Date.** `Friday, 16th October 2026`. Mode says Offline (as every existing
+  slip does, even for hybrid competitions); On-Duty Staff is left blank for the
+  teacher; Department is Computer Science. A two-day competition is handled
+  below. (`perm_slip_check.parse_doc_dates` still reads an older combined date,
+  `Tuesday, 27th & Wednesday, 28th October 2026`, as covering both days.)
+- **Two-day competitions: one slip per day (2026-10-15).** Host: "for events
+  which are of 2 days u need to make different slips for both days, while
+  seeing which event is on which day from the brochure". `slip_roster.
+  parse_days` reads the days from E2C's date text ("October 27 & 28, 2026",
+  "23-24 October 2026"; a dash covers every day between, an "&" only the two it
+  names; anything it can't read is just the competition's own date, so an
+  ordinary competition is untouched). When there is more than one, the events
+  table gets a **Day** column (Day 1 / Day 2 / Both days), each event starting
+  from `competitions.event_days` (saved last time) and otherwise **Both days**
+  (leaving a student off a day is worse than listing them a day early). The
+  student list is built **per day** from that day's events, Date has one field
+  per day, and the students show in one tab per day; Event, Organising and Mode
+  are shared. Sign-offs are worked out per day from that day's classes. The
+  writer adds Day 2 first and Day 1 last, so Day 1 ends up above Day 2 in the
+  doc, and it is **all or nothing**: if a later day fails, the days already
+  added are taken back out (`remove_block`, each is the newest block in turn).
+  The duplicate check (`judge`) runs per day, so with Day 1 already in the doc
+  only Day 2 is added unless "Add another one anyway" is ticked. One
+  `slip.created` audit row per slip (with the day), and one note to
+  #e2c-announcements ("The automatic slips for **X** (Day 1 and Day 2) are
+  done"). **Which event is on which day is read from the brochure by hand**
+  (nothing parses them): Compufest's is a schedule image on pages 6-7, Force
+  Fest's a schedule grid on page 4 plus a "Date:" on each event's page. Events
+  the brochure puts on both days (Compufest's Cine Vista; Force Fest's Pygrammar,
+  prelims 27th and finals 28th for the top 10 teams) go on both slips.
+  Compufest's brochure also makes the winning team collect prizes on Day II,
+  which a slip can't know in advance. The Day choices are remembered in
+  `event_days`; Compufest's and Force Fest's brochure days are put there by a
+  one-off script once the migration has been run (audit row "Claude Code
+  (script, at the host's request)").
 - **How the doc is written.** Not described in code: `slip_template.json` is a
   snapshot of the newest block's real formatting (fonts, borders, column
   widths, the blank "signing space" paragraphs) with every student's text
@@ -2773,9 +2802,10 @@ hybrid events.
 - **Needs:** the doc shared with the service account as **Editor** (Viewer is
   enough for the reminders), `PERM_SLIP_DOC_URL`, `EXUN_DATA_SHEET_URL`,
   `GOOGLE_SERVICE_ACCOUNT_JSON_B64` and `GOOGLE_SHEETS_API_KEY` in **Streamlit
-  Cloud's secrets** (a separate store from `.env`), and the `event_modes`
-  migration at the end of `supabase_schema.sql` (optional: without it nothing
-  is remembered). The Google Drive API is NOT enabled on the project, so the
+  Cloud's secrets** (a separate store from `.env`), and the `event_modes` and
+  `event_days` migrations at the end of `supabase_schema.sql` (optional:
+  without them nothing is remembered, and a two-day competition's events all
+  start on "Both days"). The Google Drive API is NOT enabled on the project, so the
   service account cannot list or create files; it only edits a document it is
   given the id of.
 - **Tells #e2c-announcements (2026-10-15).** Right after the slip is in the
@@ -2797,5 +2827,6 @@ hybrid events.
   numbers and this repo is public: no student text is in `slip_template.json`
   or in any log, and error messages never carry the document id.
 - **Not covered yet:** nothing parses brochures, so a new competition needs its
-  modes set in the dialog once; the first real slip into the REAL document has
-  not been written (tests went to a copy).
+  modes (and, over two days, each event's Day) set in the dialog once. The
+  first real slip (nCrypt) went into the real document on 2026-10-15; the
+  two-day flow was tested on a copy only.

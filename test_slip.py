@@ -40,12 +40,34 @@ check("slots, three", perm_slip_writer.approver_slots(["hod", "vp", "principal"]
 
 # --- dates
 check("single day", sr.format_date(date(2026, 10, 16)), "Friday, 16th October 2026")
-check("single, e2c text ignored", sr.format_date(date(2026, 10, 24), "Saturday, 24th October 2026 (Offline)"),
-      "Saturday, 24th October 2026")
-check("two days, month first", sr.format_date(date(2026, 10, 27), "October 27 & 28, 2026"),
-      "Tuesday, 27th & Wednesday, 28th October 2026")
-check("two days, day first", sr.format_date(date(2026, 10, 23), "23-24 October 2026"),
-      "Friday, 23rd & Saturday, 24th October 2026")
+check("day label", sr.day_label(2, date(2026, 10, 24)), "Day 2 - Sat 24 Oct")
+
+# --- the days a competition runs (E2C's date text)
+D27, D28, D23, D24 = date(2026, 10, 27), date(2026, 10, 28), date(2026, 10, 23), date(2026, 10, 24)
+check("days, month first", sr.parse_days(D27, "October 27 & 28, 2026"), [D27, D28])
+check("days, day first", sr.parse_days(D23, "23-24 October 2026"), [D23, D24])
+check("a dash covers every day between", sr.parse_days(D23, "23-25 October 2026"), [D23, D24, date(2026, 10, 25)])
+check("an ampersand is just the two it names", sr.parse_days(D23, "23 & 25 October 2026"), [D23, date(2026, 10, 25)])
+check("one day stays one day", sr.parse_days(D24, "Saturday, 24th October 2026 (Offline)"), [D24])
+check("no text stays one day", sr.parse_days(D24, ""), [D24])
+check("a date the patterns can't read stays one day",
+      sr.parse_days(date(2026, 10, 8), "8th-12th October & 15th October 2026"), [date(2026, 10, 8)])
+check("text that doesn't include the competition's own date can't move it", sr.parse_days(D24, "October 27 & 28, 2026"), [D24])
+check("a nonsense month is ignored", sr.parse_days(D27, "Foo 27 & 28, 2026"), [D27])
+
+# --- which events are on which day
+check("choices, two days", sr.day_choices(2), ["Day 1", "Day 2", "Both days"])
+check("choices, three days", sr.day_choices(3), ["Day 1", "Day 2", "Day 3", "All days"])
+check("a saved single day is used", sr.default_day("Battle Bot", 2, {"battle bot": [1]}), "Day 1")
+check("saved day, other case", sr.default_day("SAKURA", 2, {"sakura": [2]}), "Day 2")
+check("saved on both days", sr.default_day("Pygrammar", 2, {"pygrammar": [1, 2]}), "Both days")
+check("nothing saved: every day, not guessed", sr.default_day("Robo Race", 2, {}), "Both days")
+check("nothing saved at all", sr.default_day("Robo Race", 2, None), "Both days")
+check("a saved day outside the competition is ignored", sr.default_day("Robo Race", 2, {"robo race": [5]}), "Both days")
+check("days_of one", sr.days_of("Day 2", 2), [2])
+check("days_of both", sr.days_of("Both days", 2), [1, 2])
+check("days_of all", sr.days_of("All days", 3), [1, 2, 3])
+check("days_of garbage", sr.days_of("Day 9", 2), [1, 2])
 check("ordinals", [sr._ordinal(n) for n in (1, 2, 3, 4, 11, 12, 13, 21, 22, 23, 31)],
       ["1st", "2nd", "3rd", "4th", "11th", "12th", "13th", "21st", "22nd", "23rd", "31st"])
 
@@ -132,6 +154,16 @@ try:
     check("note goes to the e2c channel, pings, and says what was asked", sent, [
         ("e2c_announcements", "<@4242> The automatic slip for **nCrypt 2026** is done, kindly check.")])
     check("note reports the ping", (ok, "pinged" in note), (True, True))
+
+    sent.clear()
+    slip_dialog.notify_slip_done("Compufest'26", [1, 2])
+    check("two days: one note naming both", sent[0][1],
+          "<@4242> The automatic slips for **Compufest'26** (Day 1 and Day 2) are done, kindly check.")
+    sent.clear()
+    slip_dialog.notify_slip_done("Compufest'26", [2])
+    check("two-day competition, one day made", sent[0][1],
+          "<@4242> The automatic slip for **Compufest'26** (Day 2) is done, kindly check.")
+    check("day names, three", slip_dialog._day_names([1, 2, 3]), "Day 1, Day 2 and Day 3")
 
     sent.clear()
     os.environ["SLIP_PING_DISCORD_USER_ID"] = "not-an-id"          # never put junk inside <@...>
