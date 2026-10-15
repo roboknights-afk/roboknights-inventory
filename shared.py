@@ -2059,6 +2059,9 @@ DISCORD_CHANNELS = {
     # that's the real channel name), posted to when a result is logged on
     # the Achievements page.
     "wins": "DISCORD_WINS_WEBHOOK_URL",
+    # #e2c-announcements in the chatpata clubhouse server: told when a
+    # permission slip has been made automatically (slip_dialog.py).
+    "e2c_announcements": "DISCORD_E2C_ANNOUNCEMENTS_WEBHOOK_URL",
 }
 
 # A webhook lets Discord's `username`/`avatar_url` fields on the POST body

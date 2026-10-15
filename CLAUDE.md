@@ -2778,6 +2778,17 @@ hybrid events.
   is remembered). The Google Drive API is NOT enabled on the project, so the
   service account cannot list or create files; it only edits a document it is
   given the id of.
+- **Tells #e2c-announcements (2026-10-15).** Right after the slip is in the
+  document, `slip_dialog.notify_slip_done` posts "<@sid> The automatic slip for
+  **X** is done, kindly check." to the `e2c_announcements` channel (a new
+  `DISCORD_CHANNELS` entry, secret `DISCORD_E2C_ANNOUNCEMENTS_WEBHOOK_URL`;
+  #e2c-announcements in the chatpata clubhouse server) through the normal
+  `send_discord_message`, so it goes out as the bot with the automated footer
+  and shows on the Discord Messages page. Who is pinged is the
+  `SLIP_PING_DISCORD_USER_ID` secret, kept out of the public repo; it is the
+  member whose server nickname is "sid" (the same person as the registration-
+  deadline ping, and not "Siddh"). Best-effort: the slip is already in the doc,
+  so a failed post only shows a warning. No link or student detail in the post.
 - **Guards.** Host-only (button and dialog both check). If the doc already has a
   slip for the competition (`perm_slip_check.judge`), the dialog warns and wants
   "Add another one anyway" ticked. Each slip writes a `slip.created` audit row.

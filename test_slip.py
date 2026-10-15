@@ -116,6 +116,46 @@ check("events joined", rows[0]["events"], ["Robo Race", "Quiz"])
 check("class-sec built", rows[0]["class_sec"], "11-A")
 check("unfound name tidied, blanks kept", (rows[1]["name"], rows[1]["adm"], rows[1]["status"]), ("Kiran Rao", "", "missing"))
 
+# --- the "slip is done" note to #e2c-announcements (sender stubbed: nothing is posted)
+import os
+
+import slip_dialog
+
+sent = []
+slip_dialog.send_discord_message = lambda text, channel="competitions": sent.append((channel, text)) or "123"
+HOOK = slip_dialog.DISCORD_CHANNELS["e2c_announcements"]
+saved = {k: os.environ.get(k) for k in (HOOK, "SLIP_PING_DISCORD_USER_ID")}
+try:
+    os.environ[HOOK] = "https://example.invalid/hook"
+    os.environ["SLIP_PING_DISCORD_USER_ID"] = "4242"
+    ok, note = slip_dialog.notify_slip_done("nCrypt 2026")
+    check("note goes to the e2c channel, pings, and says what was asked", sent, [
+        ("e2c_announcements", "<@4242> The automatic slip for **nCrypt 2026** is done, kindly check.")])
+    check("note reports the ping", (ok, "pinged" in note), (True, True))
+
+    sent.clear()
+    os.environ["SLIP_PING_DISCORD_USER_ID"] = "not-an-id"          # never put junk inside <@...>
+    ok, note = slip_dialog.notify_slip_done("nCrypt 2026")
+    check("a bad ping id means no mention, and the host is told", (sent[0][1].startswith("The automatic"), ok, "nobody was pinged" in note), (True, True, True))
+
+    sent.clear()
+    del os.environ[HOOK]
+    ok, note = slip_dialog.notify_slip_done("nCrypt 2026")
+    check("no webhook: nothing sent, host told", (sent, ok), ([], False))
+
+    os.environ[HOOK] = "https://example.invalid/hook"
+    slip_dialog.send_discord_message = lambda *a, **k: None          # Discord said no
+    check("a failed post is reported, not raised", slip_dialog.notify_slip_done("nCrypt 2026")[0], False)
+    def boom(*a, **k): raise RuntimeError("down")
+    slip_dialog.send_discord_message = boom
+    check("an exception is swallowed", slip_dialog.notify_slip_done("nCrypt 2026")[0], False)
+finally:
+    for k, v in saved.items():
+        if v is None:
+            os.environ.pop(k, None)
+        else:
+            os.environ[k] = v
+
 if failures:
     print("FAILED:")
     for f in failures:

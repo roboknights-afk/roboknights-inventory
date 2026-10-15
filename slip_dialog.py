@@ -15,7 +15,12 @@
 #      document" writes the slip at the top of the permission-slip Google Doc
 #      (perm_slip_writer.py).
 #
-# Nothing is written anywhere until that last button. Native Streamlit only.
+#   4. Once it is in the document, #e2c-announcements is told ("the automatic
+#      slip is done, kindly check") and the person who checks slips is pinged
+#      (notify_slip_done).
+#
+# Nothing is written or posted anywhere until that last button. Native
+# Streamlit only.
 
 import os
 from datetime import date
@@ -27,7 +32,7 @@ import perm_slip_check
 import perm_slip_writer
 import slip_roster
 from e2c_import import fetch_event_rosters
-from shared import get_client, invalidate_cache, log_action
+from shared import DISCORD_CHANNELS, get_client, invalidate_cache, log_action, send_discord_message
 
 STATE_KEY = "slip_state"
 FLAG_KEY = "slip_competition_id"
@@ -38,6 +43,30 @@ _CHECK_TEXT = {
     "missing": "Not found - fill in",
     "ambiguous": "Two students share this name - fill in",
 }
+
+
+def notify_slip_done(competition_name):
+    """Tell #e2c-announcements the slip is made, pinging whoever checks slips
+    (the SLIP_PING_DISCORD_USER_ID secret - one Discord user id, kept out of
+    the public repo like the registration-deadline ping's). Best-effort: the
+    slip is already in the document, so this never raises. -> (ok, note for
+    the host)."""
+    if not os.environ.get(DISCORD_CHANNELS["e2c_announcements"]):
+        return False, "The E2C announcements webhook isn't set up, so nobody was told on Discord."
+    ping_id = (os.environ.get("SLIP_PING_DISCORD_USER_ID") or "").strip()
+    mention = f"<@{ping_id}> " if ping_id.isdigit() else ""
+    try:
+        message_id = send_discord_message(
+            f"{mention}The automatic slip for **{competition_name}** is done, kindly check.",
+            channel="e2c_announcements",
+        )
+    except Exception:
+        message_id = None
+    if not message_id:
+        return False, "The slip is made, but the note to #e2c-announcements didn't go through."
+    if not mention:
+        return True, "Posted in #e2c-announcements, but nobody was pinged (SLIP_PING_DISCORD_USER_ID isn't set)."
+    return True, "Posted in #e2c-announcements and pinged sid."
 
 
 def close_slip():
@@ -105,6 +134,8 @@ def render_slip_dialog(comp):
 
     if state["done"]:
         st.success(f"Added the slip: {state['done']} students, at the top of the document.")
+        notice_ok, notice_text = state.get("notice", (True, ""))
+        (st.info if notice_ok else st.warning)(notice_text)
         st.link_button("Open the document", doc_url, icon=":material/open_in_new:")
         if st.button("Close", key="slip_close"):
             close_slip()
@@ -263,5 +294,6 @@ def render_slip_dialog(comp):
             invalidate_cache()
         except Exception:
             pass
+        state["notice"] = notify_slip_done(comp["name"])
         state["done"] = len(slip["students"])
         st.rerun()

@@ -89,6 +89,7 @@ CHANNEL_LABELS = {
     "exun_rk": "Exun RK",
     "dashboard": "Dashboard updates",
     "announcements": "Announcements",
+    "e2c_announcements": "E2C announcements",
 }
 
 CHANNEL_INTRO = {
@@ -111,6 +112,11 @@ CHANNEL_INTRO = {
     "announcements": (
         "Nothing posts here automatically — this is the club's #announcements "
         "channel, for one-off messages a host writes by hand."
+    ),
+    "e2c_announcements": (
+        "The #e2c-announcements channel. \"The automatic slip is done, kindly check\" posts here by "
+        "itself (pinging the person who checks slips) whenever a permission slip is added from the "
+        "Competitions page — nothing to do for that. The box below is for a one-off message."
     ),
 }
 

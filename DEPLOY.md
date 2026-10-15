@@ -40,7 +40,17 @@ file or from a hosting platform's secrets manager.
    GOOGLE_SERVICE_ACCOUNT_JSON_B64 = "..."
    PERM_SLIP_DOC_URL = "https://docs.google.com/document/d/.../edit"
    EXUN_DATA_SHEET_URL = "https://docs.google.com/spreadsheets/d/.../edit"
+   DISCORD_E2C_ANNOUNCEMENTS_WEBHOOK_URL = "https://discord.com/api/webhooks/..."
+   SLIP_PING_DISCORD_USER_ID = "..."
    ```
+
+   The last two: when a permission slip is made, the app tells
+   #e2c-announcements ("the automatic slip is done, kindly check") and pings
+   `SLIP_PING_DISCORD_USER_ID` (one Discord user id, with Developer Mode on:
+   right-click the person, Copy User ID). The webhook is a credential: anyone
+   holding the URL can post as it, so it lives only in secrets, never the repo.
+   If the webhook isn't set the slip is still made and the dialog says nobody
+   was told.
 
    `PERM_SLIP_DOC_URL` and `EXUN_DATA_SHEET_URL` are for the Competitions
    page's "Make permission slip" button (see CLAUDE.md, "Permission slips").
