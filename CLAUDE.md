@@ -2713,3 +2713,78 @@ an account that can only sign in with its own password:
   the page-load gate) and unit tests of the `amr` rule, with every send and
   audit write stubbed. **Not tested live:** the Google callback block and the
   remember-me restore from a real token.
+
+
+## Permission slips (2026-10-15)
+
+Host request: a **Make permission slip** button on each competition (Manage
+popover) that writes the slip into the club's "Inter School Event Permissions"
+Google Doc, "in the same format", with the students going to its offline and
+hybrid events.
+
+- **Pieces.** `slip_dialog.py` (the dialog; the page only owns the button and
+  the `slip_competition_id` flag), `slip_roster.py` (who is on the slip and who
+  signs), `perm_slip_writer.py` (puts it in the doc), `slip_template.json` (the
+  doc's formatting, see below), `e2c_import.fetch_event_rosters` (every name on
+  E2C for a competition, matched to a member or not). `test_slip.py` covers the
+  pure logic (`python test_slip.py`).
+- **Where the names come from.** The E2C sheet lists who is registered, event by
+  event. **Only names in a GREEN cell (confirmed) go on the slip** - a white cell
+  is listed but not confirmed (the first version took white cells too and the
+  host caught it; the green flag was read but never filtered on). Only **offline
+  and hybrid events** go on the slip; online ones are left off (nobody leaves
+  school). The mode of each event is read from the
+  competition's brochure by hand (the brochures are PDFs, Slides and Canva, so
+  nothing parses them): the dialog starts each event from `competitions.
+  event_modes` (saved last time), else "(Online)" in its name, else the
+  competition's mode, and the host changes it before building. E2C names are
+  looked up in **Exun's student sheet first** (`EXUN_DATA_SHEET_URL`, the newest
+  `M<year><year>` tab: admission no., class, section, mobile), then in the
+  RoboKnights `users` table. A name found in neither, or shared by two students,
+  is **never guessed**: it stays on the slip with blanks and a "Check" note for
+  the host to fill in. First-name-only entries on E2C never match anyone.
+- **Rows.** One row per student; a student in two events has both in Sub-Event.
+  Class-Sec is written `12-B`. Mobile is filled (existing slips fill it).
+- **Who signs, in this order:** HOD - Computer Science; Headmistress 6-8 only if
+  a 6th-8th student is on the slip; Headmistress 9-10 only if a 9th-10th student
+  is; Vice Principal; Principal. They sit in the doc's two small tables:
+  everyone before the Principal fills the boxes in reading order, the Principal
+  is always the last box of the second table (`approver_slots`). The older
+  "Representative, 11" box is deliberately not added.
+- **Date.** `Friday, 16th October 2026`; a two-day event (E2C says "October 27 &
+  28" or "23-24 October") becomes `Tuesday, 27th & Wednesday, 28th October
+  2026`. `perm_slip_check.parse_doc_dates` reads such a date as covering both
+  days, so the reminder job still finds the slip on the first day. Mode says
+  Offline (as every existing slip does, even for hybrid competitions);
+  On-Duty Staff is left blank for the teacher; Department is Computer Science.
+- **How the doc is written.** Not described in code: `slip_template.json` is a
+  snapshot of the newest block's real formatting (fonts, borders, column
+  widths, the blank "signing space" paragraphs) with every student's text
+  stripped, made by `make_slip_template.py` (`python make_slip_template.py
+  [doc url]`, read-only). To change how slips look, restyle a block in the doc,
+  re-run it, commit the JSON. The writer inserts the tables at the TOP of the
+  doc (newest first, like the others), applies the styles, then fills the text
+  from the bottom up so cell positions don't shift. If the layout isn't what it
+  expects it deletes what it inserted before raising. Verified on a **copy** of
+  the document: text, column widths, row/paragraph/text styles all match the
+  real block; borders and 5pt padding "differ" only because Google omits its
+  defaults when reading back (checked with a deliberately red border, which is
+  stored and returned).
+- **Needs:** the doc shared with the service account as **Editor** (Viewer is
+  enough for the reminders), `PERM_SLIP_DOC_URL`, `EXUN_DATA_SHEET_URL`,
+  `GOOGLE_SERVICE_ACCOUNT_JSON_B64` and `GOOGLE_SHEETS_API_KEY` in **Streamlit
+  Cloud's secrets** (a separate store from `.env`), and the `event_modes`
+  migration at the end of `supabase_schema.sql` (optional: without it nothing
+  is remembered). The Google Drive API is NOT enabled on the project, so the
+  service account cannot list or create files; it only edits a document it is
+  given the id of.
+- **Guards.** Host-only (button and dialog both check). If the doc already has a
+  slip for the competition (`perm_slip_check.judge`), the dialog warns and wants
+  "Add another one anyway" ticked. Each slip writes a `slip.created` audit row.
+  Nothing is written anywhere until "Add to the document".
+- **Privacy.** The doc, Exun's sheet and E2C hold minors' names and phone
+  numbers and this repo is public: no student text is in `slip_template.json`
+  or in any log, and error messages never carry the document id.
+- **Not covered yet:** nothing parses brochures, so a new competition needs its
+  modes set in the dialog once; the first real slip into the REAL document has
+  not been written (tests went to a copy).

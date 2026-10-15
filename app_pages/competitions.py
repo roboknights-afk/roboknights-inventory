@@ -15,6 +15,7 @@ from datetime import date, datetime
 import streamlit as st
 
 from e2c_import import find_e2c_competition, scan_e2c_sheet
+from slip_dialog import FLAG_KEY as SLIP_FLAG, open_slip, render_slip_dialog
 from shared import (
     EXUN_EMAILS, HOST_EMAILS, IST, cached_table, discord_role_tags, get_client, invalidate_cache,
     notify_if_roster_complete, relative_days_label, request_nike_list_sync, safe_write,
@@ -136,6 +137,9 @@ if "show_e2c_import" not in st.session_state:
     st.session_state.show_e2c_import = False
 if "finalizing_event_id" not in st.session_state:
     st.session_state.finalizing_event_id = None
+# The "Make permission slip" dialog (slip_dialog.py) - same flag idea, owned there.
+if SLIP_FLAG not in st.session_state:
+    st.session_state[SLIP_FLAG] = None
 
 
 def _notify_date_change(name, old_date, new_date):
@@ -1745,6 +1749,8 @@ def render_competition_card(comp):
 
         else:
             # --- Read-only view (everyone) ------------------------------
+            if is_host and st.session_state[SLIP_FLAG] == cid:
+                render_slip_dialog(comp)
             if is_host and st.session_state.deleting_competition_id == cid:
                 achievement_count = sum(
                     1 for a in cached_table("achievements") if a["competition_id"] == cid
@@ -1885,6 +1891,15 @@ def render_competition_card(comp):
                 ):
                     roster_ok, roster_text = send_roster_to_exun(cid)
                     st.toast(roster_text, icon=":material/check_circle:" if roster_ok else ":material/error:")
+                if not comp.get("is_past") and not comp.get("not_attending"):
+                    if edit_col.button(
+                        "Make permission slip", key=f"make_slip_{cid}", icon=":material/description:",
+                        width="stretch",
+                        help="Add this competition's permission slip to the Google Doc, with the students "
+                             "going to its offline and hybrid events",
+                    ):
+                        open_slip(cid)
+                        st.rerun()
                 # Destructive action last in the popover, so it's not the
                 # thing your cursor lands on by accident.
                 if delete_col.button(

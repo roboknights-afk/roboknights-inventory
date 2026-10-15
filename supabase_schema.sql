@@ -1154,3 +1154,12 @@ alter table competitions add column if not exists slip_early_reminded_for date;
 -- per account with: update access_roles set locked_login = true where email = '...';
 -- Until this column exists nobody is locked (the app reads it best-effort).
 alter table access_roles add column if not exists locked_login boolean not null default false;
+
+-- Permission slips (2026-10-15): the "Make permission slip" dialog on the
+-- Competitions page starts each E2C event from a saved mode (offline / hybrid
+-- / online) and writes back the modes the host settled on, so the next slip for
+-- the same competition opens already right. A JSON object keyed by lower-case
+-- event name, e.g. {"ncinema": "online", "robosoccer": "offline"}. Until this
+-- column exists the dialog still works: events start from their own name
+-- ("(Online)") or the competition's mode, and nothing is remembered.
+alter table competitions add column if not exists event_modes jsonb;

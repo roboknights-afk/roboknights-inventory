@@ -13,8 +13,9 @@
 # definition, 2026-10-11). Signatures are NOT checked - a Google Doc has no
 # reliable signature field.
 #
-# The bot reads the doc as the Google service account (view-only access: the
-# doc is shared with it as Viewer, scope documents.readonly).
+# The bot reads the doc as the Google service account (the reminders need only
+# Viewer access, scope documents.readonly). WRITING a slip into it is
+# perm_slip_writer.py's job and needs Editor.
 #
 # PRIVACY: this doc is full of students' names and phone numbers and the repo
 # is public, so nothing here may print or return a participant's details -
@@ -169,6 +170,24 @@ def parse_doc_date(text):
     return None
 
 
+def parse_doc_dates(text):
+    # Every day a slip's Date cell names. Normally one, but a two-day fest is
+    # written "Tuesday, 27th & Wednesday, 28th October 2026": parse_doc_date
+    # alone would only see the 28th, and a slip for a competition held on the
+    # 27th would be judged to belong to some other day.
+    base = parse_doc_date(text)
+    if base is None:
+        return []
+    days = {base.day} | {int(d) for d in re.findall(r"(?<!\d)(\d{1,2})(?:st|nd|rd|th)\b", (text or "").lower())}
+    out = []
+    for day in sorted(days):
+        try:
+            out.append(date(base.year, base.month, day))
+        except ValueError:
+            pass
+    return out
+
+
 def _norm(value):
     return re.sub(r"[^a-z0-9]+", " ", (value or "").lower()).strip()
 
@@ -191,8 +210,8 @@ def judge(comp_name, comp_date, blocks, needed=MIN_NAMES):
     for block in blocks:
         if name_score(block["event"], comp_name) < NAME_MATCH:
             continue
-        doc_date = parse_doc_date(block["date_text"])
-        if doc_date and doc_date != comp_date:
+        doc_dates = parse_doc_dates(block["date_text"])
+        if doc_dates and comp_date not in doc_dates:
             continue
         matches.append(block)
     if not matches:

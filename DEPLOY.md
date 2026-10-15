@@ -38,7 +38,16 @@ file or from a hosting platform's secrets manager.
    DISCORD_ADHOC_ROLE_ID = "..."
    DISCORD_BOT_TOKEN = "..."
    GOOGLE_SERVICE_ACCOUNT_JSON_B64 = "..."
+   PERM_SLIP_DOC_URL = "https://docs.google.com/document/d/.../edit"
+   EXUN_DATA_SHEET_URL = "https://docs.google.com/spreadsheets/d/.../edit"
    ```
+
+   `PERM_SLIP_DOC_URL` and `EXUN_DATA_SHEET_URL` are for the Competitions
+   page's "Make permission slip" button (see CLAUDE.md, "Permission slips").
+   The slip document must be shared with the service account as **Editor**
+   (the 4-day/midnight slip reminders only need Viewer), and Exun's student
+   sheet as Viewer. Without them the button explains what's missing instead
+   of crashing.
 
    `GOOGLE_SHEETS_API_KEY` is required, not optional — the Competitions
    page's E2C sheet sync crashes without it (e2c_import.py reads it

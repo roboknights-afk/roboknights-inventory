@@ -556,6 +556,54 @@ def scan_e2c_sheet(client):
     return _scan(client)
 
 
+class _EveryName:
+    # Stands in for the member lookup so _parse_teams keeps EVERY name on the
+    # sheet, not just the ones that match a RoboKnights member. The permission
+    # slip needs the whole roster: most of it is Exun's students.
+    def get(self, cleaned_lower, default=None):
+        return cleaned_lower or default
+
+
+def fetch_event_rosters(wanted_name):
+    """One competition from the E2C sheet, by name, with every event and
+    EVERY participant name (matched to a member or not).
+
+    Returns None if nothing matches, else:
+      {"name", "venue", "date_text", "links": [{"label", "url"}],
+       "events": [{"name", "eligibility", "names": [{"name", "confirmed"}]}]}
+    `confirmed` is the sheet's green shading (registration confirmed). An
+    event with nobody listed comes back with an empty `names`. Reads past the
+    "PAST EVENTS" divider too, like find_e2c_competition."""
+    api_key = os.environ["GOOGLE_SHEETS_API_KEY"]
+    tab = _pick_current_tab(E2C_SHEET_ID, api_key)
+    blocks = _split_into_blocks(_fetch_raw_rows(E2C_SHEET_ID, api_key, tab)[2:])
+    target = _searchable(wanted_name)
+    found = []
+    for block in blocks:
+        info = _parse_competition_info(block)
+        here = _searchable(info["name"])
+        if here and _name_matches(target, here):
+            found.append((block, info, here))
+    if not found:
+        return None
+    # An exact name beats a partial one.
+    block, info, _ = sorted(found, key=lambda f: f[2] != target)[0]
+    events = []
+    for ev in _parse_all_events(block, _EveryName()):
+        events.append({
+            "name": ev["name"],
+            "eligibility": ev["raw_eligibility"],
+            "names": [
+                {"name": p["name"], "confirmed": p["selected"]}
+                for team in ev["teams"] for p in team["participants"]
+            ],
+        })
+    return {
+        "name": info["name"], "venue": info["venue"], "date_text": info["date_text"],
+        "links": info["links"], "events": events,
+    }
+
+
 def find_e2c_competition(client, wanted_name):
     """Look up ONE competition by name, ignoring both filters the normal
     scan applies.
