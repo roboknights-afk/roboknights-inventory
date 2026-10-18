@@ -62,6 +62,8 @@ from google.genai import types as genai_types
 from groq import Groq
 from supabase import create_client
 
+import channel_summary as cs
+
 load_dotenv()
 
 # Same "today" the dashboard itself uses (shared.py's today_ist) — IST, not
@@ -88,7 +90,7 @@ supabase = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
 # whether the running bot is the current code. Unlike Railway, deploy-
 # bot.yml really does redeploy on every push now, but this is still
 # worth checking after one.
-BOT_BUILD = "2026-09-15 carry reply-target content into context"
+BOT_BUILD = "2026-10-18 tag the bot and say summarise: summary of the last 100 messages"
 
 # The bot now lives in a SECOND server it doesn't own — the Exun clan's,
 # in their RoboKnights channel, so their side can ask it about
@@ -1240,7 +1242,7 @@ def _call_with_retry(fn, retries=1, delay=2.0):
             raise
 
 
-def _ask_with_gemini(messages, channel_id=None):
+def _ask_with_gemini(messages, channel_id=None, with_tools=True, max_tokens=MAX_REPLY_TOKENS):
     if gemini_client is None:
         _last_provider_error["gemini"] = "no GEMINI_API_KEY set"
         return None
@@ -1316,8 +1318,8 @@ def _ask_with_gemini(messages, channel_id=None):
         response = _call_with_retry(lambda: gemini_client.models.generate_content(
             model=GEMINI_MODEL, contents=contents,
             config=genai_types.GenerateContentConfig(
-                system_instruction=system_instruction, tools=tools or None,
-                max_output_tokens=MAX_REPLY_TOKENS,
+                system_instruction=system_instruction, tools=(tools if with_tools else None) or None,
+                max_output_tokens=max_tokens,
                 # Without this the SDK waits indefinitely - the call that
                 # froze the bot on 2026-08-15 was still hanging a minute
                 # later. Milliseconds, and it's the LAST fallback, so
@@ -1480,7 +1482,7 @@ def _strip_reasoning(text):
     return text.strip()
 
 
-def _ask_with_openrouter(messages):
+def _ask_with_openrouter(messages, max_tokens=MAX_REPLY_TOKENS):
     # Plain OpenAI-shaped HTTP call - no extra SDK needed, and `requests`
     # is already a dependency for Tavily. Pass the NO_TOOLS_NOTE version
     # of the messages: this path has no tools, and without that note the
@@ -1512,7 +1514,7 @@ def _ask_with_openrouter(messages):
                 headers={"Authorization": f"Bearer {OPENROUTER_API_KEY}"},
                 json={
                     "model": OPENROUTER_MODEL, "messages": messages,
-                    "max_tokens": MAX_REPLY_TOKENS,
+                    "max_tokens": max_tokens,
                 },
                 timeout=30,
             )
@@ -1544,12 +1546,12 @@ def _ask_with_openrouter(messages):
         return None
 
 
-def _ask_with_small_groq(no_tools_messages):
+def _ask_with_small_groq(no_tools_messages, max_tokens=MAX_REPLY_TOKENS):
     # Same "record why, don't fail silently" contract as the other two
     # fallbacks - see _last_provider_error.
     try:
         response = _call_with_retry(lambda: groq_client.chat.completions.create(
-            model=GROQ_SMALL_MODEL, messages=no_tools_messages, max_tokens=MAX_REPLY_TOKENS,
+            model=GROQ_SMALL_MODEL, messages=no_tools_messages, max_tokens=max_tokens,
         ))
         reply = response.choices[0].message.content
         if not reply:
@@ -1810,7 +1812,7 @@ def _ask_llm(conversation_key, channel_id, user_text, asker_name=None, is_arbite
     return reply
 
 
-async def _send(channel, text):
+async def _send(channel, text, allowed_mentions=None):
     # Discord hard-caps a single message at 2000 characters - split rather
     # than truncate, since a cut-off answer is worse than two messages.
     #
@@ -1820,7 +1822,7 @@ async def _send(channel, text):
     # source links on search answers would do the same. The links stay
     # clickable, they just don't unfurl.
     for i in range(0, len(text), 2000):
-        await channel.send(text[i:i + 2000], suppress_embeds=True)
+        await channel.send(text[i:i + 2000], suppress_embeds=True, allowed_mentions=allowed_mentions)
 
 
 @client.event
@@ -1871,6 +1873,116 @@ async def on_ready():
             except Exception as e:
                 print(f"Backfill skipped for #{channel.name}: {e}")
     print("Backfill complete.")
+
+
+# --- "@bot summarise": a summary of the channel's last 100 messages (2026-10-18) ----------
+# Host: "whenever someone tags the bot and says summarise or summarize or anything
+# similar the bot summarises the last 100 messages of the channel". What counts as
+# a request, the transcript, the prompt and the canned replies are in
+# channel_summary.py (testable without starting the bot); this is the part that
+# talks to Discord and the AI providers.
+#
+# The messages are read from Discord when asked, not from channel_log: that is only
+# the last CHANNEL_LOG_SIZE messages, empty after a restart, and has no bot messages.
+# Nothing read here is stored; the question and the summary are logged like every
+# other reply (ai_chat_messages). The summary goes out with allowed_mentions none, so
+# a name in the chat can never become a ping.
+_last_summary_at = {}
+
+
+def _summarise_chat(system_text, user_text):
+    # Same providers, same order and same shared daily budget as
+    # _ask_with_fallback_chain, but plain: no tools, and none of the club data that
+    # path pastes in (~1,200 tokens a summary doesn't need). -> text, or None when
+    # every provider failed.
+    messages = [{"role": "system", "content": system_text}, {"role": "user", "content": user_text}]
+    try:
+        response = _call_with_retry(lambda: groq_client.chat.completions.create(
+            model=GROQ_MODEL, messages=messages, max_tokens=cs.SUMMARY_MAX_TOKENS,
+        ))
+        reply = response.choices[0].message.content
+        if reply:
+            return reply
+    except Exception as e:
+        print(f"summary: main model failed: {repr(e)[:200]}", flush=True)
+    return (
+        _ask_with_gemini(messages, with_tools=False, max_tokens=cs.SUMMARY_MAX_TOKENS)
+        or _ask_with_small_groq(messages, max_tokens=cs.SUMMARY_MAX_TOKENS)
+        or _ask_with_openrouter(messages, max_tokens=cs.SUMMARY_MAX_TOKENS)
+    )
+
+
+async def _recent_channel_entries(channel, before):
+    # The cs.SUMMARY_MESSAGE_LIMIT messages sent before `before` (the request
+    # itself is not part of what gets summarised), oldest first. Joins, pins and
+    # the like are skipped; a picture or sticker is noted as such, since the
+    # model can't see it but "Asha shared a photo" is still part of the chat.
+    entries = []
+    async for m in channel.history(limit=cs.SUMMARY_MESSAGE_LIMIT, before=before):
+        if m.type not in (discord.MessageType.default, discord.MessageType.reply):
+            continue
+        notes = []
+        if m.attachments:
+            notes.append(f"[{len(m.attachments)} attachment{'s' if len(m.attachments) != 1 else ''}]")
+        if m.stickers:
+            notes.append("[sticker]")
+        entries.append({
+            "author": m.author.display_name,
+            "text": " ".join(part for part in [m.clean_content] + notes if part),
+            "when": m.created_at,
+        })
+    entries.reverse()
+    return entries
+
+
+async def _handle_summary_request(message, conversation_key, text, discord_user_id, discord_channel_id, linked_user_id):
+    channel = message.channel
+
+    async def say(reply, remember=False):
+        _log_chat("assistant", reply, discord_user_id, discord_channel_id, linked_user_id)
+        if remember:
+            # so a follow-up ("what was the second point?") has the summary to work from
+            history[conversation_key].append({"role": "user", "content": text})
+            history[conversation_key].append({"role": "assistant", "content": reply})
+        await _send(channel, reply, allowed_mentions=discord.AllowedMentions.none())
+
+    # One summary per channel per minute. Set BEFORE the slow part so two people
+    # asking at the same moment can't both run it; cleared again when it fails, so a
+    # failure doesn't lock the channel out.
+    wait = cs.SUMMARY_COOLDOWN_SECONDS - (time.time() - _last_summary_at.get(channel.id, 0))
+    if wait > 0:
+        await say(cs.too_soon_reply(wait))
+        return
+    _last_summary_at[channel.id] = time.time()
+
+    try:
+        entries = await _recent_channel_entries(channel, message)
+    except (discord.Forbidden, discord.HTTPException) as e:
+        _last_summary_at.pop(channel.id, None)
+        print(f"summary: couldn't read history in channel {channel.id}: {repr(e)[:200]}", flush=True)
+        await say(cs.NO_ACCESS_REPLY)
+        return
+    # The never-discuss list is enforced here in code, not left to the prompt (see
+    # channel_summary.drop_protected): those messages never reach the model.
+    entries, held_back = cs.drop_protected(entries, PROTECTED_ENTITY_PATTERNS)
+    transcript = cs.build_transcript(entries)
+    if transcript["count"] < cs.MIN_MESSAGES:
+        _last_summary_at.pop(channel.id, None)
+        await say(cs.NOTHING_TO_SAY_REPLY if held_back else cs.NOT_ENOUGH_REPLY)
+        return
+
+    # to_thread for the same reason as _ask_llm below: blocking HTTP must not run on the event loop
+    async with channel.typing():
+        body = await asyncio.to_thread(_summarise_chat, cs.SUMMARY_SYSTEM_PROMPT, cs.build_user_prompt(transcript))
+    if not body or not body.strip():
+        _last_summary_at.pop(channel.id, None)
+        await say(cs.FAILED_REPLY)
+        return
+    body = cs.scrub_reply(_tidy_truncation(body.strip()), PROTECTED_ENTITY_PATTERNS)   # and again on the way out
+    if not body.strip():
+        await say(cs.NOTHING_TO_SAY_REPLY)
+        return
+    await say(cs.format_reply(transcript, body, left_out=held_back), remember=True)
 
 
 async def _reply_target(message):
@@ -2008,6 +2120,23 @@ async def _handle_incoming(message, is_edit=False):
         _log_chat("assistant", busy, discord_user_id, discord_channel_id, linked_user_id)
         await _send(message.channel, busy)
         return
+
+    # "@bot summarise" (and "tldr", "catch me up", "what did I miss"...) summarises the
+    # channel's last 100 messages. After the roast and rate-limit checks above, so those
+    # still apply. Needs a real @mention, not just a reply to the bot: replying to one of
+    # the bot's own answers and saying "summarise" means THAT answer, which the normal
+    # path below already handles (it is handed the replied-to message). A DM has no
+    # channel to summarise, so it gets told how instead of a model guess.
+    if cs.is_summary_request(text):
+        if is_dm:
+            _log_chat("assistant", cs.DM_REPLY, discord_user_id, discord_channel_id, linked_user_id)
+            await _send(message.channel, cs.DM_REPLY)
+            return
+        if is_mentioned and reply_target is None and not message.attachments:
+            await _handle_summary_request(
+                message, conversation_key, text, discord_user_id, discord_channel_id, linked_user_id
+            )
+            return
 
     # asyncio.to_thread, NOT a plain call: _ask_llm and everything under it
     # (Groq, Gemini, Tavily, Supabase) is ordinary blocking HTTP. Called

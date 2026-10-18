@@ -2830,3 +2830,63 @@ hybrid events.
   modes (and, over two days, each event's Day) set in the dialog once. The
   first real slip (nCrypt) went into the real document on 2026-10-15; the
   two-day flow was tested on a copy only.
+
+## Summarise on request (2026-10-18)
+
+Host request: "whenever someone tags the bot and says summarise or summarize or
+anything similar the bot summarises the last 100 messages of the channel".
+
+- **Pieces.** `discord_bot/channel_summary.py` holds everything that can be
+  tested without starting the bot (`bot.py` runs the live client the moment it is
+  imported, so it can't be imported by a test): deciding a message is a request,
+  building the transcript, the prompt, the canned replies. `bot.py` adds only the
+  part that talks to Discord and the AI providers (`_handle_summary_request`,
+  `_recent_channel_entries`, `_summarise_chat`). `test_summary.py` covers the
+  pure part (`python test_summary.py`).
+- **What counts as a request.** The bot must be @mentioned (a DM or a plain reply
+  to it is not enough) and the rest of the message must be a bare summary request:
+  "summarise", "summarize this chat", "tldr", "recap", "catch me up", "what did I
+  miss", "what's going on", "the gist"... A closed word list, no model call, so it
+  costs no tokens. Anything else in the message ("summarise the robowar rules",
+  "summarize this pdf", a link, more than 14 words) names a SUBJECT, so it is not
+  a channel summary and goes to the normal assistant, as before. Replying to one of
+  the bot's own messages and saying "summarise" still summarises THAT message (the
+  normal path is handed it), and "summarise" in a DM explains how to use it.
+- **The 100 messages** are read from Discord when asked (`channel.history`, the 100
+  before the request), not from `channel_log`, which holds only the last few,
+  is empty after a restart and has no bot messages. Joins and pins are skipped, a
+  picture or sticker shows as `[attachment]` / `[sticker]`, a message is cut at
+  500 characters and the whole transcript at 12,000 (oldest dropped first) so it fits
+  the smallest fallback model's 6,000 tokens/minute. The bot's own earlier summaries
+  are skipped, so a second one doesn't summarise the first. Nothing read is stored;
+  the question and the summary are logged to `ai_chat_messages` like any reply.
+- **Same providers as every reply** (`gpt-oss-120b`, Gemini, `gpt-oss-20b`,
+  OpenRouter), but plain: no tools and none of the club data the normal fallback
+  chain pastes in. `_ask_with_gemini` / `_ask_with_openrouter` /
+  `_ask_with_small_groq` gained optional `max_tokens` (and Gemini `with_tools`);
+  every other caller is unchanged.
+- **Limits.** One summary per channel per minute (each one spends the club's shared
+  daily AI budget), set before the slow part so two people asking at once can't both
+  run it and cleared again on a failure. It also counts toward the normal 20 an hour per
+  person.
+- **Safety, all in code because a prompt rule alone failed on the first try** (the
+  first version wrote "The principal confirmed the lab is free on Saturday" with the
+  prompt telling it to leave staff out): messages matching `PROTECTED_ENTITY_PATTERNS`
+  (the staff names, the Principal and Vice Principal, Exun, Domain Square, DPS) are
+  held back BEFORE the model sees them, any line of its answer that still matches is
+  removed, and the post says "Left out N messages on topics I don't comment on"
+  without naming anyone, so a summary never silently hides a decision. The chat is
+  fenced off as DATA in the prompt (a member DID write "ignore all previous
+  instructions" in the test chat and it was ignored and not mentioned), the post is
+  sent with `allowed_mentions` none so a name in the chat can never ping, and the
+  prompt forbids mocking, ranking or blaming anyone.
+  **A side effect to know about:** in the Exun side's channel anything naming Exun is
+  held back, because the bot's standing rule is never to discuss them.
+- **Guest server.** Only in a channel the bot is allowed in (`_channel_allowed`
+  runs first), and it only reads the channel it is asked in. It needs Read Message
+  History there (the invite link includes it); without it the bot says so.
+- **Tested** with fake Discord objects against the real providers and made-up chat
+  (never the real channels, and never `python bot.py` locally: a second live copy
+  with the real token would double-reply). To try it for real, tag the bot in a
+  channel and say "summarise".
+
