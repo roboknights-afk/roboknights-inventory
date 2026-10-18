@@ -42,7 +42,15 @@ jobs:
           mkdir -p ~/.ssh
           echo "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
-          ssh-keyscan -H "${{ secrets.VPS_HOST }}" >> ~/.ssh/known_hosts
+          # -T 30, not the default 5s: this runs in a GitHub datacentre against a
+          # small VPS far away, and a cold connection plus key exchange can be
+          # slow. A failure used to be silent (exit 1, no message) - 2026-10-18,
+          # on the rebuilt VPS - so say what it means.
+          ssh-keyscan -T 30 -H "${{ secrets.VPS_HOST }}" >> ~/.ssh/known_hosts || true
+          if ! [ -s ~/.ssh/known_hosts ]; then
+            echo "::error::ssh-keyscan found no host key within 30s - the VPS did not answer on port 22 from GitHub's runners (VPS_HOST wrong, box down, or a firewall blocking GitHub)."
+            exit 1
+          fi
 
       # --exclude='.env': the VPS's real secrets live only in
       # ~/roboknights-bot/.env, created once by hand and never checked
