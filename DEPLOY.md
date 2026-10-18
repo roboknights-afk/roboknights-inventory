@@ -361,6 +361,39 @@ untouched Oracle files. `discord_bot/Dockerfile` and
 `discord_bot/README.md` are HF-specific and equally inert now, also left
 in place.
 
+**Rebuilt from scratch, 2026-10-18.** The bot went silent after 2026-10-16
+(~18:25 UTC; `discord_channel_log` normally gets 100-360 rows a day, so a gap
+like that is the quickest tell) and the provider issued a brand-new VPS: new
+IP, root password only, nothing on it. The one-time setup below was redone
+over `paramiko`. Things that were not obvious:
+
+- **The bot's `.env` only ever lived on the old box**, so a rebuild means
+  recreating it. Build it from the dashboard's local `.env`, copying ONLY the
+  ten variables `bot.py` reads (`DISCORD_BOT_TOKEN`, `DISCORD_HOME_GUILD_ID`,
+  `DISCORD_GUEST_CHANNEL_IDS`, `DISCORD_LOGS_CHANNEL_ID`, `GROQ_API_KEY`,
+  `GEMINI_API_KEY`, `OPENROUTER_API_KEY`, `TAVILY_API_KEY`, `SUPABASE_URL`,
+  `SUPABASE_KEY`), mode 600.
+- **Hardening sshd needs a drop-in, not an edit of `sshd_config`.** The
+  provider's image ships `/etc/ssh/sshd_config.d/50-cloud-init.conf` with
+  `PasswordAuthentication yes`, and OpenSSH keeps the FIRST value it reads. A
+  file named `00-roboknights-hardening.conf` (`PermitRootLogin no`,
+  `PasswordAuthentication no`, `KbdInteractiveAuthentication no`) wins. Check
+  with `sshd -T`, restart `ssh`, and test a NEW key login before closing the
+  root session.
+- **The GitHub secrets, `VPS_HOST` and `VPS_SSH_KEY`, must be set from the
+  command line, not the web form.** `gh secret set VPS_SSH_KEY --repo ... <
+  keyfile` and `gh secret set VPS_HOST --repo ... --body "<ip>"`. A key pasted
+  into the web form came through damaged (the deploy's rsync step failed with
+  `Load key ...: error in libcrypto`), and a hand-typed host failed first as
+  `getaddrinfo: Name or service not known`, then as a silent timeout. The
+  provider's emailed hostname did not resolve in DNS, so use the IP.
+- **`deploy-bot.yml`'s `ssh-keyscan` now waits 30 seconds** and fails with a
+  plain message; it used to give up after the default 5s with no output.
+- Telling failures apart from the Actions log: the "Set up SSH" step failing
+  means GitHub could not find or reach the box (wrong `VPS_HOST`, or a firewall
+  on the provider's side); "Sync bot code" failing with `Permission denied
+  (publickey)` means the key secret is wrong.
+
 **One-time setup, for reference if this VPS is ever rebuilt from
 scratch** (the box already exists and is live — this is documentation of
 what was done, not a to-do list to repeat):
