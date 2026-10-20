@@ -17,6 +17,11 @@
 # up over a joke, so the prompt below is told to flag only clear cases and
 # to leave anything borderline alone. Under-flagging is the intended bias.
 #
+# (From 2026-08-26 to 2026-10-20 an AUTO_WARN switch let it also write a long
+# warning and post it in #general. Removed at the host's request: messages are
+# still flagged - recorded in discord_flags and emailed - but nothing is ever
+# posted to Discord about it.)
+#
 # To test on your own laptop: `python check_discord_messages.py`
 # (needs the same .env file app.py uses). Add --dry-run to print the
 # report instead of emailing it.
@@ -38,10 +43,7 @@ load_dotenv()
 client = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
 
 # Same model the rest of the project moved to on 2026-08-25, after Groq
-# retired the Llama models everything used to run on. Used here only for
-# WRITING a warning - see REVIEW_MODEL for the bulk of the work.
-GROQ_MODEL = "openai/gpt-oss-120b"
-
+# retired the Llama models everything used to run on.
 REVIEW_MODEL = "openai/gpt-oss-120b"
 
 # Used only when the model above has run out of budget for the day.
@@ -54,12 +56,11 @@ REVIEW_MODEL = "openai/gpt-oss-120b"
 # night (an explicit sexual remark aimed at members). 20b missed it
 # entirely, and instead rated two ordinary argumentative lines - "who are
 # you to talk about manners", "behave like the junior you are" - as
-# CLEAR, which is the rating that posts a public accusation about a named
-# student with nobody reading it first.
+# CLEAR, which is the rating that would put a named student at the top of a
+# report on the strength of an ordinary argument.
 #
-# So a run that falls back to it is marked degraded, and a degraded run
-# never warns anyone. It still produces the report, which is the half
-# that has a person in the loop.
+# So a run that falls back to it is marked degraded, and the report says so,
+# so whoever reads it knows to doubt the ratings.
 REVIEW_FALLBACK_MODEL = "openai/gpt-oss-20b"
 
 # Who gets the report. Deliberately the club's own account by default and
@@ -91,77 +92,6 @@ RETRY_WAIT_SECONDS = 30
 # Never sleep longer than this in one go, however long Groq asks for.
 MAX_RETRY_WAIT_SECONDS = 150
 
-# --- automatic warnings -------------------------------------------------
-# Off unless AUTO_WARN is set to 1. The switch exists because this is the
-# one part of this job that ACTS on the model's judgement rather than
-# handing it to a person: a wrong call here is a real student publicly
-# accused by a bot at 8pm with nobody having read it first. Arming it
-# should be a decision someone makes on purpose, not a default.
-AUTO_WARN = os.environ.get("AUTO_WARN") == "1"
-
-# Only "clear" flags are ever warned automatically. Borderline ones still
-# go in the report, where a person decides what to do about them.
-AUTO_WARN_SEVERITY = "clear"
-
-# A hard ceiling per run. If one night produces nine "clear" flags, the
-# likeliest explanation is that the review went wrong, and the right
-# outcome then is a person reading the report - not a bot posting nine
-# public accusations into the channel while everyone is asleep.
-MAX_WARNINGS_PER_RUN = 3
-
-DISCORD_GENERAL_WEBHOOK = os.environ.get("DISCORD_GENERAL_WEBHOOK_URL")
-DISCORD_AUTOMATED_MARKER = "\n\n***This is an automated message***"
-# Same values as DISCORD_BOT_USERNAME/DISCORD_BOT_AVATAR_URL in shared.py -
-# kept in sync by hand since this script deliberately doesn't import that
-# module (see post_to_general()'s own comment). Without these, a webhook
-# post carries whatever name/avatar that webhook happens to be configured
-# with by default (seen live: "Captain Hook", not the bot's own identity),
-# same "wrong identity on a webhook post" gotcha CLAUDE.md already
-# documents once for a different channel.
-DISCORD_BOT_USERNAME = "roboknightsbot"
-DISCORD_BOT_AVATAR_URL = "https://cdn.discordapp.com/avatars/1536836032329416724/5ebc6d79217e395322b1faf5107e095f.png"
-DISCORD_MESSAGE_LIMIT = 2000
-
-# The length the warnings are meant to be. Enforced in code, not by asking
-# the model for a character count - see write_warning().
-MIN_WARNING_CHARS = 2000
-
-WARNING_PROMPT = """You are writing a warning to a member of a school \
-robotics club's Discord server, aged between 11 and 18, about something \
-they posted.
-
-Write ONE continuous paragraph of between 2200 and 3000 characters. Count \
-as you go - a first draft asked for "at least 2000" came back at 1894, so \
-aim past the target rather than at it. No headings, no bullet points, no \
-lists - flowing prose only.
-
-Requirements:
-- Say plainly what was wrong with the message and why it matters to the \
-people who read it.
-- Be firm and serious, but never insulting, sarcastic or mocking. You are \
-correcting behaviour, not attacking a person.
-- Do not swear, and do not repeat any slur or explicit wording from the \
-message itself.
-- Do not threaten specific punishments, do not mention removing or \
-restricting anyone's access, and do not claim any action has been taken.
-- Make clear that the same standard applies to every member equally.
-- End by saying what is expected from them from here on.
-
-Do NOT invent things that were not given to you. This club has no code of \
-conduct document, no written rules page, no mentors and no moderators, so \
-do not refer to any of them and never tell the member to go and read \
-something. Do not mention parents or teachers. Do not describe what the \
-club is for or what other members supposedly come here to do - you do not \
-know. Write only about the message itself, why it lands badly on the \
-people who read it, and what you expect instead. Plain, direct, human \
-wording - not the language of a company policy.
-
-The member's name: {name}
-What they posted: {content}
-Why it was flagged: {reason}
-
-Write only the paragraph itself, nothing else."""
-
 PROMPT = """You review one day of chat messages from a school robotics \
 club's Discord server. The members are students aged 11 to 18.
 
@@ -189,9 +119,8 @@ aimed at a member, a real threat, or plain abuse.
 - "borderline" - it might be out of line, but tone, context or a joke could \
 explain it.
 
-When in doubt it is "borderline". Only "clear" ones are acted on \
-automatically, so a wrong "clear" costs a student a public accusation over \
-something they meant as a joke.
+When in doubt it is "borderline". A wrong "clear" costs a student being \
+questioned over something they meant as a joke.
 
 Reply with JSON only, no other text, in exactly this shape:
 {"flagged": [{"id": "<the id shown>", "reason": "<one short sentence>", \
@@ -230,8 +159,8 @@ def ist(iso):
 
 def already_handled(message_ids):
     """Message ids this check has already recorded, so a re-run - manual,
-    or after a failure halfway through - can never warn somebody twice for
-    something they said once."""
+    or after a failure halfway through - never records the same message
+    twice."""
     if not message_ids:
         return set()
     try:
@@ -240,162 +169,13 @@ def already_handled(message_ids):
         return {r["discord_message_id"] for r in rows}
     except Exception as exc:
         # The table may not exist yet (the migration is run by hand, same
-        # as every other schema change here). Failing OPEN would mean
-        # re-warning everybody every run, so fail closed instead: no
-        # memory, no automatic warnings.
-        print(f"discord_flags unavailable, not warning anyone: {exc!r}", flush=True)
+        # as every other schema change here). The report still goes out;
+        # the flags just aren't recorded.
+        print(f"discord_flags unavailable, flags not recorded: {exc!r}", flush=True)
         return None
 
 
-def write_warning(row, reason, key):
-    """Ask the model for the warning paragraph itself."""
-    prompt = WARNING_PROMPT.format(
-        name=row.get("discord_display_name") or "this member",
-        content=(row.get("content") or "").strip(),
-        reason=reason,
-    )
-    try:
-        r = requests.post(
-            "https://api.groq.com/openai/v1/chat/completions",
-            headers={"Authorization": f"Bearer {key}"},
-            json={"model": GROQ_MODEL, "temperature": 0.3, "max_tokens": 1400,
-                  "reasoning_effort": "low",
-                  "messages": [{"role": "user", "content": prompt}]},
-            timeout=90,
-        )
-    except Exception as exc:
-        print(f"   could not write the warning: {exc!r}", flush=True)
-        return None
-    if r.status_code != 200:
-        print(f"   could not write the warning: HTTP {r.status_code} {r.text[:200]}",
-              flush=True)
-        return None
-    text = (r.json()["choices"][0]["message"].get("content") or "").strip()
-    if not text:
-        return None
-
-    # Asking for a character count doesn't work: told "at least 2000" it
-    # produced 1894, and told "between 2200 and 3000" it produced 1542.
-    # Models don't count characters. So check it here and ask once for
-    # more, which is a thing they CAN do - expand something already
-    # written - rather than hit a number they can't measure.
-    if len(text) < MIN_WARNING_CHARS:
-        print(f"   warning came back at {len(text)} chars, asking for more", flush=True)
-        try:
-            r2 = requests.post(
-                "https://api.groq.com/openai/v1/chat/completions",
-                headers={"Authorization": f"Bearer {key}"},
-                json={"model": GROQ_MODEL, "temperature": 0.3, "max_tokens": 1600,
-                      "reasoning_effort": "low",
-                      "messages": [
-                          {"role": "user", "content": prompt},
-                          {"role": "assistant", "content": text},
-                          {"role": "user", "content":
-                           "That is too short. Rewrite it as one continuous "
-                           "paragraph roughly twice that length. Do not add any "
-                           "new accusation or any claim you have not already "
-                           "made - go deeper on why it affects the people who "
-                           "read it and on what is expected instead. Same rules "
-                           "as before. Reply with the paragraph only."},
-                      ]},
-                timeout=90,
-            )
-            if r2.status_code == 200:
-                longer = (r2.json()["choices"][0]["message"].get("content") or "").strip()
-                # Only take it if it is actually longer; a shorter retry
-                # means the second attempt went worse than the first.
-                if len(longer) > len(text):
-                    text = longer
-        except Exception as exc:
-            print(f"   could not expand the warning: {exc!r}", flush=True)
-
-    return _strip_quotes_of(text, row.get("content") or "")
-
-
-def _strip_quotes_of(warning, original):
-    """Take the flagged message back out of the warning if the model
-    quoted it.
-
-    The prompt says not to repeat explicit wording. It did anyway - a
-    warning about a sexual remark came back with the remark reprinted in
-    full, which would have republished it to the same public channel, in
-    front of the same younger members it was a problem for. A system
-    prompt is a request; this is the part that actually holds.
-
-    Any run of 25+ characters from the original found in the warning is
-    replaced, rather than the whole warning being thrown away - the rest
-    of it is usually fine, and a warning that never sends is its own kind
-    of failure.
-    """
-    original = " ".join((original or "").split())
-    if len(original) < 25:
-        return warning
-    lowered = warning.lower()
-    # Longest first, so a big quote is caught whole instead of leaving
-    # fragments behind after a short match is replaced.
-    for size in range(len(original), 24, -1):
-        for start in range(0, len(original) - size + 1):
-            chunk = original[start:start + size]
-            at = lowered.find(chunk.lower())
-            if at != -1:
-                print(f"   the warning quoted {len(chunk)} characters of the "
-                      f"original message - removed", flush=True)
-                before, after = warning[:at], warning[at + len(chunk):]
-                # Models tend to wrap the quote in quotation marks, which
-                # would otherwise be left stranded around the replacement
-                # ('the message you posted, "that message."').
-                if before[-1:] in "\"'“‘" and after[:1] in "\"'”’":
-                    before, after = before[:-1], after[1:]
-                cleaned = before + "that message" + after
-                # Anything else quoted gets caught on the next pass.
-                return _strip_quotes_of(cleaned, original)
-    return warning
-
-
-def post_to_general(text):
-    """Post to the club's Discord. Deliberately its own small function
-    rather than shared.send_discord_message() - this script never imports
-    shared.py, since that pulls in Streamlit (same reasoning as the other
-    cron scripts). The automated-message footer is added here to match
-    what every other message this project sends carries.
-
-    Discord refuses anything over 2000 characters and the warnings are
-    deliberately longer than that, so they go out in parts.
-    """
-    if not DISCORD_GENERAL_WEBHOOK:
-        print("   DISCORD_GENERAL_WEBHOOK_URL is not set - cannot post", flush=True)
-        return None
-    body = text + DISCORD_AUTOMATED_MARKER
-    chunks, rest = [], body
-    while rest:
-        if len(rest) <= DISCORD_MESSAGE_LIMIT:
-            chunks.append(rest)
-            break
-        # Break on a space rather than mid-word.
-        cut = rest.rfind(" ", 0, DISCORD_MESSAGE_LIMIT)
-        chunks.append(rest[:cut if cut > 0 else DISCORD_MESSAGE_LIMIT])
-        rest = rest[(cut + 1) if cut > 0 else DISCORD_MESSAGE_LIMIT:]
-
-    first_id = None
-    for chunk in chunks:
-        r = requests.post(
-            f"{DISCORD_GENERAL_WEBHOOK}?wait=true",
-            json={
-                "content": chunk,
-                "username": DISCORD_BOT_USERNAME,
-                "avatar_url": DISCORD_BOT_AVATAR_URL,
-            },
-            timeout=20,
-        )
-        if r.status_code >= 300:
-            print(f"   posting failed: HTTP {r.status_code} {r.text[:200]}", flush=True)
-            return first_id
-        first_id = first_id or r.json().get("id")
-        time.sleep(1)
-    return first_id
-
-
-def record_flag(row, reason, severity, warning_id):
+def record_flag(row, reason, severity):
     try:
         client.table("discord_flags").upsert({
             "discord_message_id": row["discord_message_id"],
@@ -404,8 +184,6 @@ def record_flag(row, reason, severity, warning_id):
             "content": (row.get("content") or "")[:2000],
             "reason": reason,
             "severity": severity,
-            "warned_at": datetime.now(timezone.utc).isoformat() if warning_id else None,
-            "warning_message_id": warning_id,
         }).execute()
     except Exception as exc:
         print(f"   could not record the flag: {exc!r}", flush=True)
@@ -433,12 +211,12 @@ def review(messages):
         got = _review_all(messages, key, model)
         if got is not None:
             # A run on anything but the main model is degraded: the report
-            # still goes out, but nothing is warned automatically off a
-            # judgement the weaker model is measurably bad at.
+            # still goes out, and says so, because the weaker model is
+            # measurably bad at this judgement.
             return got, model == REVIEW_MODEL
         if model == REVIEW_MODEL:
             print(f"   {REVIEW_MODEL} unavailable - retrying on "
-                  f"{REVIEW_FALLBACK_MODEL}, warnings will be suppressed", flush=True)
+                  f"{REVIEW_FALLBACK_MODEL}, the report will say so", flush=True)
     return None
 
 
@@ -602,51 +380,22 @@ def main():
     hits = [(by_id[f["id"]], f.get("reason", ""), (f.get("severity") or "borderline").lower())
             for f in flagged if f.get("id") in by_id]
     print(f"flagged: {len(hits)} "
-          f"({sum(1 for h in hits if h[2] == AUTO_WARN_SEVERITY)} clear)", flush=True)
+          f"({sum(1 for h in hits if h[2] == 'clear')} clear)", flush=True)
     if not hits:
         # Nothing to send. The GitHub Actions run itself is the record
         # that the check happened.
         return
 
-    # --- automatic warnings ---------------------------------------------
-    # Only when armed, only "clear" flags, only ones never dealt with
-    # before, and never more than MAX_WARNINGS_PER_RUN in one night.
+    # What has already been recorded, so a re-run doesn't record it twice.
+    # Nothing is ever posted to Discord from here: flags are recorded and
+    # emailed, and a person decides what to do about them.
     seen = already_handled([r["discord_message_id"] for r, _, _ in hits])
-    warned = {}
-    if AUTO_WARN and not full_quality:
-        print("   reviewed on the backup model - warnings suppressed, "
-              "the report goes out for a person to read", flush=True)
-    if AUTO_WARN and full_quality and not dry_run and seen is not None:
-        key = os.environ.get("GROQ_API_KEY")
-        candidates = [h for h in hits
-                      if h[2] == AUTO_WARN_SEVERITY
-                      and h[0]["discord_message_id"] not in seen]
-        if len(candidates) > MAX_WARNINGS_PER_RUN:
-            print(f"   {len(candidates)} clear flags is more than the {MAX_WARNINGS_PER_RUN} "
-                  f"allowed in one run - warning nobody, this needs a person", flush=True)
-            candidates = []
-        for row, reason, _ in candidates:
-            who = row.get("discord_display_name") or row["discord_user_id"]
-            text = write_warning(row, reason, key)
-            if not text:
-                continue
-            mention = f"<@{row['discord_user_id']}>\n\n"
-            posted = post_to_general(mention + text)
-            if posted:
-                warned[row["discord_message_id"]] = posted
-                print(f"   warned {who} ({len(text)} chars, message {posted})", flush=True)
-            time.sleep(2)
-    elif AUTO_WARN and seen is None:
-        print("   automatic warnings skipped: no record of what was already handled",
-              flush=True)
 
-    # Every flag is recorded either way, so tomorrow's run knows this one
-    # has been seen - whether or not a warning went out for it.
+    # Every flag is recorded, so tomorrow's run knows this one has been seen.
     if not dry_run:
         for row, reason, severity in hits:
             if seen is not None and row["discord_message_id"] not in seen:
-                record_flag(row, reason, severity,
-                            warned.get(row["discord_message_id"]))
+                record_flag(row, reason, severity)
 
     lines = [
         f"The evening check went through {len(rows)} Discord messages from the "
@@ -662,9 +411,8 @@ def main():
             "NOTE: the main review model had no budget left today, so this "
             "ran on the backup one. It is measurably worse at this - on a "
             "test it missed an explicit sexual remark entirely and rated two "
-            "ordinary argumentative lines as clear-cut. No warnings were "
-            "sent automatically, and these ratings deserve more doubt than "
-            "usual.",
+            "ordinary argumentative lines as clear-cut. These ratings "
+            "deserve more doubt than usual.",
             "",
         ]
     # Where each flagged message sits in the day, so the surrounding
@@ -673,14 +421,10 @@ def main():
 
     for row, reason, severity in hits:
         who = row.get("discord_display_name") or row["discord_user_id"]
-        sent = warned.get(row["discord_message_id"])
         lines += [
             f"{ist(row['created_at'])} - {who}  [{severity}]",
             f"   >>> {(row['content'] or '').strip()}",
             f"   flagged because: {reason}",
-            # Whether a warning was posted is the first thing a reader
-            # needs: it decides whether they still have to do something.
-            f"   {'WARNED AUTOMATICALLY - message ' + sent if sent else 'no warning sent - your call'}",
             f"   {jump_link(row)}",
             "",
         ]

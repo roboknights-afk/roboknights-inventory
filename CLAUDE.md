@@ -2890,3 +2890,31 @@ anything similar the bot summarises the last 100 messages of the channel".
   with the real token would double-reply). To try it for real, tag the bot in a
   channel and say "summarise".
 
+## Evening check: no more Discord warnings (2026-10-20)
+
+Host request: "remove flagging message from discord, like messages should be
+flagged but nothing should be posted abt that in discord".
+
+- **What went.** `check_discord_messages.py` used to, when the GitHub repo
+  variable `AUTO_WARN` was 1 (it was, since 2026-08-26), write a 2,000-character
+  warning with the model and post it in #general through a webhook, pinging the
+  member, for each "clear" flag (max 3 a night, only on the main review model).
+  All of that is deleted from the code, not just switched off: `write_warning`,
+  `_strip_quotes_of`, `post_to_general`, `WARNING_PROMPT`, `AUTO_WARN`, the
+  webhook identity constants. The workflow step no longer gets `AUTO_WARN` or
+  `DISCORD_GENERAL_WEBHOOK_URL`, and the repo variable was deleted. Deleting the
+  code means setting the variable again does nothing.
+- **What stays.** The 8 PM IST review of the last 24 hours still flags messages,
+  still records each one in `discord_flags` (so a re-run doesn't record it twice),
+  and still emails the report to `MODERATION_REPORT_EMAIL` with the surrounding
+  conversation and a link to each message. A person decides what to do. The
+  report no longer says "WARNED AUTOMATICALLY" / "no warning sent - your call",
+  and the backup-model note no longer mentions warnings. The `discord_flags`
+  columns `warned_at` / `warning_message_id` are no longer written (left in the
+  table; older rows keep their values).
+- **Untouched:** the bot's separate "message deleted" report to the logs channel
+  (`DISCORD_LOGS_CHANNEL_ID`) is a different feature and still posts.
+- **Tested** by `test_check_discord.py` (made-up messages, everything faked): with
+  `AUTO_WARN=1` and a webhook set, a "clear" flag posts nothing, is still recorded,
+  and is still in the emailed report; any HTTP call fails the test.
+

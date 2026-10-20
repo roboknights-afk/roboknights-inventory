@@ -234,7 +234,10 @@ server) and emails a report of anything that reads as a personal attack,
 with the surrounding conversation and a link straight to the message.
 
 **It only reads and reports.** It never replies, deletes, warns anyone, or
-touches a Discord message. A person decides what to do about a flag. The
+touches a Discord message - nothing about a flag is ever posted to Discord.
+(An `AUTO_WARN` mode that posted public warnings ran from 2026-08-26 to
+2026-10-20 and was removed at the host's request.) A person decides what to
+do about a flag. The
 prompt is deliberately biased towards under-flagging — arguing, swearing at
 nobody in particular, jokes and banter are explicitly left alone — because a
 false positive means a member gets questioned over a joke.

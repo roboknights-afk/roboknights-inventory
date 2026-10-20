@@ -529,6 +529,10 @@ alter table chat_threads add column if not exists request_group_id text;
 -- warned_at is null when the message was flagged but no warning was sent
 -- (borderline, or the nightly cap was already reached), so the report
 -- still shows it to a person without it ever having been posted.
+--
+-- 2026-10-20: automatic warnings were removed, so warned_at and
+-- warning_message_id are no longer written (always null on new rows; older
+-- rows keep what they had). Left in place rather than dropped.
 create table if not exists discord_flags (
     discord_message_id text primary key,
     discord_user_id    text not null,
