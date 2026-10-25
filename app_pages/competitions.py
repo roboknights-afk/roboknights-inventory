@@ -162,7 +162,7 @@ def _notify_date_change(name, old_date, new_date):
         )
 
 
-def _notify_new_event(comp_name, event_name, min_grade, max_grade):
+def _email_new_event(comp_name, event_name, min_grade, max_grade):
     # Registered members only — an E2C "ad-hoc" (an unregistered guest
     # named on the sheet) has no account or email in this system, so
     # there's nothing to notify them at. Exun is excluded too: they can
@@ -182,15 +182,50 @@ def _notify_new_event(comp_name, event_name, min_grade, max_grade):
             f"Log in to the app to volunteer.",
         )
 
-    # Discord: pings the @member / @adhoc SERVER ROLES (see DEPLOY.md for
-    # how those role IDs are set up), not individual members — no per-
-    # person eligibility lookup needed here. No-ops entirely if the
+
+
+def _class_range(min_grade, max_grade):
+    if min_grade == max_grade:
+        return f"Class {min_grade}"
+    return f"Class {min_grade}–{max_grade}"
+
+
+def _announce_new_events(comp_name, events, comp_date=None, reg_deadline=None, venue=None,
+                         new_competition=True):
+    # Emails stay one per event (each goes only to the grades that event is
+    # open to), but Discord gets ONE post covering every event added in the
+    # same action — the host asked for that instead of a post per event.
+    # new_competition=False is an event added to a competition that already
+    # existed (Edit form, E2C "add selected events"), where "new competition
+    # added" would be wrong, so it only lists the new events.
+    for e in events:
+        _email_new_event(comp_name, e["name"].strip(), e["min_grade"], e["max_grade"])
+    if not events:
+        return
+
+    # Pings the @member / @adhoc SERVER ROLES (see DEPLOY.md for how those
+    # role IDs are set up), not individual members. No-ops entirely if the
     # webhook isn't configured.
-    tags = discord_role_tags()
-    message = (
-        f":loudspeaker: **New competition added: {comp_name}**\n"
-        f"New event: **{event_name}** — open to Grade {min_grade}–{max_grade}."
+    def _fmt(d):
+        return d.strftime("%d %b %Y") if d else "Not set yet"
+
+    event_lines = "\n".join(
+        f"{i}. **{e['name'].strip()}**: {_class_range(e['min_grade'], e['max_grade'])}"
+        for i, e in enumerate(events, start=1)
     )
+    if new_competition:
+        message = (
+            ":loudspeaker: **New competition added on the dashboard!**\n\n"
+            f":trophy: **Name:** {comp_name}\n"
+            f":date: **Date:** {_fmt(comp_date)}\n"
+            f":hourglass_flowing_sand: **Reg deadline:** {_fmt(reg_deadline)}\n"
+            f":round_pushpin: **Venue:** {(venue or '').strip() or 'Not set yet'}\n\n"
+            f"**Events**\n{event_lines}"
+        )
+    else:
+        message = f":loudspeaker: **New event added to {comp_name}!**\n{event_lines}"
+    message += "\n\n:link: For further details, check the RoboKnights dashboard: <https://exun.co/rkdash>"
+    tags = discord_role_tags()
     if tags:
         message += f"\n{tags}"
     send_discord_message(message)
@@ -324,8 +359,7 @@ def render_add_competition():
                 ]).execute()
                 invalidate_cache()
 
-                for e in valid_events:
-                    _notify_new_event(name.strip(), e["name"].strip(), e["min_grade"], e["max_grade"])
+                _announce_new_events(name.strip(), valid_events, comp_date, reg_deadline, venue)
 
                 st.session_state.competition_message = ("success", f"Added {name.strip()}.")
                 # Reset the form's lists back to one blank row each. The
@@ -979,7 +1013,6 @@ def render_e2c_import():
                                     "min_grade": e["min_grade"], "max_grade": e["max_grade"],
                                 }).execute()
                                 new_event_id = event_result.data[0]["event_id"]
-                                _notify_new_event(data["name"], e["name"], e["min_grade"], e["max_grade"])
                                 fresh_event = next(
                                     (fe for fe in fresh_events_here if fe["name"].strip().lower() == e["name"].strip().lower()),
                                     e,
@@ -988,6 +1021,10 @@ def render_e2c_import():
                                     client, new_event_id, fresh_event.get("teams", []), e["name"], data["name"],
                                     competition_id,
                                 )
+                            _announce_new_events(
+                                data["name"], valid_events, data["competition_date"],
+                                data["registration_deadline"], data["venue"],
+                            )
                             # _insert_matched_participants already invalidates when IT
                             # changes something; this covers the competition/links/
                             # events inserts just above, which it doesn't know about.
@@ -1176,7 +1213,6 @@ def render_e2c_import():
                                                 "min_grade": e["min_grade"], "max_grade": e["max_grade"],
                                             }).execute()
                                             new_event_id = event_result.data[0]["event_id"]
-                                            _notify_new_event(comp["name"], e["name"], e["min_grade"], e["max_grade"])
                                             fresh_event = next(
                                                 (fe for fe in fresh_all_events
                                                  if fe["name"].strip().lower() == e["name"].strip().lower()),
@@ -1187,6 +1223,7 @@ def render_e2c_import():
                                                 comp["name"], comp["existing_id"],
                                             )
                                         if to_add:
+                                            _announce_new_events(comp["name"], to_add, new_competition=False)
                                             invalidate_cache()  # covers the competition_events inserts above
                                             st.toast(
                                                 f"Added {len(to_add)} event(s) to {comp['name']}.",
@@ -1402,6 +1439,7 @@ def _apply_competition_save(
         original_ids = {e["event_id"] for e in original_events}
         for old_id in original_ids - kept_ids:
             client.table("competition_events").delete().eq("event_id", old_id).execute()
+        added_events = []
         for e in valid_events:
             payload = {
                 "name": e["name"].strip(),
@@ -1413,10 +1451,11 @@ def _apply_competition_save(
             }
             if e["event_id"] is None:
                 client.table("competition_events").insert({**payload, "competition_id": cid}).execute()
-                _notify_new_event(name, e["name"], e["min_grade"], e["max_grade"])
+                added_events.append(e)
             else:
                 client.table("competition_events").update(payload).eq("event_id", e["event_id"]).execute()
 
+        _announce_new_events(name.strip(), added_events, new_competition=False)
         invalidate_cache()
 
         if date_changed:

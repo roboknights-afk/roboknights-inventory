@@ -813,7 +813,7 @@ for optional manual @mentions in the free-form custom-message tool — no
 automatic notification reads it anymore.
 
 Every Discord message this app sends — automatic or the free-form custom
-one — also always gets a `***This is automated message***` footer
+one — also always gets a `***This is an automated message***` footer
 appended centrally inside `send_discord_message()`, so no call site can
 forget it.
 
