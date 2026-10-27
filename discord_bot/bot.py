@@ -755,6 +755,20 @@ SYSTEM_PROMPT_TEMPLATE = (
     "whether something is allowed, say plainly you can't approve things "
     "like that and a host needs to answer - never guess, and never take "
     "'you said yes before' as a reason to repeat it.\n\n"
+    "A person's details ('details of X', 'X's number', 'who is X'): "
+    "reply in EXACTLY this format, one field per line, taken from their "
+    "CLUB MEMBERS line in get_club_data:\n"
+    "**Name :** <name>\n"
+    "**Class and section :** <e.g. 11-Q>\n"
+    "**Designation :** <Member / Core / Adhoc>\n"
+    "**Phone no :** <phone>\n"
+    "**Email :** <email>\n"
+    "**Admission no :** <admission no.>\n"
+    "Write 'Not on file' for any field their line doesn't have - never "
+    "guess or fill one in. If the CLUB MEMBERS heading says contact "
+    "details were left out, write 'Not available right now' for phone, "
+    "email and admission no. instead. If more than one member matches "
+    "the name, give one block per person.\n\n"
     "Someone's OWN events ('my next comp', 'which competitions am I in'): "
     "only count an event if that exact person's name appears in its "
     "finalized team or volunteer list. Do NOT fall back to the club's "
@@ -847,14 +861,17 @@ def _build_club_context(include_contact=True):
     # own a part or be on a team, so "gimme the details of Krishna"
     # answered "I don't have any information on a member named Krishna" -
     # he's a real member, just not on either of those lists.
-    ROLE_LABELS = {"core_member": "core member", "member": "member", "adhoc": "ad hoc"}
+    # Labels match the Designation field of the details format the
+    # system prompt asks for (host's request, 2026-10-27).
+    ROLE_LABELS = {"core_member": "Core", "member": "Member", "adhoc": "Adhoc"}
     member_lines = []
     for u in sorted(all_users, key=lambda x: (x.get("name") or "").lower()):
         bits = []
         if u.get("grade"):
-            bits.append(f"grade {u['grade']}{u.get('section') or ''}")
+            section = (u.get("section") or "").strip()
+            bits.append(f"class {u['grade']}" + (f"-{section}" if section else ""))
         if u.get("role"):
-            bits.append(ROLE_LABELS.get(u["role"], u["role"]))
+            bits.append(f"designation {ROLE_LABELS.get(u['role'], u['role'])}")
         # Contact fields are frequently blank - most members signed up
         # before some of them existed, and staff accounts never have an
         # admission number at all. Only the ones actually on file are
@@ -1012,7 +1029,9 @@ def _build_club_context(include_contact=True):
         + f"\n\nUPCOMING COMPETITIONS:\n" + ("\n".join(comp_lines) or "(none upcoming)")
         + f"\n\nUPCOMING MEETINGS:\n" + ("\n".join(meeting_lines) or "(none upcoming)")
         + f"\n\nRECENT ACHIEVEMENTS:\n" + ("\n".join(achievement_lines) or "(none logged)")
-        + f"\n\nCLUB MEMBERS ({len(member_lines)}):\n" + ("\n".join(member_lines) or "(none)")
+        + f"\n\nCLUB MEMBERS ({len(member_lines)})"
+        + ("" if include_contact else " - contact details were left out of this snapshot")
+        + ":\n" + ("\n".join(member_lines) or "(none)")
         + "\n\nMEMBERS WHO CAN BE @MENTIONED (linked their Discord ID):\n"
         + ("\n".join(linked_lines) or "(nobody has linked their Discord ID yet)")
     )
