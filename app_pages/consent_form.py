@@ -11,6 +11,7 @@ from datetime import date, timedelta
 import streamlit as st
 
 from consent_docx import build_consent_docx
+from intraschool_consent import render as render_intraschool
 from shared import cached_table, today_ist
 
 OPENS_DAYS_BEFORE = 2
@@ -25,6 +26,18 @@ st.title(":material/description: Consent form")
 # read-only viewer have no users row and never compete for us.
 if st.session_state.is_exun or st.session_state.is_viewer:
     st.warning("This page isn't available for your account.")
+    st.stop()
+
+# Two kinds of form share this page (2026-10-28): the inter-school one below,
+# and the intra-school "stay back after school" one in intraschool_consent.py.
+# A segmented control, not st.tabs(), because the intra-school section reruns
+# the page after every save (see CLAUDE.md on tabs resetting).
+form_kind = st.segmented_control(
+    "Form", ["Inter-school", "Intra-school (stay back)"], default="Inter-school",
+    key="consent_form_kind", label_visibility="collapsed",
+)
+if form_kind == "Intra-school (stay back)":
+    render_intraschool()
     st.stop()
 
 today = today_ist()

@@ -104,3 +104,85 @@ def build_consent_docx(student_name, admission_no, grade, section, competition, 
                 data = new_xml.encode("utf-8") if item.filename == "word/document.xml" else src.read(item.filename)
                 dst.writestr(item, data)
     return buffer.getvalue()
+
+
+# ---------------------------------------------------------------------------
+# Intra-school "stay back" form (2026-10-28). Same school template, same look,
+# with two paragraphs reworded: the title, and the "hereby permit my ward to
+# participate in ..." paragraph, which becomes "... to stay back in school
+# after school hours on <day> <date> for <reason> till <time> (tentative
+# time)". A bold note under it says the time is tentative and that no mobile
+# phones are allowed. Every other paragraph (transport, conduct, liability,
+# the guardian's signature block) is left exactly as the school wrote it.
+# ---------------------------------------------------------------------------
+
+STAYBACK_TITLE = "Consent for Staying Back in School After School Hours"
+STAYBACK_NOTE = (
+    "I understand that this is only a tentative time and my ward might be delayed beyond it. "
+    "I also understand that mobile phones are not allowed, and my ward will not bring one."
+)
+_PARA = re.compile(r"<w:p[ >].*?</w:p>", re.S)
+
+
+def _para_parts(para, keep_id=True):
+    # A paragraph's opening tag, its <w:pPr>, and the formatting of its first
+    # run with text, so a rewritten paragraph keeps the template's font,
+    # size and spacing. keep_id=False drops Word's paragraph id, for a copy
+    # added as a NEW paragraph (two paragraphs must not share an id).
+    open_tag = para[:para.index(">") + 1]
+    if not keep_id:
+        open_tag = re.sub(r' w14:paraId="[^"]*"', "", open_tag)
+    ppr = re.search(r"<w:pPr>.*?</w:pPr>", para, re.S)
+    run = next(r for r in _RUN.findall(para) if _TEXT.search(r))
+    rpr = _RPR.search(run)
+    return open_tag, ppr.group(0) if ppr else "", rpr.group(0) if rpr else "<w:rPr></w:rPr>"
+
+
+def _paragraph(open_tag, ppr, rpr, pieces):
+    # pieces: (text, filled) pairs. Filled values are underlined, like the
+    # blanks they replace on the inter-school form.
+    runs = "".join(_run(_underlined(rpr) if filled else rpr, text) for text, filled in pieces)
+    return f"{open_tag}{ppr}{runs}</w:p>"
+
+
+def _bold(rpr):
+    # <w:b> goes right after <w:rFonts> to keep the run's properties in order.
+    return re.sub(r"(<w:rFonts[^>]*/>)", r"\1<w:b/><w:bCs/>", rpr, count=1)
+
+
+def build_stayback_docx(student_name, admission_no, grade, section, day, date_text, reason, until_text):
+    def value(text):
+        # A missing detail stays a printed blank for the guardian to fill in.
+        return (f" {text} ", True) if text else (" ______________ ", False)
+
+    with zipfile.ZipFile(TEMPLATE_PATH) as src:
+        xml = src.read("word/document.xml").decode("utf-8")
+        paras = _PARA.findall(xml)
+        title = next(p for p in paras if "inter-school event" in p)
+        body = next(p for p in paras if "hereby permit my ward" in p)
+
+        new_title = _paragraph(*_para_parts(title), [(STAYBACK_TITLE, False)])
+        open_tag, ppr, rpr = _para_parts(body)
+        new_body = _paragraph(open_tag, ppr, rpr, [
+            ("I, guardian of", False), value(student_name),
+            ("Adm. No.", False), value(admission_no),
+            ("of Class", False), value(grade),
+            ("section", False), value(section),
+            ("hereby permit my ward to stay back in school after school hours on", False),
+            value(day), value(date_text),
+            ("for", False), value(reason),
+            ("till", False), value(until_text),
+            ("(tentative time).", False),
+        ])
+        copy_tag, _, _ = _para_parts(body, keep_id=False)
+        spacer = f"<w:p>{ppr}</w:p>"
+        note = _paragraph(copy_tag, ppr, _bold(rpr), [(STAYBACK_NOTE, False)])
+
+        new_xml = xml.replace(title, new_title, 1).replace(body, new_body + spacer + note, 1)
+
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as dst:
+            for item in src.infolist():
+                data = new_xml.encode("utf-8") if item.filename == "word/document.xml" else src.read(item.filename)
+                dst.writestr(item, data)
+    return buffer.getvalue()

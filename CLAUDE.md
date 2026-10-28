@@ -2918,3 +2918,51 @@ flagged but nothing should be posted abt that in discord".
   `AUTO_WARN=1` and a webhook set, a "clear" flag posts nothing, is still recorded,
   and is still in the emailed report; any HTTP call fails the test.
 
+
+## Intra-school "stay back" consent forms (2026-10-28)
+
+Host request: on the Consent form page, a way to make an **intra-school** form -
+members staying back in school after school hours - where the host picks the
+members, gives the reason, the date and a tentative time, and chooses whether
+guardians consent on paper or online.
+
+- **Pieces.** `intraschool_consent.py` (the whole section; `render()` is called
+  from `app_pages/consent_form.py` when its new "Inter-school / Intra-school
+  (stay back)" segmented control is on Intra-school - a segmented control, not
+  `st.tabs()`, because every save reruns the page) and
+  `consent_docx.build_stayback_docx` (the paper form).
+- **Tables** `intraschool_forms` (reason, stay_date, until_time, mode
+  'physical'/'online', created_by) and `intraschool_form_members` (one row per
+  member; the guardian_* columns, `undertaking` and `submitted_at` only fill in
+  for an online form). Migration at the end of `supabase_schema.sql`, **not yet
+  run**; until it is the section shows a "not set up yet" warning and the
+  inter-school form is untouched.
+- **Physical.** The school's own template with two paragraphs rewritten: the
+  title ("Consent for Staying Back in School After School Hours") and the
+  "hereby permit my ward..." paragraph, now "...to stay back in school after
+  school hours on <day> <date> for <reason> till <time> (tentative time)",
+  followed by a bold note that the time is tentative (they might be delayed)
+  and that no mobile phones are allowed. Everything else (transport, conduct,
+  liability, the signature block) is left exactly as the school wrote it, as
+  asked ("rest remains the same") - note the transport paragraph still says
+  "in case the team returns", worded for a trip. Members download theirs; a host
+  can download anyone's.
+- **Online.** On the member's own account the guardian enters their name,
+  relation, phone (10 digits, a +91 is stripped) and email, reads the
+  undertaking (stay back on <date> for <reason> till <time>, tentative, no
+  assurance they'll be free by then, saved in the school's records, no phone)
+  and ticks to accept. The exact text accepted, with their name in it, is saved
+  in `undertaking`. A submission can't be edited afterwards. Hosts see a table
+  of who has submitted (with the guardian's details) and can read each
+  undertaking.
+- **Who sees what.** Hosts: create, every form, delete (cascades to
+  submissions). Members: only forms they're on, until the date passes (an
+  unsubmitted online one stays until it's done). Exun/viewer accounts are
+  already stopped by the page's own gate.
+- **Privacy.** Guardian name/phone/email are in `_AUDIT_PRIVATE_FIELDS` and
+  `undertaking` in `_AUDIT_TEXT_FIELDS`, so the audit log records that they
+  changed, never the values.
+- **No notifications** (not asked for): members find the form on the page.
+- **Tested** with Streamlit AppTest against a fake in-memory database (create
+  online + physical, member downloads, bad-then-good phone, submission saved,
+  host sees 1/2); not yet tried against the real database.

@@ -1176,3 +1176,36 @@ alter table competitions add column if not exists event_modes jsonb;
 -- this column exists the dialog still works: every event starts on "Both days"
 -- and nothing is remembered.
 alter table competitions add column if not exists event_days jsonb;
+
+-- Intra-school "stay back" consent forms (2026-10-28): on the Consent form
+-- page a host picks the members who have to stay back in school after school
+-- hours, gives the reason, the date and a TENTATIVE time they should be free
+-- by, and chooses how guardians consent - 'physical' (each member downloads
+-- the school's consent form reworded for staying back and hands it in signed)
+-- or 'online' (the guardian fills in their details on the member's account and
+-- accepts an undertaking, saved here as the record). Until this is run the
+-- page says so and nothing else breaks.
+create table if not exists intraschool_forms (
+    form_id     uuid primary key default gen_random_uuid(),
+    reason      text not null,
+    stay_date   date not null,
+    until_time  time not null,
+    mode        text not null check (mode in ('physical', 'online')),
+    created_by  uuid references users(user_id) on delete set null,
+    created_at  timestamptz not null default now()
+);
+
+-- One row per member the form is for. The guardian_* columns, undertaking (the
+-- exact text they agreed to) and submitted_at stay empty until an ONLINE form
+-- is submitted; a physical form never fills them.
+create table if not exists intraschool_form_members (
+    form_id           uuid not null references intraschool_forms(form_id) on delete cascade,
+    user_id           uuid not null references users(user_id) on delete cascade,
+    guardian_name     text,
+    guardian_relation text,
+    guardian_phone    text,
+    guardian_email    text,
+    undertaking       text,
+    submitted_at      timestamptz,
+    primary key (form_id, user_id)
+);

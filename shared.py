@@ -395,11 +395,12 @@ _AUDIT_PRIVATE_FIELDS = {
     "phone_no", "phone_no_2", "personal_email", "admission_no", "email",
     "photo_path", "instagram", "linkedin", "github", "website",
     "password", "token", "refresh_token",
+    "guardian_name", "guardian_phone", "guardian_email",
 }
 # Long free-text fields: log the size, not the text.
 _AUDIT_TEXT_FIELDS = {
     "body", "content", "description", "agenda", "details", "note", "notes",
-    "host_notes", "website_note", "summary", "quote",
+    "host_notes", "website_note", "summary", "quote", "undertaking",
 }
 
 # Days that the visitor's address/browser (recorded on sign-in events only)
