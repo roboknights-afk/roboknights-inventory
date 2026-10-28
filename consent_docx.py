@@ -112,14 +112,20 @@ def build_consent_docx(student_name, admission_no, grade, section, competition, 
 # participate in ..." paragraph, which becomes "... to stay back in school
 # after school hours on <day> <date> for <reason> till <time> (tentative
 # time)". A bold note under it says the time is tentative and that no mobile
-# phones are allowed. Every other paragraph (transport, conduct, liability,
-# the guardian's signature block) is left exactly as the school wrote it.
+# phones are allowed. The transport paragraph is reworded too (the original
+# talks about "the team returns", which is about a trip). Every other
+# paragraph (conduct, liability, the guardian's signature block) is left
+# exactly as the school wrote it.
 # ---------------------------------------------------------------------------
 
 STAYBACK_TITLE = "Consent for Staying Back in School After School Hours"
 STAYBACK_NOTE = (
     "I understand that this is only a tentative time and my ward might be delayed beyond it. "
     "I also understand that mobile phones are not allowed, and my ward will not bring one."
+)
+STAYBACK_TRANSPORT = (
+    "I shall make all necessary transport arrangements for my ward, as my ward will be staying back "
+    "in school after the school buses have left (after normal school hours are over at 1:40 p.m.)."
 )
 _PARA = re.compile(r"<w:p[ >].*?</w:p>", re.S)
 
@@ -160,6 +166,7 @@ def build_stayback_docx(student_name, admission_no, grade, section, day, date_te
         paras = _PARA.findall(xml)
         title = next(p for p in paras if "inter-school event" in p)
         body = next(p for p in paras if "hereby permit my ward" in p)
+        transport = next(p for p in paras if "transport arrangements" in p)
 
         new_title = _paragraph(*_para_parts(title), [(STAYBACK_TITLE, False)])
         open_tag, ppr, rpr = _para_parts(body)
@@ -178,7 +185,13 @@ def build_stayback_docx(student_name, admission_no, grade, section, day, date_te
         spacer = f"<w:p>{ppr}</w:p>"
         note = _paragraph(copy_tag, ppr, _bold(rpr), [(STAYBACK_NOTE, False)])
 
-        new_xml = xml.replace(title, new_title, 1).replace(body, new_body + spacer + note, 1)
+        new_transport = _paragraph(*_para_parts(transport), [(STAYBACK_TRANSPORT, False)])
+
+        new_xml = (
+            xml.replace(title, new_title, 1)
+            .replace(body, new_body + spacer + note, 1)
+            .replace(transport, new_transport, 1)
+        )
 
         buffer = io.BytesIO()
         with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as dst:

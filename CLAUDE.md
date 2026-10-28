@@ -2942,11 +2942,12 @@ guardians consent on paper or online.
   "hereby permit my ward..." paragraph, now "...to stay back in school after
   school hours on <day> <date> for <reason> till <time> (tentative time)",
   followed by a bold note that the time is tentative (they might be delayed)
-  and that no mobile phones are allowed. Everything else (transport, conduct,
-  liability, the signature block) is left exactly as the school wrote it, as
-  asked ("rest remains the same") - note the transport paragraph still says
-  "in case the team returns", worded for a trip. Members download theirs; a host
-  can download anyone's.
+  and that no mobile phones are allowed. The transport paragraph is reworded
+  (host's follow-up: the original "in case the team returns" is about a trip)
+  to "...as my ward will be staying back in school after the school buses have
+  left (after normal school hours are over at 1:40 p.m.)". Conduct, liability
+  and the signature block are exactly as the school wrote them. Members
+  download theirs; a host can download anyone's.
 - **Online.** On the member's own account the guardian enters their name,
   relation, phone (10 digits, a +91 is stripped) and email, reads the
   undertaking (stay back on <date> for <reason> till <time>, tentative, no
@@ -2962,7 +2963,12 @@ guardians consent on paper or online.
 - **Privacy.** Guardian name/phone/email are in `_AUDIT_PRIVATE_FIELDS` and
   `undertaking` in `_AUDIT_TEXT_FIELDS`, so the audit log records that they
   changed, never the values.
-- **No notifications** (not asked for): members find the form on the page.
+- **Email on create** (host's follow-up, same day): each member on the form
+  gets `stayback_email()` - date, reason, tentative time, the tentative/no-
+  phones note, and numbered steps for paper or online, with the dashboard link
+  (`APP_URL`). Sent with the normal best-effort `send_email`, so a failed send
+  never undoes the form; the confirmation says how many were emailed. No
+  WhatsApp/Discord.
 - **Tested** with Streamlit AppTest against a fake in-memory database (create
   online + physical, member downloads, bad-then-good phone, submission saved,
   host sees 1/2); not yet tried against the real database.

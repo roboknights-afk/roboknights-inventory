@@ -23,7 +23,7 @@ from datetime import date, datetime, time, timezone
 import streamlit as st
 
 from consent_docx import build_stayback_docx
-from shared import cached_table, format_ist, get_client, invalidate_cache, safe_write, today_ist
+from shared import APP_URL, cached_table, format_ist, get_client, invalidate_cache, safe_write, send_email, today_ist
 
 MODE_LABELS = {
     "physical": "Physical form, submitted in school",
@@ -53,6 +53,48 @@ def undertaking_text(form, student, guardian_name=None, relation=None):
         "assurance that my ward will be free by then; they might be delayed. I confirm that this undertaking "
         "is given by me and will be saved in the school's records, and that my ward will not bring a mobile phone."
     )
+
+
+def stayback_email(form, student):
+    # (subject, body) of the email each member gets when a form is made for
+    # them. Plain text, like every other email this app sends.
+    stay_date = date.fromisoformat(form["stay_date"])
+    when = stay_date.strftime("%A, %d %b %Y")
+    until = time_text(form["until_time"])
+    if form["mode"] == "physical":
+        how = "on a signed paper form"
+        steps = [
+            'Open the Consent form page on the dashboard and choose "Intra-school (stay back)".',
+            "Download your consent form and print it.",
+            "Have your parent/guardian fill in their details and sign it.",
+            "Submit the signed form in school.",
+        ]
+    else:
+        how = "online, on the dashboard"
+        steps = [
+            'Open the Consent form page on the dashboard and choose "Intra-school (stay back)".',
+            "Ask your parent/guardian to fill in their name, relation to you, phone number and email.",
+            "They read the undertaking, tick to accept it, and submit. It is saved in the school's records.",
+        ]
+    lines = [
+        f"Hi {student.get('name') or 'there'},",
+        "",
+        f"You need to stay back in school after school hours on {when} for {form['reason']}, "
+        f"till {until} (tentative time).",
+        "",
+        "Please note:",
+        "- This is a tentative time. You might be delayed past it.",
+        "- No mobile phones are allowed.",
+        "",
+        f"Your parent/guardian's consent is needed {how}:",
+        *(f"{i}. {step}" for i, step in enumerate(steps, 1)),
+        "",
+        f"Dashboard: {APP_URL}",
+        "",
+        "- RoboKnights",
+    ]
+    subject = f"Stay-back consent form: {form['reason']} on {stay_date.strftime('%d %b')}"
+    return subject, "\n".join(lines)
 
 
 def _stayback_docx(form, student):
@@ -141,9 +183,17 @@ def _create_form(users):
                             [{"form_id": form["form_id"], "user_id": uid} for uid in chosen]
                         ).execute()
                         invalidate_cache()
+                        # Best-effort like every email here: the form is saved
+                        # either way, a failed send just means no email.
+                        emailed = 0
+                        for uid in chosen:
+                            to_email = users[uid].get("email")
+                            if to_email:
+                                send_email(to_email, *stayback_email(form, users[uid]))
+                                emailed += 1
                         st.session_state.intraschool_flash = (
-                            f"Form created for {len(chosen)} member{'s' if len(chosen) != 1 else ''}. "
-                            "They'll find it on this page under Intra-school."
+                            f"Form created for {len(chosen)} member{'s' if len(chosen) != 1 else ''}, "
+                            f"and {emailed} emailed about it."
                         )
                         st.rerun()
 
