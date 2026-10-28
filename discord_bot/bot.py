@@ -63,6 +63,7 @@ from groq import Groq
 from supabase import create_client
 
 import channel_summary as cs
+import member_details as md
 
 load_dotenv()
 
@@ -1954,6 +1955,16 @@ async def _recent_channel_entries(channel, before):
     return entries
 
 
+def _member_detail_rows():
+    # Blocking Supabase call - only ever run through asyncio.to_thread.
+    return (
+        supabase.table("users")
+        .select("name,grade,section,role,email,phone_no,admission_no")
+        .execute()
+        .data
+    )
+
+
 async def _handle_summary_request(message, conversation_key, text, discord_user_id, discord_channel_id, linked_user_id):
     channel = message.channel
 
@@ -2130,6 +2141,26 @@ async def _handle_incoming(message, is_edit=False):
         _log_chat("assistant", ROAST_REFUSAL, discord_user_id, discord_channel_id, linked_user_id)
         await _send(message.channel, ROAST_REFUSAL)
         return
+
+    # "@bot details of X": answered straight from the users table, no model
+    # call (member_details.py says why). Before the rate limit since it
+    # costs nothing. A name that matches nobody falls through to the
+    # assistant below, which can still cope with a typo or nickname.
+    details_name = md.parse_request(text)
+    if details_name and reply_target is None:
+        try:
+            rows = await asyncio.to_thread(_member_detail_rows)
+        except Exception as e:
+            print(f"member details lookup failed: {e!r}")
+            rows = []
+        found = md.find_members(details_name, rows)
+        if found:
+            reply = md.format_reply(found)
+            history[conversation_key].append({"role": "user", "content": text})
+            history[conversation_key].append({"role": "assistant", "content": reply})
+            _log_chat("assistant", reply, discord_user_id, discord_channel_id, linked_user_id)
+            await _send(message.channel, reply, allowed_mentions=discord.AllowedMentions.none())
+            return
 
     if _rate_limited(discord_user_id):
         busy = (
