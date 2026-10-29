@@ -113,8 +113,10 @@ def build_consent_docx(student_name, admission_no, grade, section, competition, 
 # after school hours on <day> <date> for <reason> till <time> (tentative
 # time)". A bold note under it says the time is tentative and that no mobile
 # phones are allowed. The transport paragraph is reworded too (the original
-# talks about "the team returns", which is about a trip). Every other
-# paragraph (conduct, liability, the guardian's signature block) is left
+# talks about "the team returns", which is about a trip), and so is the
+# conduct paragraph's "throughout the trip", which becomes "throughout the
+# day" (host's request, 2026-10-29). Every other
+# paragraph (liability, the guardian's signature block) is left
 # exactly as the school wrote it.
 # ---------------------------------------------------------------------------
 
@@ -128,6 +130,8 @@ STAYBACK_TRANSPORT = (
     "in school after the school buses have left (after normal school hours are over at 1:40 p.m.)."
 )
 _PARA = re.compile(r"<w:p[ >].*?</w:p>", re.S)
+_TRIP_TEXT = ">etiquette throughout the trip<"
+_DAY_TEXT = ">etiquette throughout the day<"
 
 
 def _para_parts(para, keep_id=True):
@@ -229,6 +233,9 @@ def build_stayback_docx(student_name, admission_no, grade, section, day, date_te
             .replace(body, new_body + spacer + note, 1)
             .replace(transport, new_transport, 1)
         )
+        if new_xml.count(_TRIP_TEXT) != 1:
+            raise ValueError("The consent form template changed: its conduct paragraph no longer matches.")
+        new_xml = new_xml.replace(_TRIP_TEXT, _DAY_TEXT, 1)
         if guardian:
             new_xml = _fill_guardian_table(new_xml, guardian)
 
