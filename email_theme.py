@@ -10,6 +10,7 @@
 #   "- item"          -> bullet list
 #   "1. step"         -> numbered list (indented lines under it stay with it)
 #   "====" / "----"   -> a divider
+#   "a | b | c" lines -> a table, the first line its header row
 #   "Label: https://" -> a gold button labelled "Label" (on a line of its own)
 #   any other URL     -> a link
 #   a closing "- RoboKnights" / "Regards, RoboKnights" -> the sign-off, and a
@@ -93,7 +94,7 @@ def body_to_html(body):
 
     p_style = f"margin:0 0 16px;font-family:{FONT};font-size:15px;line-height:1.6;color:{TEXT};"
     li_style = f"margin:0 0 6px;font-family:{FONT};font-size:15px;line-height:1.6;color:{TEXT};"
-    blocks, para, items = [], [], []
+    blocks, para, items, table = [], [], [], []
     list_tag, list_start = None, 1
 
     def flush_para():
@@ -115,8 +116,33 @@ def body_to_html(body):
             items.clear()
         list_tag = None
 
+    def flush_table():
+        if table:
+            cell = f"padding:7px 10px;border-bottom:1px solid #E5E7EB;font-family:{FONT};font-size:13px;line-height:1.4;"
+            head = "".join(
+                f'<th align="left" style="{cell}background:{DARK};color:{GOLD};font-weight:600;">{_inline(c)}</th>'
+                for c in table[0]
+            )
+            body_rows = "".join(
+                f'<tr style="background:{"#FAFAFA" if i % 2 else "#FFFFFF"};">'
+                + "".join(f'<td style="{cell}color:{TEXT};">{_inline(c)}</td>' for c in row) + "</tr>"
+                for i, row in enumerate(table[1:])
+            )
+            blocks.append(
+                '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" '
+                'style="border-collapse:collapse;margin:0 0 18px;border:1px solid #E5E7EB;">'
+                f"<tr>{head}</tr>{body_rows}</table>"
+            )
+            table.clear()
+
     for line in lines:
         stripped = line.strip()
+        if " | " in stripped:
+            flush_para()
+            flush_list()
+            table.append([c.strip() for c in stripped.split(" | ")])
+            continue
+        flush_table()
         bullet, numbered, button = _BULLET.match(line), _NUMBERED.match(line), _BUTTON_LINE.match(stripped)
         if not stripped:
             flush_para()
@@ -146,6 +172,7 @@ def body_to_html(body):
             para.append(stripped)
     flush_para()
     flush_list()
+    flush_table()
 
     if sign_off:
         blocks.append(

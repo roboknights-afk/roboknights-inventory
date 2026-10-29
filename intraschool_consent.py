@@ -22,6 +22,8 @@
 # the page is unaffected. Saturday forms also need the later kind/from_time
 # migration; until that is run only stay-back forms can be made.
 
+import csv
+import io
 import re
 from datetime import date, datetime, time, timedelta, timezone
 
@@ -196,69 +198,78 @@ def _docx_name(form, student):
 
 DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 
-# Who "Forward all undertakings" emails (host's request, 2026-10-29: Ajith sir).
+# Who "Forward undertakings" emails (host's request, 2026-10-29: Ajith sir).
 # Found by his HOST_ROLES title, not a hardcoded address - this repo is public.
 UNDERTAKINGS_TO_TITLE = "Robotics In-Charge"
 # ...with the club's shared inbox copied in, so the club keeps the same record.
 UNDERTAKINGS_CC = "roboknights@dpsrkp.net"
 
 
-def undertakings_email(forms, rows_by_form, users):
-    # (subject, body) of ONE email holding every undertaking guardians have
-    # submitted online, grouped by form, or None if there are none yet.
-    sections = []
-    total = 0
-    kinds = set()
-    for form in sorted(forms, key=lambda f: f["stay_date"]):
-        if form["mode"] != "online":
-            continue
-        rows = sorted(rows_by_form.get(form["form_id"], []),
-                      key=lambda r: (users.get(r["user_id"], {}).get("name") or "").lower())
-        submitted = [r for r in rows if r.get("submitted_at")]
-        if not submitted:
-            continue
-        total += len(submitted)
-        kinds.add(noun(form))
-        stay_date = date.fromisoformat(form["stay_date"])
-        lines = [
-            f"{KIND_LABELS[kind_of(form)]}: {form['reason']} - {stay_date.strftime('%A, %d %b %Y')}, "
-            f"{timing(form)} (tentative)",
-            f"Submitted: {len(submitted)} of {len(rows)}",
-        ]
-        waiting = [users.get(r["user_id"], {}).get("name") or "Unknown" for r in rows if not r.get("submitted_at")]
-        if waiting:
-            lines.append("Still waiting: " + ", ".join(waiting))
-        for i, r in enumerate(submitted, 1):
-            s = users.get(r["user_id"], {})
-            lines += [
-                "",
-                f"{i}. {s.get('name') or 'Unknown'} (Class {s.get('grade') or '-'}-{s.get('section') or '-'}, "
-                f"Adm. No. {s.get('admission_no') or '-'})",
-                f"   Guardian: {r.get('guardian_name')} ({r.get('guardian_relation')}), "
-                f"phone {r.get('guardian_phone')}, email {r.get('guardian_email')}",
-                f"   Submitted: {format_ist(r['submitted_at'])}",
-                f"   Undertaking: \"{r.get('undertaking') or ''}\"",
-            ]
-        sections.append("\n".join(lines))
-    if not total:
+def _class_of(s):
+    return f"{s.get('grade') or '-'}-{s.get('section') or '-'}" if s.get("section") else str(s.get("grade") or "-")
+
+
+def undertakings_email(form, rows, users):
+    # (subject, body, attachments) of ONE email with every undertaking given
+    # online for this form, or None if there are none yet. Kept short for a
+    # big form (2026-10-29: 47 people on the Exun event): every guardian
+    # accepted the same wording, so it's quoted once and the people are a
+    # table; each one's exact saved text, with their email, is in the
+    # attached spreadsheet.
+    rows = sorted(rows, key=lambda r: (users.get(r["user_id"], {}).get("name") or "").lower())
+    submitted = [r for r in rows if r.get("submitted_at")]
+    if form["mode"] != "online" or not submitted:
         return None
-    # "stay-back", "Saturday", or "stay-back and Saturday" - whatever is in it.
-    what = " and ".join(sorted(kinds, key=lambda k: k != "stay-back"))
-    body = "\n".join([
+    stay_date = date.fromisoformat(form["stay_date"])
+    placeholder = {"name": "[student]", "admission_no": "[adm. no.]", "grade": "[class]", "section": "[section]"}
+    wording = undertaking_text(form, placeholder, "[guardian]", "[relation]")
+    waiting = [users.get(r["user_id"], {}).get("name") or "Unknown" for r in rows if not r.get("submitted_at")]
+    total = len(submitted)
+
+    lines = [
         "Dear Sir,",
         "",
-        (f"Below are all {total} {what} undertakings that guardians have given" if total != 1
-         else f"Below is the {what} undertaking a guardian has given")
-        + " online on the RoboKnights dashboard, grouped by date.",
+        (f"{total} guardians have" if total != 1 else "1 guardian has")
+        + f" given the {noun(form)} undertaking online on the RoboKnights dashboard for:",
         "",
-        *("=" * 60 + "\n" + section + "\n" for section in sections),
-        "Regards,",
-        "RoboKnights",
+        f"**{form['reason']}**: {stay_date.strftime('%A, %d %b %Y')}, {timing(form)} (tentative)",
+        f"Submitted: {total} of {len(rows)}",
         "",
-        "This is an automated message.",
-    ])
-    subject = f"{what[0].upper() + what[1:]} undertakings from guardians ({total} submitted)"
-    return subject, body
+        "Each guardian accepted this undertaking, with their own and their ward's details:",
+        f'"{wording}"',
+        "",
+        "# | Student | Class | Guardian | Mobile",
+        *(f"{i} | {users.get(r['user_id'], {}).get('name') or 'Unknown'} | {_class_of(users.get(r['user_id'], {}))} | "
+          f"{r.get('guardian_name')} ({r.get('guardian_relation')}) | {r.get('guardian_phone')}"
+          for i, r in enumerate(submitted, 1)),
+        "",
+    ]
+    if waiting:
+        lines += [f"Still waiting ({len(waiting)}): " + ", ".join(waiting), ""]
+    lines += [
+        "The attached spreadsheet has every guardian's email, admission numbers, when they submitted, "
+        "and the exact undertaking each one accepted.",
+        "",
+        "- RoboKnights",
+    ]
+
+    sheet = io.StringIO()
+    writer = csv.writer(sheet)
+    writer.writerow(["Student", "Class", "Adm. No.", "Guardian", "Relation", "Mobile", "Email", "Submitted", "Undertaking"])
+    for r in submitted:
+        s = users.get(r["user_id"], {})
+        writer.writerow([
+            s.get("name") or "", _class_of(s), s.get("admission_no") or "", r.get("guardian_name") or "",
+            r.get("guardian_relation") or "", r.get("guardian_phone") or "", r.get("guardian_email") or "",
+            format_ist(r["submitted_at"]), r.get("undertaking") or "",
+        ])
+    # utf-8-sig so Excel opens it with names intact.
+    filename = f"{noun(form).capitalize()} undertakings - {form['reason']} - {stay_date.strftime('%d %b')}.csv"
+    attachments = [(re.sub(r'[\\/:*?"<>|]', "-", filename), sheet.getvalue().encode("utf-8-sig"))]
+
+    subject = (f"{noun(form).capitalize()} undertakings: {form['reason']} on {stay_date.strftime('%d %b')} "
+               f"({total} of {len(rows)} submitted)")
+    return subject, "\n".join(lines), attachments
 
 
 def render():
@@ -291,7 +302,6 @@ def render():
     if is_host:
         _create_form(users)
         _host_list(forms, rows_by_form, users)
-        _forward_undertakings(forms, rows_by_form, users)
     _my_forms(forms, rows_by_form, users, me, is_host)
 
 
@@ -434,6 +444,7 @@ def _host_list(forms, rows_by_form, users):
                         for r in submitted:
                             st.markdown(f"**{users.get(r['user_id'], {}).get('name') or 'Unknown'}**")
                             st.caption(r.get("undertaking") or "")
+                _forward_undertakings(form, rows, users)
             else:
                 st.caption("For: " + ", ".join(users.get(r["user_id"], {}).get("name") or "Unknown" for r in rows))
                 pick_col, dl_col = st.columns([3, 2], vertical_alignment="bottom")
@@ -458,28 +469,35 @@ def _host_list(forms, rows_by_form, users):
                         st.rerun()
 
 
-# ---------- host: forward every undertaking in one email ----------
+# ---------- host: forward a form's undertakings in one email ----------
 
-def _forward_undertakings(forms, rows_by_form, users):
-    email = undertakings_email(forms, rows_by_form, users)
+def _forward_undertakings(form, rows, users):
+    # On each online form's card (2026-10-29: one email per form, not one for
+    # every form at once, which got too long with 47 people on one).
+    email = undertakings_email(form, rows, users)
     if not email:
         return
     to_email = next((e for e, title in HOST_ROLES.items() if title == UNDERTAKINGS_TO_TITLE), None)
     if not to_email:
         st.caption(f"No account has the title {UNDERTAKINGS_TO_TITLE}, so undertakings can't be forwarded.")
         return
-    count = sum(1 for f in forms if f["mode"] == "online"
-                for r in rows_by_form.get(f["form_id"], []) if r.get("submitted_at"))
-    with st.popover("Forward all undertakings to Ajith sir", icon=":material/forward_to_inbox:"):
-        st.caption(f"Emails {'all ' + str(count) + ' submitted undertakings' if count != 1 else 'the 1 submitted undertaking'} "
-                   f"to Ajith sir in one email, with {UNDERTAKINGS_CC} in CC.")
-        if st.button("Send", type="primary", icon=":material/send:", key="intra_forward_undertakings"):
+    count = sum(1 for r in rows if r.get("submitted_at"))
+    with st.popover("Forward undertakings to Ajith sir", icon=":material/forward_to_inbox:"):
+        st.caption(
+            f"Emails the {count} submitted undertaking{'s' if count != 1 else ''} for this form to Ajith sir "
+            f"in one email - a short table, with a spreadsheet of the full details attached - "
+            f"with {UNDERTAKINGS_CC} in CC."
+        )
+        if st.button("Send", type="primary", icon=":material/send:", key=f"intra_forward_{form['form_id']}"):
             # Not the usual best-effort send: if the mail server refuses or
             # can't be reached, safe_write shows "Couldn't send..." instead of
             # a false "Sent".
             with safe_write("send the undertakings to Ajith sir"):
-                send_email(to_email, *email, raise_errors=True, cc=[UNDERTAKINGS_CC])
-                st.session_state.intraschool_flash = f"Sent {count} undertaking{'s' if count != 1 else ''} to Ajith sir."
+                subject, body, attachments = email
+                send_email(to_email, subject, body, raise_errors=True, cc=[UNDERTAKINGS_CC], attachments=attachments)
+                st.session_state.intraschool_flash = (
+                    f"Sent {count} undertaking{'s' if count != 1 else ''} for {form['reason']} to Ajith sir."
+                )
                 st.rerun()
 
 

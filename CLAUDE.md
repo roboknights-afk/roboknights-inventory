@@ -2973,8 +2973,11 @@ guardians consent on paper or online.
   online + physical, member downloads, bad-then-good phone, submission saved,
   host sees 1/2); not yet tried against the real database.
 
-- **Forward to Ajith sir** (2026-10-29): a host-only popover under the forms
-  emails every online undertaking, grouped by form, to the account titled
+- **Forward to Ajith sir** (2026-10-29): a host-only popover on each online
+  form's card (one email per form - all forms in one got too long with 47 on
+  the Exun event). The wording is quoted once, the guardians are a table
+  (`a | b | c` lines, which email_theme renders as a table), and a CSV of
+  every row with the exact saved undertaking is attached. Sent to the account titled
   "Robotics In-Charge" (`UNDERTAKINGS_TO_TITLE`, never a hardcoded address).
   It uses `send_email(..., raise_errors=True)`, so a failed send shows
   "Couldn't send..." instead of a false "Sent" - every other email is still
@@ -3001,6 +3004,6 @@ and wrapped in a RoboKnights HTML version (logo from `static/email_logo.png`
 inline by CID, gold bar, dark title band with the subject, grey footer). Keep
 writing emails as plain text - blank line = paragraph, `- ` / `1. ` = lists
 (indented lines stay with their item), `Label: https://...` on its own line =
-gold button, `====` = divider, a closing `- RoboKnights` = the sign-off, and
+gold button, `====` = divider, `a | b` lines = a table, a closing `- RoboKnights` = the sign-off, and
 a closing "This is an automated message." is dropped (the footer says it).
 Supabase's own auth emails are NOT covered - those templates live in Supabase.
