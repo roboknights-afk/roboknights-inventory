@@ -95,7 +95,7 @@ _audit_off_until[0] = 0.0
 
 def _ist(timestamp):
     posted = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
-    return posted.astimezone(IST).strftime("%d %b %Y, %I:%M:%S %p")
+    return posted.astimezone(IST).strftime("%d %b %Y, %H:%M:%S")
 
 
 table = [

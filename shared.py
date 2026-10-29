@@ -1346,7 +1346,7 @@ def sync_merch_orders_to_sheet():
             i for i, row in enumerate(data_rows)
             if str(row[_MERCH_SHEET_ROLE_COLUMN]).strip().lower() == "alumni"
         ]
-        updated = datetime.now(IST).strftime("%d %b %Y, %I:%M %p IST")
+        updated = datetime.now(IST).strftime("%d %b %Y, %H:%M IST")
         summary = (
             f"{len(data_rows)} registrations   ·   {paid} paid   ·   {awaiting} awaiting payment   ·   "
             f"{rejected} rejected" + (f"   ·   {len(alumni_rows)} alumni" if alumni_rows else "")
@@ -1815,7 +1815,7 @@ def format_ist(created_at):
     posted = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
     if posted.tzinfo is None:
         posted = posted.replace(tzinfo=timezone.utc)
-    return posted.astimezone(IST).strftime("%d %b %Y, %I:%M %p IST")
+    return posted.astimezone(IST).strftime("%d %b %Y, %H:%M IST")
 
 
 def format_relative(created_at):

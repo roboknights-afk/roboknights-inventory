@@ -154,7 +154,7 @@ def jump_link(row):
 def ist(iso):
     # Supabase stores UTC; IST is a flat +5:30 with no DST.
     return (datetime.fromisoformat(iso.replace("Z", "+00:00"))
-            + timedelta(hours=5, minutes=30)).strftime("%d %b %Y, %I:%M %p")
+            + timedelta(hours=5, minutes=30)).strftime("%d %b %Y, %H:%M")
 
 
 def already_handled(message_ids):

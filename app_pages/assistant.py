@@ -269,7 +269,7 @@ def _build_export_text():
     lines = [
         "RoboKnights AI Assistant — conversation export",
         f"Member: {current_user_name}",
-        f"Exported: {datetime.now(IST).strftime('%d %b %Y, %I:%M %p IST')}",
+        f"Exported: {datetime.now(IST).strftime('%d %b %Y, %H:%M IST')}",
         "",
     ]
     for m in st.session_state.assistant_messages:
