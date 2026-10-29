@@ -13,15 +13,14 @@ import threading
 import time
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
-from email.mime.application import MIMEApplication
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
 from urllib.parse import urlencode
 
 import requests
 import streamlit as st
 import streamlit.components.v1 as components
 from supabase import create_client
+
+from email_theme import build_message
 
 # Where this app is running. Emails link back here. Reads from an APP_URL
 # secret if one is set (e.g. once deployed), otherwise falls back to your
@@ -1919,20 +1918,8 @@ def send_email(to_email, subject, body, raise_errors=False, attachments=(), cc=(
     # undertakings to Ajith sir): the error goes up so the host is told.
     # attachments: (filename, bytes) pairs, e.g. a stay-back form to print.
     # cc: extra addresses copied in (send_message mails the Cc header too).
-    if attachments:
-        msg = MIMEMultipart()
-        msg.attach(MIMEText(body))
-        for filename, data in attachments:
-            part = MIMEApplication(data)
-            part.add_header("Content-Disposition", "attachment", filename=filename)
-            msg.attach(part)
-    else:
-        msg = MIMEText(body)
-    msg["Subject"] = subject
-    msg["From"] = os.environ["SMTP_SENDER"]
-    msg["To"] = to_email
-    if cc:
-        msg["Cc"] = ", ".join(cc)
+    # Callers write plain text; email_theme.py adds the branded HTML version.
+    msg = build_message(os.environ["SMTP_SENDER"], to_email, subject, body, cc=cc, attachments=attachments)
 
     try:
         with smtplib.SMTP(os.environ["SMTP_HOST"], int(os.environ["SMTP_PORT"])) as server:

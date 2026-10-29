@@ -13,11 +13,12 @@ import re
 import smtplib
 import sys
 from datetime import date, datetime, timedelta, timezone
-from email.mime.text import MIMEText
 
 import requests
 from dotenv import load_dotenv
 from supabase import create_client
+
+from email_theme import build_message
 
 load_dotenv()
 
@@ -44,10 +45,8 @@ def _as_date(timestamp):
 
 
 def send_email(to_email, subject, body):
-    msg = MIMEText(body)
-    msg["Subject"] = subject
-    msg["From"] = os.environ["SMTP_SENDER"]
-    msg["To"] = to_email
+    # Branded HTML + the plain text, like every app email (email_theme.py).
+    msg = build_message(os.environ["SMTP_SENDER"], to_email, subject, body)
 
     with smtplib.SMTP(os.environ["SMTP_HOST"], int(os.environ["SMTP_PORT"])) as server:
         server.starttls()
