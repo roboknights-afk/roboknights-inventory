@@ -163,6 +163,8 @@ DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.docu
 # Who "Forward all undertakings" emails (host's request, 2026-10-29: Ajith sir).
 # Found by his HOST_ROLES title, not a hardcoded address - this repo is public.
 UNDERTAKINGS_TO_TITLE = "Robotics In-Charge"
+# ...with the club's shared inbox copied in, so the club keeps the same record.
+UNDERTAKINGS_CC = "roboknights@dpsrkp.net"
 
 
 def undertakings_email(forms, rows_by_form, users):
@@ -387,13 +389,13 @@ def _forward_undertakings(forms, rows_by_form, users):
                 for r in rows_by_form.get(f["form_id"], []) if r.get("submitted_at"))
     with st.popover("Forward all undertakings to Ajith sir", icon=":material/forward_to_inbox:"):
         st.caption(f"Emails {'all ' + str(count) + ' submitted undertakings' if count != 1 else 'the 1 submitted undertaking'} "
-                   "to Ajith sir in one email.")
+                   f"to Ajith sir in one email, with {UNDERTAKINGS_CC} in CC.")
         if st.button("Send", type="primary", icon=":material/send:", key="intra_forward_undertakings"):
             # Not the usual best-effort send: if the mail server refuses or
             # can't be reached, safe_write shows "Couldn't send..." instead of
             # a false "Sent".
             with safe_write("send the undertakings to Ajith sir"):
-                send_email(to_email, *email, raise_errors=True)
+                send_email(to_email, *email, raise_errors=True, cc=[UNDERTAKINGS_CC])
                 st.session_state.intraschool_flash = f"Sent {count} undertaking{'s' if count != 1 else ''} to Ajith sir."
                 st.rerun()
 

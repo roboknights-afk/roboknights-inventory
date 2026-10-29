@@ -1909,7 +1909,7 @@ def safe_write(action_description, allow_exun=False):
         st.error(f"Couldn't {action_description}: {e}")
 
 
-def send_email(to_email, subject, body, raise_errors=False, attachments=()):
+def send_email(to_email, subject, body, raise_errors=False, attachments=(), cc=()):
     # Plain-text email over the same Brevo SMTP relay Supabase's own login
     # emails already use. If sending fails for any reason (bad network, a
     # typo'd email, Brevo hiccup), we don't want that to break whatever
@@ -1918,6 +1918,7 @@ def send_email(to_email, subject, body, raise_errors=False, attachments=()):
     # raise_errors=True is for a send that IS the action (forwarding the
     # undertakings to Ajith sir): the error goes up so the host is told.
     # attachments: (filename, bytes) pairs, e.g. a stay-back form to print.
+    # cc: extra addresses copied in (send_message mails the Cc header too).
     if attachments:
         msg = MIMEMultipart()
         msg.attach(MIMEText(body))
@@ -1930,6 +1931,8 @@ def send_email(to_email, subject, body, raise_errors=False, attachments=()):
     msg["Subject"] = subject
     msg["From"] = os.environ["SMTP_SENDER"]
     msg["To"] = to_email
+    if cc:
+        msg["Cc"] = ", ".join(cc)
 
     try:
         with smtplib.SMTP(os.environ["SMTP_HOST"], int(os.environ["SMTP_PORT"])) as server:
