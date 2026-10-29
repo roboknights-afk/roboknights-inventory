@@ -122,13 +122,18 @@ def paper_copy_email(form, student):
 
 
 def send_paper_copy(form, student, row):
-    # Best-effort like the other member emails: False if there's no address.
-    # `row` is their submitted intraschool_form_members row, so the form
-    # comes with the guardian's details printed in - only the signature blank.
+    # False if there's no address or the send fails (2026-10-29: one member's
+    # copy went missing with nobody told), so the guardian is told to download
+    # it instead. `row` is their submitted intraschool_form_members row, so the
+    # form comes with the guardian's details printed in - only the signature blank.
     if not student.get("email"):
         return False
-    send_email(student["email"], *paper_copy_email(form, student),
-               attachments=[(_docx_name(form, student), _stayback_docx(form, student, row))])
+    try:
+        send_email(student["email"], *paper_copy_email(form, student), raise_errors=True,
+                   attachments=[(_docx_name(form, student), _stayback_docx(form, student, row))])
+    except Exception as e:
+        print(f"stay-back paper copy email failed: {e!r}")
+        return False
     return True
 
 
@@ -230,6 +235,9 @@ def render():
     flash = st.session_state.pop("intraschool_flash", None)
     if flash:
         st.success(flash)
+    warning = st.session_state.pop("intraschool_warning", None)
+    if warning:
+        st.warning(warning, icon=":material/mail:")
 
     users = {u["user_id"]: u for u in cached_table("users")}
     rows_by_form = {}
@@ -443,6 +451,12 @@ def _my_forms(forms, rows_by_form, users, me, is_host):
                     f"on {format_ist(row['submitted_at'])}.",
                     icon=":material/check_circle:",
                 )
+                st.download_button(
+                    "Download paper copy to sign", icon=":material/download:",
+                    data=_stayback_docx(form, student, row), file_name=_docx_name(form, student),
+                    mime=DOCX_MIME, key=f"intra_paper_{fid}",
+                )
+                st.caption("Print it, have your guardian sign it, and **bring it to school**.")
                 with st.expander("The undertaking they gave"):
                     st.caption(row.get("undertaking") or "")
             else:
@@ -484,10 +498,15 @@ def _online_form(form, student, me):
                         "submitted_at": datetime.now(timezone.utc).isoformat(),
                     }).eq("form_id", fid).eq("user_id", me).execute().data[0]
                     invalidate_cache()
-                    emailed = send_paper_copy(form, student, saved)
-                    st.session_state.intraschool_flash = (
-                        "Submitted. Thank you! "
-                        + ("A paper copy has been emailed to you - print it, get it signed and bring it to school."
-                           if emailed else "Download the paper form, get it signed and bring it to school.")
-                    )
+                    if send_paper_copy(form, student, saved):
+                        st.session_state.intraschool_flash = (
+                            "Submitted. Thank you! A paper copy has been emailed to you - "
+                            "print it, get it signed and bring it to school."
+                        )
+                    else:
+                        st.session_state.intraschool_flash = "Submitted. Thank you!"
+                        st.session_state.intraschool_warning = (
+                            "We couldn't email you the paper copy. Use **Download paper copy to sign** below, "
+                            "get it signed and bring it to school."
+                        )
                     st.rerun()
