@@ -2972,3 +2972,15 @@ guardians consent on paper or online.
 - **Tested** with Streamlit AppTest against a fake in-memory database (create
   online + physical, member downloads, bad-then-good phone, submission saved,
   host sees 1/2); not yet tried against the real database.
+
+- **Forward to Ajith sir** (2026-10-29): a host-only popover under the forms
+  emails every online undertaking, grouped by form, to the account titled
+  "Robotics In-Charge" (`UNDERTAKINGS_TO_TITLE`, never a hardcoded address).
+  It uses `send_email(..., raise_errors=True)`, so a failed send shows
+  "Couldn't send..." instead of a false "Sent" - every other email is still
+  best-effort. "Sent" only means Brevo accepted it, not that it reached his inbox.
+- **Paper copy after an online submit** (2026-10-29): the member is emailed
+  their stay-back .docx (`send_paper_copy`, `send_email(attachments=...)`)
+  with the guardian's name, relation, mobile, email and date of consent
+  printed into the table (`consent_docx._fill_guardian_table`); only the
+  signature is blank. They're asked to bring it signed to school.
