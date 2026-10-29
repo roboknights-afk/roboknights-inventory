@@ -2984,3 +2984,15 @@ guardians consent on paper or online.
   with the guardian's name, relation, mobile, email and date of consent
   printed into the table (`consent_docx._fill_guardian_table`); only the
   signature is blank. They're asked to bring it signed to school.
+
+## Branded emails (2026-10-29)
+
+Every email (app + the GitHub Actions scripts) goes through
+`email_theme.build_message`: the caller's plain text is kept as the text part
+and wrapped in a RoboKnights HTML version (logo from `static/email_logo.png`
+inline by CID, gold bar, dark title band with the subject, grey footer). Keep
+writing emails as plain text - blank line = paragraph, `- ` / `1. ` = lists
+(indented lines stay with their item), `Label: https://...` on its own line =
+gold button, `====` = divider, a closing `- RoboKnights` = the sign-off, and
+a closing "This is an automated message." is dropped (the footer says it).
+Supabase's own auth emails are NOT covered - those templates live in Supabase.
