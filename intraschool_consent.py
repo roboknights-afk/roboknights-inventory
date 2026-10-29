@@ -23,7 +23,9 @@ from datetime import date, datetime, time, timezone
 import streamlit as st
 
 from consent_docx import build_stayback_docx
-from shared import APP_URL, cached_table, format_ist, get_client, invalidate_cache, safe_write, send_email, today_ist
+from shared import (
+    APP_URL, HOST_ROLES, cached_table, format_ist, get_client, invalidate_cache, safe_write, send_email, today_ist,
+)
 
 MODE_LABELS = {
     "physical": "Physical form, submitted in school",
@@ -113,6 +115,63 @@ def _docx_name(form, student):
 
 DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 
+# Who "Forward all undertakings" emails (host's request, 2026-10-29: Ajith sir).
+# Found by his HOST_ROLES title, not a hardcoded address - this repo is public.
+UNDERTAKINGS_TO_TITLE = "Robotics In-Charge"
+
+
+def undertakings_email(forms, rows_by_form, users):
+    # (subject, body) of ONE email holding every undertaking guardians have
+    # submitted online, grouped by form, or None if there are none yet.
+    sections = []
+    total = 0
+    for form in sorted(forms, key=lambda f: f["stay_date"]):
+        if form["mode"] != "online":
+            continue
+        rows = sorted(rows_by_form.get(form["form_id"], []),
+                      key=lambda r: (users.get(r["user_id"], {}).get("name") or "").lower())
+        submitted = [r for r in rows if r.get("submitted_at")]
+        if not submitted:
+            continue
+        total += len(submitted)
+        stay_date = date.fromisoformat(form["stay_date"])
+        lines = [
+            f"{form['reason']} - {stay_date.strftime('%A, %d %b %Y')}, till {time_text(form['until_time'])} (tentative)",
+            f"Submitted: {len(submitted)} of {len(rows)}",
+        ]
+        waiting = [users.get(r["user_id"], {}).get("name") or "Unknown" for r in rows if not r.get("submitted_at")]
+        if waiting:
+            lines.append("Still waiting: " + ", ".join(waiting))
+        for i, r in enumerate(submitted, 1):
+            s = users.get(r["user_id"], {})
+            lines += [
+                "",
+                f"{i}. {s.get('name') or 'Unknown'} (Class {s.get('grade') or '-'}-{s.get('section') or '-'}, "
+                f"Adm. No. {s.get('admission_no') or '-'})",
+                f"   Guardian: {r.get('guardian_name')} ({r.get('guardian_relation')}), "
+                f"phone {r.get('guardian_phone')}, email {r.get('guardian_email')}",
+                f"   Submitted: {format_ist(r['submitted_at'])}",
+                f"   Undertaking: \"{r.get('undertaking') or ''}\"",
+            ]
+        sections.append("\n".join(lines))
+    if not total:
+        return None
+    body = "\n".join([
+        "Dear Sir,",
+        "",
+        (f"Below are all {total} stay-back undertakings that guardians have given" if total != 1
+         else "Below is the stay-back undertaking a guardian has given")
+        + " online on the RoboKnights dashboard, grouped by date.",
+        "",
+        *("=" * 60 + "\n" + section + "\n" for section in sections),
+        "Regards,",
+        "RoboKnights",
+        "",
+        "This is an automated message.",
+    ])
+    subject = f"Stay-back undertakings from guardians ({total} submitted)"
+    return subject, body
+
 
 def render():
     is_host = st.session_state.is_host
@@ -141,6 +200,7 @@ def render():
     if is_host:
         _create_form(users)
         _host_list(forms, rows_by_form, users)
+        _forward_undertakings(forms, rows_by_form, users)
     _my_forms(forms, rows_by_form, users, me, is_host)
 
 
@@ -263,6 +323,31 @@ def _host_list(forms, rows_by_form, users):
                         invalidate_cache()
                         st.session_state.intraschool_flash = "Form deleted."
                         st.rerun()
+
+
+# ---------- host: forward every undertaking in one email ----------
+
+def _forward_undertakings(forms, rows_by_form, users):
+    email = undertakings_email(forms, rows_by_form, users)
+    if not email:
+        return
+    to_email = next((e for e, title in HOST_ROLES.items() if title == UNDERTAKINGS_TO_TITLE), None)
+    if not to_email:
+        st.caption(f"No account has the title {UNDERTAKINGS_TO_TITLE}, so undertakings can't be forwarded.")
+        return
+    count = sum(1 for f in forms if f["mode"] == "online"
+                for r in rows_by_form.get(f["form_id"], []) if r.get("submitted_at"))
+    with st.popover("Forward all undertakings to Ajith sir", icon=":material/forward_to_inbox:"):
+        st.caption(f"Emails {'all ' + str(count) + ' submitted undertakings' if count != 1 else 'the 1 submitted undertaking'} "
+                   "to Ajith sir in one email.")
+        if st.button("Send", type="primary", icon=":material/send:", key="intra_forward_undertakings"):
+            # Not the usual best-effort send: if the mail server refuses or
+            # can't be reached, safe_write shows "Couldn't send..." instead of
+            # a false "Sent".
+            with safe_write("send the undertakings to Ajith sir"):
+                send_email(to_email, *email, raise_errors=True)
+                st.session_state.intraschool_flash = f"Sent {count} undertaking{'s' if count != 1 else ''} to Ajith sir."
+                st.rerun()
 
 
 # ---------- member: their own forms ----------

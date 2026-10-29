@@ -1907,12 +1907,14 @@ def safe_write(action_description, allow_exun=False):
         st.error(f"Couldn't {action_description}: {e}")
 
 
-def send_email(to_email, subject, body):
+def send_email(to_email, subject, body, raise_errors=False):
     # Plain-text email over the same Brevo SMTP relay Supabase's own login
     # emails already use. If sending fails for any reason (bad network, a
     # typo'd email, Brevo hiccup), we don't want that to break whatever
     # action triggered it — the database change already happened; the
     # email is a nice-to-have on top, not something to fail loudly over.
+    # raise_errors=True is for a send that IS the action (forwarding the
+    # undertakings to Ajith sir): the error goes up so the host is told.
     msg = MIMEText(body)
     msg["Subject"] = subject
     msg["From"] = os.environ["SMTP_SENDER"]
@@ -1924,7 +1926,8 @@ def send_email(to_email, subject, body):
             server.login(os.environ["SMTP_USERNAME"], os.environ["SMTP_PASSWORD"])
             server.send_message(msg)
     except Exception:
-        pass
+        if raise_errors:
+            raise
 
 
 WHATSAPP_API_VERSION = "v22.0"
