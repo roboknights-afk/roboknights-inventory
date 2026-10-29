@@ -99,13 +99,53 @@ def stayback_email(form, student):
     return subject, "\n".join(lines)
 
 
-def _stayback_docx(form, student):
+def paper_copy_email(form, student):
+    # (subject, body) of the email a member gets once their guardian has
+    # submitted online (host's request, 2026-10-29): the school still wants
+    # a signed paper form, so the member's own form is attached to print.
     stay_date = date.fromisoformat(form["stay_date"])
+    lines = [
+        f"Hi {student.get('name') or 'there'},",
+        "",
+        f"Your parent/guardian's undertaking for staying back on {stay_date.strftime('%A, %d %b %Y')} "
+        f"for {form['reason']} has been received online. Thank you!",
+        "",
+        "The school also needs a signed paper copy. Your consent form is attached:",
+        "1. Print the attached form.",
+        "2. Have your parent/guardian sign it. Their details are already filled in from what they gave online.",
+        f"3. Bring it to school and submit it on or before {stay_date.strftime('%d %b')}.",
+        "",
+        "- RoboKnights",
+    ]
+    subject = f"Bring your signed stay-back form to school: {form['reason']} on {stay_date.strftime('%d %b')}"
+    return subject, "\n".join(lines)
+
+
+def send_paper_copy(form, student, row):
+    # Best-effort like the other member emails: False if there's no address.
+    # `row` is their submitted intraschool_form_members row, so the form
+    # comes with the guardian's details printed in - only the signature blank.
+    if not student.get("email"):
+        return False
+    send_email(student["email"], *paper_copy_email(form, student),
+               attachments=[(_docx_name(form, student), _stayback_docx(form, student, row))])
+    return True
+
+
+def _stayback_docx(form, student, row=None):
+    stay_date = date.fromisoformat(form["stay_date"])
+    guardian = None
+    if row and row.get("submitted_at"):
+        guardian = {
+            "name": row.get("guardian_name"), "relation": row.get("guardian_relation"),
+            "phone": row.get("guardian_phone"), "email": row.get("guardian_email"),
+            "date": format_ist(row["submitted_at"]).split(",")[0],
+        }
     return build_stayback_docx(
         (student.get("name") or "").strip(), (student.get("admission_no") or "").strip(),
         str(student.get("grade") or "").strip(), (student.get("section") or "").strip(),
         stay_date.strftime("%A"), stay_date.strftime("%d %b %Y"),
-        form["reason"].strip(), time_text(form["until_time"]),
+        form["reason"].strip(), time_text(form["until_time"]), guardian=guardian,
     )
 
 
@@ -411,7 +451,7 @@ def _my_forms(forms, rows_by_form, users, me, is_host):
 
 def _online_form(form, student, me):
     fid = form["form_id"]
-    st.caption("To be filled in by your parent or guardian.")
+    st.caption("To be filled in by your parent or guardian. You'll then be emailed a paper copy to bring to school, signed.")
     with st.form(f"intra_online_{fid}", border=False):
         guardian_name = st.text_input("Guardian's full name")
         relation = st.text_input("Relation to student", placeholder="e.g. Father, Mother")
@@ -435,14 +475,19 @@ def _online_form(form, student, me):
                 st.error("Tick the box to give the undertaking.")
             else:
                 with safe_write("submit this form"):
-                    get_client().table("intraschool_form_members").update({
+                    saved = get_client().table("intraschool_form_members").update({
                         "guardian_name": guardian_name.strip(),
                         "guardian_relation": relation.strip(),
                         "guardian_phone": digits,
                         "guardian_email": email.strip(),
                         "undertaking": undertaking_text(form, student, guardian_name.strip(), relation.strip()),
                         "submitted_at": datetime.now(timezone.utc).isoformat(),
-                    }).eq("form_id", fid).eq("user_id", me).execute()
+                    }).eq("form_id", fid).eq("user_id", me).execute().data[0]
                     invalidate_cache()
-                    st.session_state.intraschool_flash = "Submitted. Thank you!"
+                    emailed = send_paper_copy(form, student, saved)
+                    st.session_state.intraschool_flash = (
+                        "Submitted. Thank you! "
+                        + ("A paper copy has been emailed to you - print it, get it signed and bring it to school."
+                           if emailed else "Download the paper form, get it signed and bring it to school.")
+                    )
                     st.rerun()

@@ -156,7 +156,44 @@ def _bold(rpr):
     return re.sub(r"(<w:rFonts[^>]*/>)", r"\1<w:b/><w:bCs/>", rpr, count=1)
 
 
-def build_stayback_docx(student_name, admission_no, grade, section, day, date_text, reason, until_text):
+# The guardian table's rows, by their printed label, that a stay-back form
+# fills in once the guardian has given their details online (2026-10-29).
+# "Signature of Guardian" is never here: that's always left to sign by hand.
+GUARDIAN_ROWS = {
+    "name": "Name of Guardian",
+    "relation": "Relation to Student",
+    "phone": "Mobile Number",
+    "email": "Email ID",
+    "date": "Date of consent",
+}
+_ROW = re.compile(r"<w:tr[ >].*?</w:tr>", re.S)
+_CELL = re.compile(r"<w:tc>.*?</w:tc>", re.S)
+
+
+def _fill_guardian_table(xml, guardian):
+    # guardian: GUARDIAN_ROWS keys -> text. Each value goes into the empty
+    # right-hand cell of its row, in the label's own font.
+    for row in _ROW.findall(xml):
+        cells = _CELL.findall(row)
+        if len(cells) != 2:
+            continue
+        label = "".join(_TEXT.findall(cells[0])).strip()
+        key = next((k for k, text in GUARDIAN_ROWS.items() if text == label), None)
+        if not key or not guardian.get(key) or _TEXT.search(cells[1]):
+            continue
+        label_run = next(r for r in _RUN.findall(cells[0]) if _TEXT.search(r))
+        rpr_match = _RPR.search(label_run)
+        first_para = _PARA.search(cells[1]).group(0)
+        filled_para = first_para[:-len("</w:p>")] + _run(rpr_match.group(0) if rpr_match else "", guardian[key]) + "</w:p>"
+        new_row = row.replace(cells[1], cells[1].replace(first_para, filled_para, 1), 1)
+        xml = xml.replace(row, new_row, 1)
+    return xml
+
+
+def build_stayback_docx(student_name, admission_no, grade, section, day, date_text, reason, until_text,
+                        guardian=None):
+    # guardian (optional): what they gave online, keyed like GUARDIAN_ROWS,
+    # printed into the table so only their signature is left blank.
     def value(text):
         # A missing detail stays a printed blank for the guardian to fill in.
         return (f" {text} ", True) if text else (" ______________ ", False)
@@ -192,6 +229,8 @@ def build_stayback_docx(student_name, admission_no, grade, section, day, date_te
             .replace(body, new_body + spacer + note, 1)
             .replace(transport, new_transport, 1)
         )
+        if guardian:
+            new_xml = _fill_guardian_table(new_xml, guardian)
 
         buffer = io.BytesIO()
         with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as dst:

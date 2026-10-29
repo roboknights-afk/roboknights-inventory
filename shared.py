@@ -13,6 +13,8 @@ import threading
 import time
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
+from email.mime.application import MIMEApplication
+from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from urllib.parse import urlencode
 
@@ -1907,7 +1909,7 @@ def safe_write(action_description, allow_exun=False):
         st.error(f"Couldn't {action_description}: {e}")
 
 
-def send_email(to_email, subject, body, raise_errors=False):
+def send_email(to_email, subject, body, raise_errors=False, attachments=()):
     # Plain-text email over the same Brevo SMTP relay Supabase's own login
     # emails already use. If sending fails for any reason (bad network, a
     # typo'd email, Brevo hiccup), we don't want that to break whatever
@@ -1915,7 +1917,16 @@ def send_email(to_email, subject, body, raise_errors=False):
     # email is a nice-to-have on top, not something to fail loudly over.
     # raise_errors=True is for a send that IS the action (forwarding the
     # undertakings to Ajith sir): the error goes up so the host is told.
-    msg = MIMEText(body)
+    # attachments: (filename, bytes) pairs, e.g. a stay-back form to print.
+    if attachments:
+        msg = MIMEMultipart()
+        msg.attach(MIMEText(body))
+        for filename, data in attachments:
+            part = MIMEApplication(data)
+            part.add_header("Content-Disposition", "attachment", filename=filename)
+            msg.attach(part)
+    else:
+        msg = MIMEText(body)
     msg["Subject"] = subject
     msg["From"] = os.environ["SMTP_SENDER"]
     msg["To"] = to_email
