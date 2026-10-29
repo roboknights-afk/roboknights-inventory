@@ -2984,6 +2984,14 @@ guardians consent on paper or online.
   with the guardian's name, relation, mobile, email and date of consent
   printed into the table (`consent_docx._fill_guardian_table`); only the
   signature is blank. They're asked to bring it signed to school.
+- **Saturday forms** (2026-10-29): a host picks the kind when creating -
+  `stayback` (after school) or `saturday` (come to school on a Saturday, with a
+  `from_time` as well as the tentative `until_time`; the date must be a
+  Saturday). `kind`/`from_time` columns come from the migration at the end of
+  `supabase_schema.sql`; until it's run only stay-back forms can be made. Every
+  email, undertaking, caption, file name and the paper form word themselves by
+  kind (`plan()`, `noun()`, `timing()`; `build_stayback_docx(kind=...)`), so a
+  Saturday form never says "stay back". The page section is `SECTION_LABEL`.
 
 ## Branded emails (2026-10-29)
 

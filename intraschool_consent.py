@@ -1,9 +1,13 @@
-# Intra-school "stay back" consent forms (2026-10-28), shown on the Consent
-# form page (app_pages/consent_form.py) under "Intra-school (stay back)".
+# Intra-school consent forms (2026-10-28), shown on the Consent form page
+# (app_pages/consent_form.py) under SECTION_LABEL. Two kinds (2026-10-29), the
+# host picks one per form:
+#   stayback - stay back in school after school hours on a school day;
+#   saturday - come to school on a Saturday, from one time till another.
+# Every email, undertaking, caption and paper form words itself by the kind,
+# so a Saturday form never says "stay back".
 #
-# A host picks the members who have to stay back in school after school hours,
-# gives the reason, the date and a TENTATIVE time they should be free by, and
-# chooses how guardians consent:
+# A host picks the members, gives the reason, the date and a TENTATIVE time
+# they should be free by, and chooses how guardians consent:
 #   physical - each member downloads the school's consent form, reworded for
 #              staying back (consent_docx.build_stayback_docx), and hands it in
 #              signed, the same way as the inter-school form;
@@ -15,10 +19,11 @@
 #
 # Needs the intraschool_forms / intraschool_form_members migration at the end
 # of supabase_schema.sql. Until it is run the section says so and the rest of
-# the page is unaffected.
+# the page is unaffected. Saturday forms also need the later kind/from_time
+# migration; until that is run only stay-back forms can be made.
 
 import re
-from datetime import date, datetime, time, timezone
+from datetime import date, datetime, time, timedelta, timezone
 
 import streamlit as st
 
@@ -27,6 +32,11 @@ from shared import (
     APP_URL, HOST_ROLES, cached_table, format_ist, get_client, invalidate_cache, safe_write, send_email, today_ist,
 )
 
+SECTION_LABEL = "Intra-school (stay back / Saturday)"
+KIND_LABELS = {
+    "stayback": "Stay back after school",
+    "saturday": "Come to school on Saturday",
+}
 MODE_LABELS = {
     "physical": "Physical form, submitted in school",
     "online": "Online, the guardian fills it in here",
@@ -42,31 +52,56 @@ def time_text(value):
     return f"{t.hour % 12 or 12}:{t.minute:02d} {'a.m.' if t.hour < 12 else 'p.m.'}"
 
 
+def kind_of(form):
+    # Forms made before Saturday forms existed have no kind: they're stay-backs.
+    return form.get("kind") or "stayback"
+
+
+def is_saturday(form):
+    return kind_of(form) == "saturday"
+
+
+def noun(form):
+    # "stay-back consent form" / "Saturday consent form"
+    return "Saturday" if is_saturday(form) else "stay-back"
+
+
+def timing(form):
+    # "from 9:00 a.m. till 1:00 p.m." / "till 6:00 p.m."
+    until = f"till {time_text(form['until_time'])}"
+    return f"from {time_text(form['from_time'])} {until}" if is_saturday(form) and form.get("from_time") else until
+
+
+def plan(form):
+    # What the member is being asked to do, after "to": "stay back in school
+    # after school hours on ... for ..." or "come to school on ... for ...".
+    when = date.fromisoformat(form["stay_date"]).strftime("%A, %d %b %Y")
+    if is_saturday(form):
+        return f"come to school on {when} for {form['reason']}, {timing(form)} (tentative time)"
+    return f"stay back in school after school hours on {when} for {form['reason']}, {timing(form)} (tentative time)"
+
+
 def undertaking_text(form, student, guardian_name=None, relation=None):
     # With no guardian given yet it reads "I, the guardian named above", for
     # showing before the form is sent; the saved copy has their real name.
     who = f"{guardian_name}, {relation} of" if guardian_name else "the guardian named above, guardian of"
-    stay_date = date.fromisoformat(form["stay_date"])
     return (
         f"I, {who} {student.get('name') or 'my ward'} (Adm. No. {student.get('admission_no') or '-'}, "
-        f"Class {student.get('grade') or '-'}-{student.get('section') or '-'}), allow my ward to stay back in "
-        f"school after school hours on {stay_date.strftime('%A, %d %b %Y')} for {form['reason']}, till "
-        f"{time_text(form['until_time'])} (tentative time). I understand that this is only a tentative time and there is no "
+        f"Class {student.get('grade') or '-'}-{student.get('section') or '-'}), allow my ward to {plan(form)}. "
+        "I understand that this is only a tentative time and there is no "
         "assurance that my ward will be free by then; they might be delayed. I confirm that this undertaking "
         "is given by me and will be saved in the school's records, and that my ward will not bring a mobile phone."
     )
 
 
-def stayback_email(form, student):
+def form_email(form, student):
     # (subject, body) of the email each member gets when a form is made for
     # them. Plain text, like every other email this app sends.
     stay_date = date.fromisoformat(form["stay_date"])
-    when = stay_date.strftime("%A, %d %b %Y")
-    until = time_text(form["until_time"])
     if form["mode"] == "physical":
         how = "on a signed paper form"
         steps = [
-            'Open the Consent form page on the dashboard and choose "Intra-school (stay back)".',
+            f'Open the Consent form page on the dashboard and choose "{SECTION_LABEL}".',
             "Download your consent form and print it.",
             "Have your parent/guardian fill in their details and sign it.",
             "Submit the signed form in school.",
@@ -74,15 +109,14 @@ def stayback_email(form, student):
     else:
         how = "online, on the dashboard"
         steps = [
-            'Open the Consent form page on the dashboard and choose "Intra-school (stay back)".',
+            f'Open the Consent form page on the dashboard and choose "{SECTION_LABEL}".',
             "Ask your parent/guardian to fill in their name, relation to you, phone number and email.",
             "They read the undertaking, tick to accept it, and submit. It is saved in the school's records.",
         ]
     lines = [
         f"Hi {student.get('name') or 'there'},",
         "",
-        f"You need to stay back in school after school hours on {when} for {form['reason']}, "
-        f"till {until} (tentative time).",
+        f"You need to {plan(form)}.",
         "",
         "Please note:",
         "- This is a tentative time. You might be delayed past it.",
@@ -95,7 +129,7 @@ def stayback_email(form, student):
         "",
         "- RoboKnights",
     ]
-    subject = f"Stay-back consent form: {form['reason']} on {stay_date.strftime('%d %b')}"
+    subject = f"{noun(form).capitalize()} consent form: {form['reason']} on {stay_date.strftime('%d %b')}"
     return subject, "\n".join(lines)
 
 
@@ -107,8 +141,8 @@ def paper_copy_email(form, student):
     lines = [
         f"Hi {student.get('name') or 'there'},",
         "",
-        f"Your parent/guardian's undertaking for staying back on {stay_date.strftime('%A, %d %b %Y')} "
-        f"for {form['reason']} has been received online. Thank you!",
+        f"Your parent/guardian's undertaking for {'coming to school' if is_saturday(form) else 'staying back'} "
+        f"on {stay_date.strftime('%A, %d %b %Y')} for {form['reason']} has been received online. Thank you!",
         "",
         "The school also needs a signed paper copy. Your consent form is attached:",
         "1. Print the attached form.",
@@ -117,7 +151,7 @@ def paper_copy_email(form, student):
         "",
         "- RoboKnights",
     ]
-    subject = f"Bring your signed stay-back form to school: {form['reason']} on {stay_date.strftime('%d %b')}"
+    subject = f"Bring your signed {noun(form)} form to school: {form['reason']} on {stay_date.strftime('%d %b')}"
     return subject, "\n".join(lines)
 
 
@@ -132,7 +166,7 @@ def send_paper_copy(form, student, row):
         send_email(student["email"], *paper_copy_email(form, student), raise_errors=True,
                    attachments=[(_docx_name(form, student), _stayback_docx(form, student, row))])
     except Exception as e:
-        print(f"stay-back paper copy email failed: {e!r}")
+        print(f"intra-school paper copy email failed: {e!r}")
         return False
     return True
 
@@ -151,11 +185,13 @@ def _stayback_docx(form, student, row=None):
         str(student.get("grade") or "").strip(), (student.get("section") or "").strip(),
         stay_date.strftime("%A"), stay_date.strftime("%d %b %Y"),
         form["reason"].strip(), time_text(form["until_time"]), guardian=guardian,
+        kind=kind_of(form), from_text=time_text(form["from_time"]) if form.get("from_time") else None,
     )
 
 
 def _docx_name(form, student):
-    return f"Stay-back consent - {date.fromisoformat(form['stay_date']).strftime('%d %b')} - {student.get('name') or 'student'}.docx"
+    return (f"{noun(form).capitalize()} consent - {date.fromisoformat(form['stay_date']).strftime('%d %b')} - "
+            f"{student.get('name') or 'student'}.docx")
 
 
 DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
@@ -172,6 +208,7 @@ def undertakings_email(forms, rows_by_form, users):
     # submitted online, grouped by form, or None if there are none yet.
     sections = []
     total = 0
+    kinds = set()
     for form in sorted(forms, key=lambda f: f["stay_date"]):
         if form["mode"] != "online":
             continue
@@ -181,9 +218,11 @@ def undertakings_email(forms, rows_by_form, users):
         if not submitted:
             continue
         total += len(submitted)
+        kinds.add(noun(form))
         stay_date = date.fromisoformat(form["stay_date"])
         lines = [
-            f"{form['reason']} - {stay_date.strftime('%A, %d %b %Y')}, till {time_text(form['until_time'])} (tentative)",
+            f"{KIND_LABELS[kind_of(form)]}: {form['reason']} - {stay_date.strftime('%A, %d %b %Y')}, "
+            f"{timing(form)} (tentative)",
             f"Submitted: {len(submitted)} of {len(rows)}",
         ]
         waiting = [users.get(r["user_id"], {}).get("name") or "Unknown" for r in rows if not r.get("submitted_at")]
@@ -203,11 +242,13 @@ def undertakings_email(forms, rows_by_form, users):
         sections.append("\n".join(lines))
     if not total:
         return None
+    # "stay-back", "Saturday", or "stay-back and Saturday" - whatever is in it.
+    what = " and ".join(sorted(kinds, key=lambda k: k != "stay-back"))
     body = "\n".join([
         "Dear Sir,",
         "",
-        (f"Below are all {total} stay-back undertakings that guardians have given" if total != 1
-         else "Below is the stay-back undertaking a guardian has given")
+        (f"Below are all {total} {what} undertakings that guardians have given" if total != 1
+         else f"Below is the {what} undertaking a guardian has given")
         + " online on the RoboKnights dashboard, grouped by date.",
         "",
         *("=" * 60 + "\n" + section + "\n" for section in sections),
@@ -216,7 +257,7 @@ def undertakings_email(forms, rows_by_form, users):
         "",
         "This is an automated message.",
     ])
-    subject = f"Stay-back undertakings from guardians ({total} submitted)"
+    subject = f"{what[0].upper() + what[1:]} undertakings from guardians ({total} submitted)"
     return subject, body
 
 
@@ -262,15 +303,39 @@ def _create_form(users):
         key=lambda u: (u.get("name") or "").lower(),
     )
     with st.expander("Create an intra-school consent form", icon=":material/add:"):
-        with st.form("new_intraschool_form", clear_on_submit=True, border=False):
+        # Outside the form, so choosing Saturday shows the extra "from" time.
+        kind = st.segmented_control(
+            "Type of form", list(KIND_LABELS), format_func=KIND_LABELS.get, default="stayback",
+            key="intra_new_kind",
+        ) or "stayback"
+        saturday = kind == "saturday"
+        if saturday and not _saturday_columns_ready():
+            st.warning(
+                "Saturday forms aren't set up yet. A host needs to run the intraschool_forms kind/from_time "
+                "migration (at the end of supabase_schema.sql) in Supabase's SQL editor."
+            )
+            return
+        today = today_ist()
+        next_saturday = today + timedelta(days=(5 - today.weekday()) % 7)
+        with st.form(f"new_intraschool_form_{kind}", clear_on_submit=True, border=False):
             chosen = st.multiselect(
                 "Members who get this form", [u["user_id"] for u in members],
                 format_func=lambda uid: users[uid].get("name") or "Unknown",
             )
-            reason = st.text_input("Reason for staying back", placeholder="e.g. robot build for Compufest")
-            date_col, time_col = st.columns(2)
-            stay_date = date_col.date_input("Date", value=today_ist(), min_value=today_ist())
-            until = time_col.time_input("Tentative time they'll be free by", value=time(16, 0), step=900)
+            reason = st.text_input(
+                "Reason for coming in on Saturday" if saturday else "Reason for staying back",
+                placeholder="e.g. robot build for Compufest",
+            )
+            if saturday:
+                date_col, from_col, time_col = st.columns(3)
+                stay_date = date_col.date_input("Saturday", value=next_saturday, min_value=today)
+                start = from_col.time_input("Time they come in", value=time(9, 0), step=900)
+                until = time_col.time_input("Tentative time they'll be free by", value=time(13, 0), step=900)
+            else:
+                date_col, time_col = st.columns(2)
+                stay_date = date_col.date_input("Date", value=today, min_value=today)
+                start = None
+                until = time_col.time_input("Tentative time they'll be free by", value=time(16, 0), step=900)
             mode = st.radio("How guardians give consent", list(MODE_LABELS), format_func=MODE_LABELS.get)
             st.caption(
                 "Either way the form says the time is tentative and they might be delayed, "
@@ -280,15 +345,24 @@ def _create_form(users):
                 if not chosen:
                     st.error("Pick at least one member.")
                 elif not reason.strip():
-                    st.error("Give the reason they're staying back.")
+                    st.error("Give the reason they're coming in." if saturday else "Give the reason they're staying back.")
+                elif saturday and stay_date.weekday() != 5:
+                    st.error(f"{stay_date.strftime('%d %b %Y')} is a {stay_date.strftime('%A')}, not a Saturday.")
+                elif saturday and start >= until:
+                    st.error("The time they come in has to be before the time they'll be free by.")
                 else:
                     with safe_write("create this form"):
                         client = get_client()
-                        form = client.table("intraschool_forms").insert({
+                        row = {
                             "reason": reason.strip(), "stay_date": stay_date.isoformat(),
                             "until_time": until.strftime("%H:%M"), "mode": mode,
                             "created_by": st.session_state.current_user_id,
-                        }).execute().data[0]
+                        }
+                        # Only a Saturday form writes the new columns, so
+                        # stay-back forms work whether or not that migration ran.
+                        if saturday:
+                            row.update(kind="saturday", from_time=start.strftime("%H:%M"))
+                        form = client.table("intraschool_forms").insert(row).execute().data[0]
                         client.table("intraschool_form_members").insert(
                             [{"form_id": form["form_id"], "user_id": uid} for uid in chosen]
                         ).execute()
@@ -299,13 +373,22 @@ def _create_form(users):
                         for uid in chosen:
                             to_email = users[uid].get("email")
                             if to_email:
-                                send_email(to_email, *stayback_email(form, users[uid]))
+                                send_email(to_email, *form_email(form, users[uid]))
                                 emailed += 1
                         st.session_state.intraschool_flash = (
                             f"Form created for {len(chosen)} member{'s' if len(chosen) != 1 else ''}, "
                             f"and {emailed} emailed about it."
                         )
                         st.rerun()
+
+
+def _saturday_columns_ready():
+    # True once the kind/from_time migration has been run.
+    try:
+        get_client().table("intraschool_forms").select("kind,from_time").limit(1).execute()
+        return True
+    except Exception:
+        return False
 
 
 # ---------- host: every form and who has done what ----------
@@ -323,8 +406,8 @@ def _host_list(forms, rows_by_form, users):
             head_col, badge_col = st.columns([4, 1], vertical_alignment="center")
             head_col.markdown(f"### {form['reason']}")
             head_col.caption(
-                f":material/event: {stay_date.strftime('%A, %d %b %Y')} · till {time_text(form['until_time'])} "
-                f"(tentative) · {MODE_LABELS[form['mode']]}"
+                f":material/event: {stay_date.strftime('%A, %d %b %Y')} · {timing(form)} "
+                f"(tentative) · {KIND_LABELS[kind_of(form)]} · {MODE_LABELS[form['mode']]}"
             )
             if form["mode"] == "online":
                 done = sum(1 for r in rows if r.get("submitted_at"))
@@ -425,8 +508,8 @@ def _my_forms(forms, rows_by_form, users, me, is_host):
         with st.container(border=True, key=f"rkcard_intra_mine_{fid}"):
             st.markdown(f"### {form['reason']}")
             st.caption(
-                f":material/event: Stay back on {stay_date.strftime('%A, %d %b %Y')}, "
-                f"till {time_text(form['until_time'])} (tentative)"
+                f":material/event: {'Come to school' if is_saturday(form) else 'Stay back'} on "
+                f"{stay_date.strftime('%A, %d %b %Y')}, {timing(form)} (tentative)"
             )
             st.warning(TENTATIVE_NOTE, icon=":material/schedule:")
 

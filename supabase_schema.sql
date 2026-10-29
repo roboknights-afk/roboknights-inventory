@@ -1209,3 +1209,13 @@ create table if not exists intraschool_form_members (
     submitted_at      timestamptz,
     primary key (form_id, user_id)
 );
+
+-- Saturday intra-school forms (2026-10-29): a form is either a stay-back after
+-- school ('stayback', every form made before this) or coming to school on a
+-- Saturday ('saturday'), which also has the time they come in. Until this is
+-- run only stay-back forms can be made; everything else works as before.
+alter table intraschool_forms
+    add column if not exists kind text not null default 'stayback'
+        check (kind in ('stayback', 'saturday'));
+alter table intraschool_forms
+    add column if not exists from_time time;

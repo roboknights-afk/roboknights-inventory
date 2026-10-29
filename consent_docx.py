@@ -118,6 +118,11 @@ def build_consent_docx(student_name, admission_no, grade, section, competition, 
 # day" (host's request, 2026-10-29). Every other
 # paragraph (liability, the guardian's signature block) is left
 # exactly as the school wrote it.
+#
+# The same builder makes the "come to school on Saturday" form (2026-10-29,
+# kind="saturday"): its own title, "... to come to school on Saturday <date>
+# for <reason> from <time> till <time> (tentative time)", and a transport
+# line about getting to school and back home on the Saturday.
 # ---------------------------------------------------------------------------
 
 STAYBACK_TITLE = "Consent for Staying Back in School After School Hours"
@@ -128,6 +133,11 @@ STAYBACK_NOTE = (
 STAYBACK_TRANSPORT = (
     "I shall make all necessary transport arrangements for my ward, as my ward will be staying back "
     "in school after the school buses have left (after normal school hours are over at 1:40 p.m.)."
+)
+SATURDAY_TITLE = "Consent for Coming to School on Saturday"
+SATURDAY_TRANSPORT = (
+    "I shall make all necessary transport arrangements for my ward to come to school and to go back home "
+    "on Saturday."
 )
 _PARA = re.compile(r"<w:p[ >].*?</w:p>", re.S)
 _TRIP_TEXT = ">etiquette throughout the trip<"
@@ -195,9 +205,12 @@ def _fill_guardian_table(xml, guardian):
 
 
 def build_stayback_docx(student_name, admission_no, grade, section, day, date_text, reason, until_text,
-                        guardian=None):
+                        guardian=None, kind="stayback", from_text=None):
     # guardian (optional): what they gave online, keyed like GUARDIAN_ROWS,
     # printed into the table so only their signature is left blank.
+    # kind="saturday" makes the come-to-school-on-Saturday form, which also
+    # has a from_text (the time they come in).
+    saturday = kind == "saturday"
     def value(text):
         # A missing detail stays a printed blank for the guardian to fill in.
         return (f" {text} ", True) if text else (" ______________ ", False)
@@ -209,16 +222,18 @@ def build_stayback_docx(student_name, admission_no, grade, section, day, date_te
         body = next(p for p in paras if "hereby permit my ward" in p)
         transport = next(p for p in paras if "transport arrangements" in p)
 
-        new_title = _paragraph(*_para_parts(title), [(STAYBACK_TITLE, False)])
+        new_title = _paragraph(*_para_parts(title), [(SATURDAY_TITLE if saturday else STAYBACK_TITLE, False)])
         open_tag, ppr, rpr = _para_parts(body)
         new_body = _paragraph(open_tag, ppr, rpr, [
             ("I, guardian of", False), value(student_name),
             ("Adm. No.", False), value(admission_no),
             ("of Class", False), value(grade),
             ("section", False), value(section),
-            ("hereby permit my ward to stay back in school after school hours on", False),
+            ("hereby permit my ward to come to school on" if saturday
+             else "hereby permit my ward to stay back in school after school hours on", False),
             value(day), value(date_text),
             ("for", False), value(reason),
+            *([("from", False), value(from_text)] if saturday else []),
             ("till", False), value(until_text),
             ("(tentative time).", False),
         ])
@@ -226,7 +241,7 @@ def build_stayback_docx(student_name, admission_no, grade, section, day, date_te
         spacer = f"<w:p>{ppr}</w:p>"
         note = _paragraph(copy_tag, ppr, _bold(rpr), [(STAYBACK_NOTE, False)])
 
-        new_transport = _paragraph(*_para_parts(transport), [(STAYBACK_TRANSPORT, False)])
+        new_transport = _paragraph(*_para_parts(transport), [(SATURDAY_TRANSPORT if saturday else STAYBACK_TRANSPORT, False)])
 
         new_xml = (
             xml.replace(title, new_title, 1)
