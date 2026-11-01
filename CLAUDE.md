@@ -2081,6 +2081,14 @@ DM mechanics ever change.
 
 ## Exun task delegation + event countdown (2026-09-26)
 
+**REMOVED 2026-11-01 (host's request, after the event):** the Exun Tasks page
+(`app_pages/exun_tasks.py`), the `is_exun_volunteer` nav flag, and
+`notify_exun_task_assigned`/`notify_exun_task_update` are gone, as is the
+countdown. The `exun_tasks`/`exun_task_*` tables and `users.is_exun_volunteer`
+are left in Supabase, untouched. Exun's own view-only sign-in, the Exun
+Channel and Exun 2026 Materials pages are NOT part of this and stay.
+The notes below are history.
+
 Two separate asks in the same request: "delegate work to volunteers about
 the Exun event ... report their due date [later corrected: the HOST sets
 it, not the volunteer], submit their work or mark it as done, report

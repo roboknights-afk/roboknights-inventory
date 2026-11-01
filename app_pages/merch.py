@@ -293,8 +293,7 @@ def _apply_pending_change(action, payload, requested_by):
 
 
 # --- Host: who has merch access -----------------------------------------
-# Same multiselect-diff pattern exun_tasks.py already uses for its
-# volunteer list: a picker of real names, pre-filled with who currently has
+# A picker of real names, pre-filled with who currently has
 # access, and Save only writes whatever actually changed.
 def render_access_manager():
     eligible = [u for u in all_users if u.get("has_merch_access")]

@@ -1406,12 +1406,6 @@ st.session_state.is_read_only = st.session_state.is_exun or st.session_state.is_
 # browser session won't bring it back) — a host can reset an individual
 # member's flag by hand in Supabase if it's ever needed again.
 current_user_row = next((u for u in users if u["user_id"] == st.session_state.current_user_id), None)
-# Host-set flag on the member's own users row (not an email-set constant
-# like the tiers above) — a RoboKnights member of any standing can be an
-# Exun volunteer, set by a host on the Exun Tasks page. Stays False for
-# the tiers that have no users row at all (host/Exun/viewer accounts —
-# see the "works with no users row" note elsewhere in this file).
-st.session_state.is_exun_volunteer = bool(current_user_row and current_user_row.get("is_exun_volunteer"))
 needs_verification = bool(
     current_user_row
     and not current_user_row.get("is_staff")
@@ -1872,16 +1866,6 @@ if st.session_state.auth_user["email"] in EXUN_CHANNEL_MEMBERS:
         st.Page("app_pages/exun_event_hub.py", title="Exun 2026 Materials", icon=":material/folder_shared:")
     )
 
-# "Exun Tasks": task delegation for the Exun event — hosts (full
-# management) and anyone flagged is_exun_volunteer (their own tasks
-# only), completely separate from EXUN_CHANNEL_MEMBERS above (that's the
-# sister club's own leadership channel, not this club's own volunteers).
-exun_task_pages = []
-if st.session_state.is_host or st.session_state.is_exun_volunteer:
-    exun_task_pages.append(
-        st.Page("app_pages/exun_tasks.py", title="Exun Tasks", icon=":material/checklist:")
-    )
-
 sections = {
     "": home_pages,
     "Club": club_pages,
@@ -1889,7 +1873,6 @@ sections = {
     "You": you_pages,
     "Host tools": host_pages,
     "Exun Channel": exun_pages,
-    "Exun Tasks": exun_task_pages,
 }
 page = st.navigation({label: pages for label, pages in sections.items() if pages})
 page.run()

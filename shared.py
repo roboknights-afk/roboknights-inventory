@@ -2570,46 +2570,6 @@ def notify_meeting_discord(meeting, invitee_ids, kind):
         pass
 
 
-def notify_exun_task_assigned(task, assignee_ids):
-    # Told the moment a host delegates something, same "synchronous, fires
-    # once, right when the write happens" shape as notify_meeting_discord's
-    # "new" case — no cron needed here since this only ever happens once,
-    # right when a host clicks Assign. Email + a DM to whoever has a linked
-    # Discord account; nobody without one just gets the email, same as
-    # meetings' "no error if not linked" rule.
-    try:
-        rows = get_client().table("users").select(
-            "user_id, email, discord_user_id, phone_no"
-        ).in_("user_id", list(assignee_ids)).execute().data
-        due_date_display = (
-            date.fromisoformat(task["due_date"]).strftime("%d %b %Y")
-            if task.get("due_date") else "no due date set"
-        )
-        due = f" — due {due_date_display}" if task.get("due_date") else ""
-        email_body = f"You've been assigned an Exun task: {task['title']}{due}."
-        if task.get("description"):
-            email_body += f"\n\n{plain_text_from_rich_html(task['description'])}"
-        email_body += f"\n\nOpen it on the dashboard: {APP_URL}"
-        discord_body = f":clipboard: **New Exun task: {task['title']}**{due}\n"
-        if task.get("description"):
-            discord_body += f"{plain_text_from_rich_html(task['description'])}\n"
-        discord_body += "Full details are on the dashboard — not posted here."
-        for row in rows:
-            if row.get("email"):
-                send_email(row["email"], f"Exun task: {task['title']}", email_body)
-            if row.get("discord_user_id"):
-                send_discord_dm(row["discord_user_id"], discord_body)
-            if row.get("phone_no"):
-                # due_date_display always has real text (never blank) —
-                # a WhatsApp template placeholder can't be sent empty.
-                send_whatsapp(
-                    row["phone_no"], "exun_task_assigned",
-                    named_params={"task_title": task["title"], "task_due": due_date_display},
-                )
-    except Exception:
-        pass
-
-
 # Exun's own official Discord account (a real user id, not a server
 # role — a role can't be DMed) — kept here as a plain constant rather
 # than an env var, matching how discord_bot/bot.py already keeps a few
@@ -2650,26 +2610,5 @@ def notify_exun_hub_post(author_email, discord_summary, email_body):
             send_discord_dm(EXUN_CLAN_DISCORD_USER_ID, discord_summary)
             for email in EXUN_EMAILS:
                 send_email(email, "Exun 2026 hub", email_body)
-    except Exception:
-        pass
-
-
-def notify_exun_task_update(message, email_subject):
-    # Told when something happens on the HOST'S side of a task — a
-    # submission, a mark-done, an issue, or a help request. DMs every
-    # host with a linked Discord account, AND emails every host — never
-    # posted to the shared exun_rk channel: that channel's audience
-    # (EXUN_CHANNEL_MEMBERS) includes Exun's own leadership, and this is
-    # RoboKnights-internal volunteer management, nothing Exun needs to
-    # see. (First version of this wrongly reused
-    # notify_if_roster_complete's "post to exun_rk" shape — that one's
-    # actually meant for Exun's eyes, a finalized competition roster;
-    # this one isn't.)
-    try:
-        for row in cached_table("users"):
-            if row.get("email") in HOST_EMAILS and row.get("discord_user_id"):
-                send_discord_dm(row["discord_user_id"], message)
-        for email in HOST_EMAILS:
-            send_email(email, email_subject, message)
     except Exception:
         pass
