@@ -1,5 +1,5 @@
-# Achievements: any member logs their own result for a competition event
-# they went to — position, and optionally a link to photos/video (not a
+# Achievements: any member logs their result (for themselves and any
+# teammates they pick) for a competition event they went to — position, and optionally a link to photos/video (not a
 # real file upload; this app has no file storage set up, just links like
 # every other link field in this app). Self-reported, like most of this
 # app; the poster or a host can delete an entry.
@@ -173,6 +173,38 @@ def render_log_achievement():
                     key=f"ach_log_for_{chosen_event_id}",
                 )
 
+            # Members: their own result plus the teammates they competed
+            # with (2026-11-01 - before this only a team from the E2C
+            # import's team_no got added, so most team results were logged
+            # for one person only). Picked from this event's volunteers,
+            # the member's own team pre-picked; the full member list only
+            # when the event has no volunteers recorded.
+            teammate_ids = []
+            if not is_host:
+                event_vols = [
+                    v for v in cached_table("event_volunteers")
+                    if v["event_id"] == chosen_event_id and v["user_id"] != current_user_id
+                ]
+                my_team = next(
+                    (v.get("team_no") for v in cached_table("event_volunteers")
+                     if v["event_id"] == chosen_event_id and v["user_id"] == current_user_id),
+                    None,
+                )
+                if event_vols:
+                    mate_options = [v["user_id"] for v in event_vols]
+                    mate_default = [v["user_id"] for v in event_vols if my_team and v.get("team_no") == my_team]
+                else:
+                    mate_options = [uid for uid in user_name_by_id if uid != current_user_id]
+                    mate_default = []
+                teammate_ids = st.multiselect(
+                    "Teammates (optional)",
+                    options=mate_options,
+                    default=mate_default,
+                    format_func=lambda uid: user_name_by_id.get(uid, "Unknown"),
+                    key=f"ach_teammates_{chosen_event_id}",
+                    help="The result is logged for you and everyone picked here.",
+                )
+
             pos_col, level_col = st.columns([2, 1])
             position = pos_col.text_input(
                 "Position (e.g. 1st place, Finalist)", key="new_achievement_position"
@@ -195,12 +227,13 @@ def render_log_achievement():
                     # Host path: one row per chosen person, skipping
                     # anyone who already has a result for this exact
                     # event (so re-logging can't duplicate). Member
-                    # path: yourself, same skip rule.
+                    # path: yourself and your picked teammates, same
+                    # skip rule.
                     #
                     # This read is deliberately NOT cached_table: it
                     # decides who to skip as already-logged, so it needs
                     # the true current state rather than up to 8s old.
-                    targets = log_for_ids if is_host else [current_user_id]
+                    targets = log_for_ids if is_host else [current_user_id, *teammate_ids]
 
                     with safe_write("log this achievement"):
                         already_logged_ids = {
@@ -226,76 +259,28 @@ def render_log_achievement():
                             logged_ids.append(uid)
                         logged = len(logged_ids)
 
-                        # Auto-log the same result for every teammate (same
-                        # team_no on this event, from the E2C import's team
-                        # grouping) who hasn't already logged one themselves —
-                        # so one person reporting a team result doesn't mean
-                        # everyone has to separately do the same thing. Only
-                        # applies to a member logging their OWN result — a
-                        # host already picked the exact people above, so
-                        # nothing extra should be implied.
-                        auto_logged_ids = []
-                        if not is_host:
-                            my_row = (
-                                client.table("event_volunteers")
-                                .select("team_no")
-                                .eq("event_id", chosen_event_id)
-                                .eq("user_id", current_user_id)
-                                .execute()
-                                .data
-                            )
-                            team_no = my_row[0]["team_no"] if my_row else None
-                            if team_no:
-                                teammates = (
-                                    client.table("event_volunteers")
-                                    .select("user_id")
-                                    .eq("event_id", chosen_event_id)
-                                    .eq("team_no", team_no)
-                                    .neq("user_id", current_user_id)
-                                    .execute()
-                                    .data
-                                )
-                                already_logged = {
-                                    a["user_id"]
-                                    for a in client.table("achievements")
-                                    .select("user_id").eq("event_id", chosen_event_id).execute().data
-                                }
-                                for t in teammates:
-                                    if t["user_id"] in already_logged:
-                                        continue
-                                    client.table("achievements").insert({
-                                        "user_id": t["user_id"],
-                                        "competition_id": chosen_comp_id,
-                                        "event_id": chosen_event_id,
-                                        "position": position.strip() or None,
-                                        "level": level,
-                                        "media_link": link or None,
-                                    }).execute()
-                                    auto_logged_ids.append(t["user_id"])
-                        auto_logged = len(auto_logged_ids)
-
                         invalidate_cache()
 
-                        # Everyone who actually ended up on this result —
-                        # the people logged for, plus any teammates it was
-                        # auto-logged for — in one post.
+                        # Everyone who actually ended up on this result, in
+                        # one post.
                         _notify_achievement(
-                            logged_ids + auto_logged_ids,
+                            logged_ids,
                             comp_name_by_id.get(chosen_comp_id, "Unknown competition"),
                             event_name_by_id.get(chosen_event_id, "Unknown event"),
                             position.strip(),
                             link,
                         )
                     skipped = len(targets) - logged
+                    mates = sum(1 for uid in logged_ids if uid != current_user_id)
                     if is_host:
                         msg = f"Logged this result for {logged} member(s)."
-                    elif logged:
-                        msg = "Achievement added!"
+                    elif not logged:
+                        msg = "Everyone picked already has a result for this event — nothing new added."
+                    elif current_user_id in logged_ids:
+                        msg = "Achievement added!" + (f" Also logged for {mates} teammate(s)." if mates else "")
                     else:
-                        msg = "You already have a result for this event — nothing new added."
-                    if auto_logged:
-                        msg += f" Also logged for {auto_logged} teammate(s)."
-                    if skipped and is_host:
+                        msg = f"You already had a result for this event. Logged it for {mates} teammate(s)."
+                    if skipped and (is_host or teammate_ids):
                         msg += f" Skipped {skipped} who already had a result for this event."
                     st.session_state.achievement_message = msg
                     # Clear the form so reopening the dialog starts blank.
