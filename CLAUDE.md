@@ -2147,7 +2147,7 @@ needs to be created by hand (private, same steps as `member-photos` —
 see that bucket's own comment in `supabase_schema.sql`) before this page
 is usable.
 
-**Event countdown, app-wide** — a live, per-second-ticking countdown to
+**Event countdown, app-wide** (REMOVED 2026-11-01 at the host's request, after the event — the timer and its "Exun is here!" banner are gone from app.py; notes below kept as history) — a live, per-second-ticking countdown to
 31 Oct 2026, rendered once in `app.py` right before the navigation
 section, so it shows above every page including Home. Streamlit only
 reruns on an interaction, so a real tick needs actual client-side JS —
