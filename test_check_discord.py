@@ -130,13 +130,12 @@ del emails[:]
 cdm.main()
 check("a failed review is emailed, not posted", len(emails) == 1 and emails[0][1] == "Discord evening check did not run" and http_calls == [], True)
 
-# --- and the workflow no longer hands this step a webhook or the switch ---------------------------------------------
+# --- the evening check is no longer scheduled, and the bot no longer saves messages (2026-11-03) ---------------------
 workflow = open(".github/workflows/due-reminders.yml", encoding="utf-8").read()
-step = workflow.split("Discord evening check (8pm IST)", 1)[1]
-step = step.split("- name:", 1)[0]
-check("workflow step has no AUTO_WARN variable", "AUTO_WARN:" in step, False)
-check("workflow step has no Discord webhook", "DISCORD_GENERAL_WEBHOOK_URL" in step, False)
-check("workflow step still has the secrets the check needs", all(k in step for k in ("SUPABASE_URL", "GROQ_API_KEY", "SMTP_HOST")), True)
+check("workflow no longer runs the evening check", "check_discord_messages.py" in workflow, False)
+check("workflow no longer has the 8pm schedule", '"30 14 * * *"' in workflow, False)
+bot = open("discord_bot/bot.py", encoding="utf-8").read()
+check("bot never writes discord_channel_log", "_log_channel_message" in bot or '.upsert(' in bot.split('table("discord_channel_log")', 1)[-1][:200], False)
 
 if failures:
     print("FAILED:")

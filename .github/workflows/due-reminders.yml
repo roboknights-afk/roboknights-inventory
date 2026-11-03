@@ -12,8 +12,9 @@ on:
     - cron: "30 3 * * *"
     # 10:30 UTC = 4:00 PM IST — "how did it go" achievement reminders, competition day itself
     - cron: "30 10 * * *"
-    # 14:30 UTC = 8:00 PM IST — the evening check on the day's Discord messages
-    - cron: "30 14 * * *"
+    # The 14:30 UTC (8:00 PM IST) evening check on the day's Discord
+    # messages was removed 2026-11-03 at the host's request: messages are
+    # no longer saved, so there is nothing for it to read.
   workflow_dispatch: # lets us trigger it manually from the Actions tab, for testing
 
 jobs:
@@ -67,25 +68,6 @@ jobs:
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
-          SMTP_HOST: ${{ secrets.SMTP_HOST }}
-          SMTP_PORT: ${{ secrets.SMTP_PORT }}
-          SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
-          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
-          SMTP_SENDER: ${{ secrets.SMTP_SENDER }}
-      # The evening check on the club's Discord (8pm IST). Reads the last 24
-      # hours of discord_channel_log and emails a report of anything that
-      # looks like a personal attack. Reads and reports only - it never
-      # replies, deletes, or warns anyone.
-      - name: Discord evening check (8pm IST)
-        if: github.event.schedule != '30 2 * * *' && github.event.schedule != '30 3 * * *' && github.event.schedule != '30 10 * * *'
-        run: python check_discord_messages.py
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
-          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-          # No Discord webhook and no AUTO_WARN here on purpose: this check
-          # never posts to Discord (the automatic-warning mode was removed
-          # 2026-10-20). It records flags and emails the report.
           SMTP_HOST: ${{ secrets.SMTP_HOST }}
           SMTP_PORT: ${{ secrets.SMTP_PORT }}
           SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}

@@ -1,5 +1,9 @@
 # The evening check on the club's Discord.
 #
+# NOT RUN ANY MORE (2026-11-03, host's request): the bot no longer saves
+# server messages to discord_channel_log, and this check's step was removed
+# from .github/workflows/due-reminders.yml. Kept only for reference.
+#
 # Every message the bot can see in the home server is already logged to
 # discord_channel_log (see discord_bot/bot.py). Until now that log was only
 # read when somebody went looking, which meant "we check the messages" was

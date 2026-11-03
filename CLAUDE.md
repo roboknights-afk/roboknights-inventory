@@ -3015,3 +3015,15 @@ writing emails as plain text - blank line = paragraph, `- ` / `1. ` = lists
 gold button, `====` = divider, `a | b` lines = a table, a closing `- RoboKnights` = the sign-off, and
 a closing "This is an automated message." is dropped (the footer says it).
 Supabase's own auth emails are NOT covered - those templates live in Supabase.
+
+## Discord messages no longer saved (2026-11-03)
+
+Host's request: the bot no longer writes server messages to
+`discord_channel_log` (`_log_channel_message` and both call sites removed
+from `discord_bot/bot.py`), and the 8pm evening check
+(`check_discord_messages.py`) is no longer scheduled. That check also stopped
+emailing flags earlier the same day. Rows already in `discord_channel_log` and
+`discord_flags` are kept, not deleted. The chat-history tool, the deleted-message
+lookup, the AI Logs page and joke of the day still read the old rows; joke of
+the day falls back to a plain robotics joke when there's no recent chat.
+`ai_chat_messages` (questions asked to the bot and its replies) is unchanged.

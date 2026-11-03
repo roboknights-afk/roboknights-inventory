@@ -25,9 +25,11 @@
 # passively reads every message in every channel it can see (including
 # real channel history from before it was running, backfilled on startup)
 # so a reply has the same context a person reading the channel would.
-# Every message it sees is logged to Supabase's discord_channel_log table,
-# separately from ai_chat_messages (which is only the bot's own turns) -
-# this is broader, for reviewing real conversations to catch bad replies.
+# Server messages are NOT saved anywhere (2026-11-03, host's request): the
+# bot used to log every message it saw to Supabase's discord_channel_log.
+# It now only keeps the small in-memory channel_log for reply context.
+# Rows logged before then are left in the table, and the chat-history tool
+# and deleted-message lookup below still read them.
 # An edited message that now mentions the bot (or edits what it originally
 # asked) gets a fresh reply, not silently ignored.
 #
@@ -103,11 +105,9 @@ BOT_BUILD = "2026-10-18 tag the bot and say summarise: summary of the last 100 m
 #    Discord invite grants server-wide access by default, and "we added
 #    the bot for one channel" should not mean it can be pulled into any
 #    other channel of theirs and asked about our members.
-# 2. WHAT it writes down. The passive discord_channel_log (every message
-#    it can see, for host review) stays limited to our own server. Their
-#    channel's chatter is not ours to store, and the review log exists to
-#    audit OUR bot, which ai_chat_messages already covers everywhere —
-#    that keeps every question the bot is ASKED, in either server.
+# 2. WHAT it writes down. ai_chat_messages keeps every question the bot
+#    is ASKED, in either server. Ordinary server chatter is no longer
+#    stored at all (see the top of this file).
 #
 # Both default to today's behaviour when unset (no home guild configured
 # = treat everywhere as home), so a missing variable degrades to what
@@ -1118,30 +1118,6 @@ def _log_chat(role, content, discord_user_id, discord_channel_id, linked_user_id
         pass
 
 
-def _log_channel_message(message, linked_user_id, is_edit=False):
-    # Every message the bot can see, not just the ones it replies to — so
-    # a host can pull up real conversations later to spot a bad reply
-    # (like the fake-ping incident) and know exactly what led to it.
-    # discord_message_id has a unique constraint, so an edit UPSERTs onto
-    # the same row instead of creating a duplicate. display_name is
-    # captured here too, not just the numeric ID - most members never
-    # link their account, so this is the only readable "who said this"
-    # a later chat-history search has to work with.
-    try:
-        supabase.table("discord_channel_log").upsert({
-            "discord_message_id": str(message.id),
-            "discord_channel_id": str(message.channel.id),
-            "discord_user_id": str(message.author.id),
-            "discord_display_name": message.author.display_name,
-            "linked_user_id": linked_user_id,
-            "content": message.content,
-            "was_edited": is_edit,
-            "updated_at": datetime.now(IST).isoformat(),
-        }, on_conflict="discord_message_id").execute()
-    except Exception:
-        pass
-
-
 def _find_logged_message(message_id):
     # discord.py only hands on_raw_message_delete the deleted message's
     # CONTENT if it happened to still be in the bot's own short-lived
@@ -1872,24 +1848,11 @@ async def on_ready():
             perms = channel.permissions_for(guild.me)
             if not (perms.view_channel and perms.read_message_history):
                 continue
-            is_home = _is_home_guild(channel)
             try:
                 async for msg in channel.history(limit=BACKFILL_LIMIT, oldest_first=True):
                     if msg.author.bot:
                         continue
                     channel_log[channel.id].append({"author": msg.author.display_name, "content": msg.content})
-                    # Home-server only (see the guest-server comment above) -
-                    # without this, a message deleted before the bot's NEXT
-                    # restart has no durable record at all: discord.py's own
-                    # in-memory cache is gone too, so on_raw_message_delete
-                    # falls back to "unknown"/"no text on file" for anything
-                    # that predates this process's uptime (confirmed live,
-                    # 2026-09-03 - a message deleted right after a redeploy
-                    # showed up exactly that way). Backfilling into the same
-                    # table live messages use closes that gap.
-                    if is_home:
-                        linked_user_id, _ = _linked_user(str(msg.author.id))
-                        _log_channel_message(msg, linked_user_id)
             except Exception as e:
                 print(f"Backfill skipped for #{channel.name}: {e}")
     print("Backfill complete.")
@@ -2077,12 +2040,8 @@ async def _handle_incoming(message, is_edit=False):
         channel_log[message.channel.id].append(
             {"author": message.author.display_name, "content": message.content}
         )
-        # Persisted review log stays limited to our own server — see the
-        # DISCORD_HOME_GUILD_ID comment at the top. In a guest channel the
-        # rolling in-memory log above still gives the bot the conversation
-        # it's replying into; it just isn't written to our database.
-        if _is_home_guild(message.channel):
-            _log_channel_message(message, linked_user_id, is_edit=is_edit)
+        # Kept in memory only - never written to the database (see the
+        # top of this file).
 
     if not (is_dm or is_mentioned or is_reply_to_bot):
         return
