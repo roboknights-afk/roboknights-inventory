@@ -33,18 +33,19 @@
 # An edited message that now mentions the bot (or edits what it originally
 # asked) gets a fresh reply, not silently ignored.
 #
-# Normal case: everything runs on Groq. If Groq fails (its 100K-token/day
-# budget for this model IS reachable in real use - see the comments
-# around GEMINI_API_KEY/GROQ_MODEL below), it falls back to Gemini's free
-# tier for that one reply, then goes right back to Groq next time - Gemini
-# is a fallback, never the default.
+# Normal case: everything runs on Groq. If Groq fails (its daily token
+# budget for this model IS reachable in real use - see the comments around
+# GROQ_MODEL below), that one reply falls back to Groq's small model, then
+# OpenRouter, then goes right back to normal next time.
+#
+# No Gemini (removed 2026-11-03, host's request): Google's free tier may use
+# prompts to improve its products, and this bot reads members' messages.
 #
 # To test on your own laptop: put DISCORD_BOT_TOKEN, GROQ_API_KEY,
 # SUPABASE_URL, and SUPABASE_KEY in a .env file in this folder (or the
 # repo root, if run from there), then:
 #   python bot.py
-# GEMINI_API_KEY is optional - without it, a Groq failure just fails
-# openly like before, no fallback attempted.
+# OPENROUTER_API_KEY is optional - without it that last fallback is skipped.
 
 import asyncio
 import json
@@ -59,8 +60,6 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 import discord
 import requests
 from dotenv import load_dotenv
-from google import genai
-from google.genai import types as genai_types
 from groq import Groq
 from supabase import create_client
 
@@ -174,7 +173,7 @@ GROQ_MODEL = "openai/gpt-oss-120b"
 # used, while Gemini and OpenRouter were both rate-limited at the same
 # moment. An 8-billion-parameter model gives noticeably shallower answers
 # than the 70b one; it is still enormously better than going dark for an
-# hour and a half. It sits between the two Groq attempts and Gemini, so
+# hour and a half. It sits between the two Groq attempts and OpenRouter, so
 # nothing changes on a normal day - this only runs once the good model is
 # actually out.
 # (Was llama-3.1-8b-instant, retired at the same time as the 70b above.)
@@ -243,7 +242,7 @@ ARBITER_NOTE = (
 # query-dependent 413 "Request Entity Too Large" bug on real everyday
 # queries even before the shutdown (see CLAUDE.md), so losing it is not
 # a regression: _ask_with_fallback_chain's job is now just "the plain model,
-# then Gemini, then small_groq, then OpenRouter" - see
+# then small_groq, then OpenRouter" - see
 # _ask_with_fallback_chain below.
 TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY")
 WEB_SEARCH_TOOL = {
@@ -382,34 +381,9 @@ def _search_chat_history(channel_id, days_back):
         return "(couldn't read the chat history this time)"
 
 
-# Fallback for when Groq's daily/rate limit is hit (see the token-budget
-# comments below - a real, now-confirmed way to run out mid-day). Tried
-# Cerebras for this role first - genuinely free tier on paper (1M
-# tokens/day, no card claimed) but confirmed live, repeatedly, that this
-# account gets 402 Payment Required on every model regardless of billing
-# changes made on their dashboard - likely an account-type quirk (Team
-# org vs Personal) that never got resolved, on top of Cerebras
-# shutting this free tier down entirely from Aug 17, 2026 anyway.
-#
-# Gemini instead: confirmed live that PLAIN generation genuinely works
-# and is free on this key (unlike an earlier attempt, which hit a hard 0
-# quota - that finding held for grounding/search specifically, not the
-# base model). Google Search grounding (Gemini's own web-search feature)
-# is SEPARATELY gated behind a linked billing account even for its free
-# quota, so this is chat-only here - Tavily above is still what handles
-# search. A paid Gemini Advanced/Google One AI Premium subscription does
-# NOT raise this API key's quota - confirmed live, that's a completely
-# separate consumer product from the API, a common mix-up.
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
-GEMINI_MODEL = "gemini-flash-latest"
-# Milliseconds. 30s is generous for a chat reply and well short of the
-# 60+ seconds the runaway call was still hanging at.
-GEMINI_TIMEOUT_MS = 30_000
-gemini_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
-
-# Third and last fallback, because two turned out not to be enough: on a
-# busy day Groq's 100K tokens and Gemini's free-tier daily request quota
-# can BOTH run out, and then the bot just tells members it's broken.
+# Last fallback: on a busy day Groq's daily budgets can run out, and then
+# the bot just tells members it's broken. (Gemini sat before this until
+# 2026-11-03 - see the top of this file.)
 # OpenRouter's ":free" models are $0/token with no card ever required
 # (50 requests/day without buying credits), and it's a completely
 # separate quota from the other two - which is the whole point. Plain
@@ -421,7 +395,7 @@ OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
 # Chosen by testing every ":free" model on a real club question, not by
 # size or name. Two things disqualified the obvious picks:
 #   - the 120b model took 12-19 SECONDS per reply, and this path only
-#     runs after Groq and Gemini have already failed, so that landed on
+#     runs after Groq has already failed, so that landed on
 #     top of their timeouts - members waited ~15s.
 #   - the nemotron "nano" model is a REASONING model: fast, but it ships
 #     its scratchpad to the channel ("We need to answer user... Does
@@ -1200,7 +1174,6 @@ def _format_channel_activity(channel_id):
 # logging turns a broken feature into an invisible one. Written by the two
 # functions below, read only by that one log line.
 _last_provider_error = {
-    "gemini": "not attempted",
     "small_groq": "not attempted",
     "openrouter": "not attempted",
 }
@@ -1238,111 +1211,6 @@ def _call_with_retry(fn, retries=1, delay=2.0):
             raise
 
 
-def _ask_with_gemini(messages, channel_id=None, with_tools=True, max_tokens=MAX_REPLY_TOKENS):
-    if gemini_client is None:
-        _last_provider_error["gemini"] = "no GEMINI_API_KEY set"
-        return None
-    try:
-        # Gemini's own shape: system prompt is a separate config field, not
-        # a message in the list, and turns are "user"/"model" not
-        # "user"/"assistant". Tool-call messages (left over from a failed
-        # Groq tool-calling attempt upstream) have no Gemini equivalent
-        # and are just dropped - the tools are re-offered below in
-        # Gemini's own format instead, so nothing is actually lost.
-        system_instruction = None
-        contents = []
-        for m in messages:
-            role = m.get("role")
-            if role == "system":
-                system_instruction = m.get("content")
-            elif role == "user" and m.get("content"):
-                contents.append({"role": "user", "parts": [{"text": m["content"]}]})
-            elif role == "assistant" and m.get("content"):
-                contents.append({"role": "model", "parts": [{"text": m["content"]}]})
-
-        # Gemini gets the SAME tools Groq does, not just plain chat. Found
-        # the hard way: without them it would still TRY to call
-        # search_chat_history (the system prompt tells it to) and return
-        # finish_reason=MALFORMED_FUNCTION_CALL with empty text, which
-        # surfaced to members as "I didn't get a response." Since Groq's
-        # 100K-token/day budget runs out regularly, this path is what
-        # actually answers "what happened yesterday" most of the time -
-        # it has to be able to read the chat log, not just guess.
-        #
-        # These are plain Python functions on purpose: the google-genai
-        # SDK reads their signature/docstring and runs the whole
-        # call-the-function-and-continue loop itself (automatic function
-        # calling), so there's no second hand-rolled tool loop here.
-        def get_club_data() -> str:
-            """Get the RoboKnights club's live data.
-
-            Covers the parts inventory, upcoming competitions and each
-            event's team, upcoming meetings, recent achievements, and
-            which members can be @mentioned. Call this for any question
-            about the club's own parts, competitions, teams, meetings,
-            members, or achievements.
-            """
-            return _safe_club_context()
-
-        tools = [get_club_data]
-        if channel_id is not None:
-            def search_chat_history(days_back: int) -> str:
-                """Search this Discord channel's real message history.
-
-                Use for questions about what was said before, who said what,
-                or what happened on a past day.
-
-                Args:
-                    days_back: How many days back to search (1 = today and
-                        yesterday, 7 = the past week).
-                """
-                return _search_chat_history(channel_id, days_back)
-
-            tools.append(search_chat_history)
-
-        if TAVILY_API_KEY:
-            def web_search(query: str) -> str:
-                """Search the web for current or specific information.
-
-                Args:
-                    query: What to search for.
-                """
-                return _tavily_search(query)[0]
-
-            tools.append(web_search)
-
-        response = _call_with_retry(lambda: gemini_client.models.generate_content(
-            model=GEMINI_MODEL, contents=contents,
-            config=genai_types.GenerateContentConfig(
-                system_instruction=system_instruction, tools=(tools if with_tools else None) or None,
-                max_output_tokens=max_tokens,
-                # Without this the SDK waits indefinitely - the call that
-                # froze the bot on 2026-08-15 was still hanging a minute
-                # later. Milliseconds, and it's the LAST fallback, so
-                # giving up here just means the member gets the honest
-                # "I'm maxed out" instead of silence.
-                http_options=genai_types.HttpOptions(timeout=GEMINI_TIMEOUT_MS),
-            ),
-        ))
-        # None, not a placeholder string - an empty answer here should let
-        # the caller fall through to its real error message rather than
-        # dead-end a member with "try asking again" (which is what
-        # happened before, and gave no signal anything was actually wrong).
-        if response.text:
-            _last_provider_error["gemini"] = "ok"
-            return response.text
-        # Empty text is a real, distinct case: the model can stop on a
-        # MAX_TOKENS or SAFETY finish reason and hand back a candidate
-        # with no text at all, which looks exactly like a crash from the
-        # outside unless the reason is recorded.
-        reasons = [str(c.finish_reason) for c in (response.candidates or [])]
-        _last_provider_error["gemini"] = f"empty text (finish_reason={reasons or 'none'})"
-        return None
-    except Exception as e:
-        _last_provider_error["gemini"] = repr(e)[:300]
-        return None
-
-
 # Appended to the system prompt on the plain fallback path ONLY, which
 # has no tools wired up. Without it, the main system prompt still tells
 # the model to "call get_club_data" - and confirmed live, it then answers
@@ -1350,7 +1218,7 @@ def _ask_with_gemini(messages, channel_id=None, with_tools=True, max_tokens=MAX_
 # get_club_data, I found... 5 DC motors, 2 servo motors" - completely
 # invented. Fake inventory presented as the club's real data is worse
 # than no answer, so these paths are told plainly that they can't look
-# anything up. (Gemini keeps the normal prompt - it DOES have the tools.)
+# anything up.
 NO_TOOLS_NOTE = (
     "\n\nIMPORTANT OVERRIDE FOR THIS REPLY ONLY: the get_club_data, "
     "search_chat_history and web_search tools are NOT available right "
@@ -1574,8 +1442,7 @@ def _ask_with_fallback_chain(messages, channel_id=None):
     # search-and-read system) before falling through to a plain answer -
     # removed 2026-09-20, the day before Groq decommissioned it (and
     # groq/compound-mini) with no replacement model. This chain is now
-    # just: plain model, then Gemini, then the small Groq model, then
-    # OpenRouter. It loses the ability to search on this one reply (Tavily
+    # just: plain model, then the small Groq model, then OpenRouter. It loses the ability to search on this one reply (Tavily
     # in _ask_with_tools is the only search path left), same tradeoff the
     # compound step already had via its own 413 bug.
     #
@@ -1586,9 +1453,7 @@ def _ask_with_fallback_chain(messages, channel_id=None):
     no_tools_messages = _with_no_tools_note(messages, channel_id)
     # Cleared per attempt, so the log line below can never report a
     # leftover reason from an earlier, unrelated question.
-    _last_provider_error.update(
-        gemini="not attempted", small_groq="not attempted", openrouter="not attempted"
-    )
+    _last_provider_error.update(small_groq="not attempted", openrouter="not attempted")
     try:
         response = _call_with_retry(lambda: groq_client.chat.completions.create(
             model=GROQ_MODEL, messages=no_tools_messages, max_tokens=MAX_REPLY_TOKENS,
@@ -1607,13 +1472,8 @@ def _ask_with_fallback_chain(messages, channel_id=None):
         )
         return reply, []
     except Exception as groq_error:
-        gemini_reply = _ask_with_gemini(messages, channel_id)
-        if gemini_reply is not None:
-            return gemini_reply, []
-        # Gemini's free tier is small enough to 429 under any real
-        # load, so the small Groq model - on its own, much larger
-        # daily budget - is what actually keeps the bot answering
-        # once the 70b one is spent. NOT the same no_tools_messages
+        # The small Groq model - on its own, much larger daily budget -
+        # is what keeps the bot answering once the big one is spent. NOT the same no_tools_messages
         # the plain retry above got - this model's per-minute token
         # cap (6,000) is smaller than 70b's (12,000), and the full
         # club context (with contact details) is big enough on its
@@ -1637,7 +1497,6 @@ def _ask_with_fallback_chain(messages, channel_id=None):
         # embed. The full detail still exists, in the Space's Logs
         # tab, where it's actually useful for debugging.
         print(f"ALL PROVIDERS FAILED - plain: {groq_error!r}; "
-              f"gemini: {_last_provider_error['gemini']}; "
               f"small_groq: {_last_provider_error['small_groq']}; "
               f"openrouter: {_last_provider_error['openrouter']}", flush=True)
         # Deliberately no longer says "I'm maxed out on my daily AI
@@ -1666,7 +1525,7 @@ def _ask_with_tools(messages, channel_id):
     # is set, so the model can't try to call something that isn't wired up.
     # Kept separate from `messages` (which gets tool-call-shaped entries
     # appended below) so a fallback below can use the CLEAN conversation -
-    # the plain/Gemini fallbacks don't understand this app's tool-call
+    # the plain fallbacks don't understand this app's tool-call
     # message shapes, and passing them a stray "tool" role or a
     # content-less "assistant" message just confuses them further, which
     # is exactly what produced an empty/unhelpful reply here once already.
@@ -1719,7 +1578,7 @@ def _ask_with_tools(messages, channel_id):
         return reply, all_sources
     except Exception:
         # A Groq failure here (rate limit, empty response, etc.) falls
-        # through to the plain/Gemini/small_groq/OpenRouter chain rather
+        # through to the plain/small_groq/OpenRouter chain rather
         # than a second, different error message for what's really the
         # same underlying problem. Loses chat-history-search and
         # web-search ability on this one reply (none of those fallback
@@ -1889,8 +1748,7 @@ def _summarise_chat(system_text, user_text):
     except Exception as e:
         print(f"summary: main model failed: {repr(e)[:200]}", flush=True)
     return (
-        _ask_with_gemini(messages, with_tools=False, max_tokens=cs.SUMMARY_MAX_TOKENS)
-        or _ask_with_small_groq(messages, max_tokens=cs.SUMMARY_MAX_TOKENS)
+        _ask_with_small_groq(messages, max_tokens=cs.SUMMARY_MAX_TOKENS)
         or _ask_with_openrouter(messages, max_tokens=cs.SUMMARY_MAX_TOKENS)
     )
 
@@ -2148,7 +2006,7 @@ async def _handle_incoming(message, is_edit=False):
             return
 
     # asyncio.to_thread, NOT a plain call: _ask_llm and everything under it
-    # (Groq, Gemini, Tavily, Supabase) is ordinary blocking HTTP. Called
+    # (Groq, OpenRouter, Tavily, Supabase) is ordinary blocking HTTP. Called
     # directly it runs ON the event loop, so one slow provider freezes the
     # whole bot - confirmed live 2026-08-15, a Gemini fallback blocked the
     # gateway heartbeat for over 60 seconds and the member who asked never

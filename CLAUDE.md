@@ -3045,3 +3045,11 @@ today or later or undated) are listed as a warning before confirming, and those
 `event_volunteers` rows are deleted explicitly in both the delete and the disable
 case; the summary names the events. Nobody else is notified, and the organisers'
 registration is the host's to update.
+
+## Gemini removed from the bot (2026-11-03)
+
+Host's request (Google's free tier may train on prompts). `_ask_with_gemini`,
+the `google-genai` dependency and `GEMINI_*` config are gone from
+`discord_bot/`. The fallback chain is now: Groq gpt-oss-120b (tools) ->
+same model plain -> Groq gpt-oss-20b -> OpenRouter free model. Summaries use
+the same order. Older notes below that mention Gemini are history.
