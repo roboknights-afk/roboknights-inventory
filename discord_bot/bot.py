@@ -33,10 +33,11 @@
 # An edited message that now mentions the bot (or edits what it originally
 # asked) gets a fresh reply, not silently ignored.
 #
-# Normal case: everything runs on Groq. If Groq fails (its daily token
-# budget for this model IS reachable in real use - see the comments around
-# GROQ_MODEL below), that one reply falls back to Groq's small model, then
-# OpenRouter, then goes right back to normal next time.
+# Normal case (2026-11-03, host's request): NVIDIA's Nemotron 3.5 Lightning,
+# free on OpenRouter, answers first, with the same tools. If it fails (most
+# likely its free daily request cap), that one reply goes to Groq's
+# gpt-oss-120b with tools, then the same model plain, then Groq's small
+# model - and goes right back to Nemotron next time.
 #
 # No Gemini (removed 2026-11-03, host's request): Google's free tier may use
 # prompts to improve its products, and this bot reads members' messages.
@@ -45,7 +46,8 @@
 # SUPABASE_URL, and SUPABASE_KEY in a .env file in this folder (or the
 # repo root, if run from there), then:
 #   python bot.py
-# OPENROUTER_API_KEY is optional - without it that last fallback is skipped.
+# OPENROUTER_API_KEY is optional - without it Nemotron is skipped and Groq
+# answers everything, as it did before.
 
 import asyncio
 import json
@@ -381,31 +383,19 @@ def _search_chat_history(channel_id, days_back):
         return "(couldn't read the chat history this time)"
 
 
-# Last fallback: on a busy day Groq's daily budgets can run out, and then
-# the bot just tells members it's broken. (Gemini sat before this until
-# 2026-11-03 - see the top of this file.)
-# OpenRouter's ":free" models are $0/token with no card ever required
-# (50 requests/day without buying credits), and it's a completely
-# separate quota from the other two - which is the whole point. Plain
-# chat only, no tools, so it gets the NO_TOOLS_NOTE treatment like the
-# other tool-less paths. Optional: unset means this step is skipped.
-# Which models are free rotates over time - if this one 404s, check
+# The MAIN model since 2026-11-03 (host's request), on OpenRouter's free
+# tier: about 50 requests a day without credit bought, about 1,000 with $10
+# of lifetime credit - past that it 429s and Groq takes over for the rest of
+# the day. Tested before the switch on made-up club data: it makes real tool
+# calls, answers in 1-6s, and with reasoning excluded (see _openrouter_chat)
+# its thinking stays out of the reply - the failure that ruled out the older
+# Nemotron "nano" (it posted its scratchpad to the channel). If it ever does
+# that again, or 404s once its free version is retired, check
 # `curl https://openrouter.ai/api/v1/models` for current ":free" ids.
+# The old OpenRouter fallback, google/gemma-4-26b-a4b-it:free, was dropped
+# at the same time: its free version is served by Google AI Studio.
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
-# Chosen by testing every ":free" model on a real club question, not by
-# size or name. Two things disqualified the obvious picks:
-#   - the 120b model took 12-19 SECONDS per reply, and this path only
-#     runs after Groq has already failed, so that landed on
-#     top of their timeouts - members waited ~15s.
-#   - the nemotron "nano" model is a REASONING model: fast, but it ships
-#     its scratchpad to the channel ("We need to answer user... Does
-#     Naitik appear? Not listed as volunteer. So not relevant."). No
-#     output filter catches that reliably, because the working-out IS
-#     the answer text.
-# This one is instruct-tuned, answers directly, and got the club
-# question right in 3.8s ("Your next competition is Robotronics '26...").
-# Don't swap it without testing BOTH speed and whether it thinks out loud.
-OPENROUTER_MODEL = "google/gemma-4-26b-a4b-it:free"
+NEMOTRON_MODEL = "nvidia/nemotron-3.5-lightning:free"
 
 # Hard ceiling on how long ANY single reply can be, applied to every
 # provider below. This exists because of what members actually did once
@@ -1377,8 +1367,8 @@ def _ask_with_openrouter(messages, max_tokens=MAX_REPLY_TOKENS):
                 "https://openrouter.ai/api/v1/chat/completions",
                 headers={"Authorization": f"Bearer {OPENROUTER_API_KEY}"},
                 json={
-                    "model": OPENROUTER_MODEL, "messages": messages,
-                    "max_tokens": max_tokens,
+                    "model": NEMOTRON_MODEL, "messages": messages,
+                    "max_tokens": max_tokens, "reasoning": {"exclude": True},
                 },
                 timeout=30,
             )
@@ -1389,7 +1379,7 @@ def _ask_with_openrouter(messages, max_tokens=MAX_REPLY_TOKENS):
         if r.status_code >= 300:
             # The body matters more than the status here: a free model
             # that's been retired 404s, and a daily cap 429s, and those
-            # need completely different fixes (swap OPENROUTER_MODEL vs
+            # need completely different fixes (swap NEMOTRON_MODEL vs
             # wait it out). Trimmed, since it lands in the Space's Logs tab.
             _last_provider_error["openrouter"] = f"HTTP {r.status_code}: {r.text[:200]}"
             return None
@@ -1442,7 +1432,8 @@ def _ask_with_fallback_chain(messages, channel_id=None):
     # search-and-read system) before falling through to a plain answer -
     # removed 2026-09-20, the day before Groq decommissioned it (and
     # groq/compound-mini) with no replacement model. This chain is now
-    # just: plain model, then the small Groq model, then OpenRouter. It loses the ability to search on this one reply (Tavily
+    # just: the plain Groq model, then the small Groq model. (Nemotron, the
+    # main model, has already been tried with tools by now.) It loses the ability to search on this one reply (Tavily
     # in _ask_with_tools is the only search path left), same tradeoff the
     # compound step already had via its own 413 bug.
     #
@@ -1453,7 +1444,7 @@ def _ask_with_fallback_chain(messages, channel_id=None):
     no_tools_messages = _with_no_tools_note(messages, channel_id)
     # Cleared per attempt, so the log line below can never report a
     # leftover reason from an earlier, unrelated question.
-    _last_provider_error.update(small_groq="not attempted", openrouter="not attempted")
+    _last_provider_error.update(small_groq="not attempted")
     try:
         response = _call_with_retry(lambda: groq_client.chat.completions.create(
             model=GROQ_MODEL, messages=no_tools_messages, max_tokens=MAX_REPLY_TOKENS,
@@ -1487,9 +1478,6 @@ def _ask_with_fallback_chain(messages, channel_id=None):
         )
         if small_reply is not None:
             return small_reply, []
-        openrouter_reply = _ask_with_openrouter(no_tools_messages)
-        if openrouter_reply is not None:
-            return openrouter_reply, []
         # Members get a short, human sentence - NOT the raw provider
         # error. Dumping those into Discord (what this did before)
         # pasted a wall of JSON, leaked the org id, and included a
@@ -1513,77 +1501,100 @@ def _ask_with_fallback_chain(messages, channel_id=None):
         )
 
 
-def _ask_with_tools(messages, channel_id):
-    # The model decides for itself (normal tool calls) whether a question
-    # needs a web search and/or its own chat history searched - same
-    # "decides for itself" behavior groq/compound advertises for search,
-    # but WE execute both and control exactly how much text comes back
-    # (see TAVILY_API_KEY/CHAT_HISTORY_TOOL comments above), which is what
-    # actually avoids the "request too large" failure. Chat history search
-    # is always available (it's our own Supabase data, no external key
-    # needed); web search only gets offered as a tool when TAVILY_API_KEY
-    # is set, so the model can't try to call something that isn't wired up.
-    # Kept separate from `messages` (which gets tool-call-shaped entries
-    # appended below) so a fallback below can use the CLEAN conversation -
-    # the plain fallbacks don't understand this app's tool-call
-    # message shapes, and passing them a stray "tool" role or a
-    # content-less "assistant" message just confuses them further, which
-    # is exactly what produced an empty/unhelpful reply here once already.
-    original_messages = list(messages)
+def _groq_chat(messages, tools=None):
+    # -> {"content", "tool_calls"} (tool calls as plain dicts), the same
+    # shape _openrouter_chat returns, so _tool_answer can drive either.
+    kwargs = {"tools": tools, "tool_choice": "auto"} if tools else {}
+    response = _call_with_retry(lambda: groq_client.chat.completions.create(
+        model=GROQ_MODEL, messages=messages, max_tokens=MAX_REPLY_TOKENS, **kwargs,
+    ))
+    msg = response.choices[0].message
+    return {"content": msg.content, "tool_calls": [tc.model_dump() for tc in (msg.tool_calls or [])]}
+
+
+def _openrouter_chat(messages, tools=None):
+    # Nemotron on OpenRouter. No retry: a 429 here is usually the free
+    # daily cap, which waiting 2s won't fix, and Groq is right behind it.
+    # reasoning.exclude keeps its thinking out of `content` (tested
+    # 2026-11-03); _strip_reasoning is a second guard on the final text.
+    if not OPENROUTER_API_KEY:
+        raise RuntimeError("no OPENROUTER_API_KEY set")
+    body = {
+        "model": NEMOTRON_MODEL, "messages": messages, "max_tokens": MAX_REPLY_TOKENS,
+        "reasoning": {"exclude": True},
+    }
+    if tools:
+        body.update(tools=tools, tool_choice="auto")
+    r = requests.post(
+        "https://openrouter.ai/api/v1/chat/completions",
+        headers={"Authorization": f"Bearer {OPENROUTER_API_KEY}"}, json=body, timeout=30,
+    )
+    if r.status_code >= 300:
+        raise RuntimeError(f"HTTP {r.status_code}: {r.text[:200]}")
+    msg = r.json()["choices"][0]["message"]
+    content = msg.get("content")
+    return {
+        "content": _strip_reasoning(content) if content else content,
+        "tool_calls": msg.get("tool_calls") or [],
+    }
+
+
+def _tool_answer(chat, messages, channel_id):
+    # One model, with tools: it decides for itself whether a question
+    # needs the club data, its own chat history and/or a web search; WE
+    # run those and control how much text comes back (see the
+    # TAVILY_API_KEY/CHAT_HISTORY_TOOL comments above). Raises on any
+    # failure, including an empty reply, so the caller moves on.
     tools = [CLUB_DATA_TOOL, CHAT_HISTORY_TOOL] + ([WEB_SEARCH_TOOL] if TAVILY_API_KEY else [])
+    msg = chat(messages, tools)
+    if not msg["tool_calls"]:
+        if msg["content"]:
+            return msg["content"], []
+        # A genuinely empty response with no tool call and no content
+        # DOES happen (seen live) - a failure, not a reply.
+        raise ValueError("empty response, no tool call")
+
+    messages.append({"role": "assistant", "content": msg["content"] or "", "tool_calls": msg["tool_calls"]})
+    all_sources = []
+    for tc in msg["tool_calls"]:
+        try:
+            args = json.loads(tc["function"].get("arguments") or "{}")
+        except Exception:
+            args = {}
+        name = tc["function"]["name"]
+        if name == "get_club_data":
+            result_text = _safe_club_context()
+        elif name == "search_chat_history":
+            result_text = _search_chat_history(channel_id, args.get("days_back") or 1)
+        else:
+            result_text, result_sources = _tavily_search(args.get("query") or "")
+            all_sources.extend(result_sources)
+        messages.append({"role": "tool", "tool_call_id": tc["id"], "content": result_text})
+
+    reply = chat(messages)["content"]
+    if not reply:
+        # An empty final response (seen live, e.g. right as a daily budget
+        # runs out mid-exchange) gets a real fallback attempt.
+        raise ValueError("empty final response after tool call")
+    return reply, all_sources
+
+
+def _ask_with_tools(messages, channel_id):
+    # Nemotron first, then Groq, each with the full tools; each gets its
+    # own copy of the clean conversation, so a half-finished tool exchange
+    # from one never reaches the next. If both fail, the plain chain below
+    # (Groq without tools, then Groq's small model) still answers something
+    # - without chat-history or web search on that one reply.
+    original_messages = list(messages)
+    if OPENROUTER_API_KEY:
+        try:
+            return _tool_answer(_openrouter_chat, list(original_messages), channel_id)
+        except Exception as e:
+            _last_provider_error["openrouter"] = repr(e)[:300]
+            print(f"nemotron failed, trying Groq: {repr(e)[:200]}", flush=True)
     try:
-        response = _call_with_retry(lambda: groq_client.chat.completions.create(
-            model=GROQ_MODEL, messages=messages, tools=tools, tool_choice="auto",
-            max_tokens=MAX_REPLY_TOKENS,
-        ))
-        msg = response.choices[0].message
-        if not msg.tool_calls:
-            if msg.content:
-                return msg.content, []
-            # A genuinely empty response with no tool call and no content
-            # DOES happen (seen live) - treated as a failure, same as an
-            # exception, rather than shown to a member as an unhelpful
-            # "try asking again" with no real fallback attempted.
-            raise ValueError("empty response, no tool call")
-
-        messages.append({
-            "role": "assistant",
-            "content": msg.content or "",
-            "tool_calls": [tc.model_dump() for tc in msg.tool_calls],
-        })
-        all_sources = []
-        for tc in msg.tool_calls:
-            try:
-                args = json.loads(tc.function.arguments)
-            except Exception:
-                args = {}
-            if tc.function.name == "get_club_data":
-                result_text = _safe_club_context()
-            elif tc.function.name == "search_chat_history":
-                result_text = _search_chat_history(channel_id, args.get("days_back") or 1)
-            else:
-                result_text, result_sources = _tavily_search(args.get("query") or "")
-                all_sources.extend(result_sources)
-            messages.append({"role": "tool", "tool_call_id": tc.id, "content": result_text})
-
-        final = _call_with_retry(lambda: groq_client.chat.completions.create(
-            model=GROQ_MODEL, messages=messages, max_tokens=MAX_REPLY_TOKENS,
-        ))
-        reply = final.choices[0].message.content
-        if not reply:
-            # Same reasoning as above - an empty final response (seen
-            # live, e.g. right as the daily budget runs out mid-exchange)
-            # gets a real fallback attempt, not a dead-end message.
-            raise ValueError("empty final response after tool call")
-        return reply, all_sources
+        return _tool_answer(_groq_chat, list(original_messages), channel_id)
     except Exception:
-        # A Groq failure here (rate limit, empty response, etc.) falls
-        # through to the plain/small_groq/OpenRouter chain rather
-        # than a second, different error message for what's really the
-        # same underlying problem. Loses chat-history-search and
-        # web-search ability on this one reply (none of those fallback
-        # providers have those tools), but still answers something
-        # rather than nothing.
         return _ask_with_fallback_chain(original_messages, channel_id)
 
 
@@ -1733,11 +1744,14 @@ _last_summary_at = {}
 
 
 def _summarise_chat(system_text, user_text):
-    # Same providers, same order and same shared daily budget as
-    # _ask_with_fallback_chain, but plain: no tools, and none of the club data that
-    # path pastes in (~1,200 tokens a summary doesn't need). -> text, or None when
-    # every provider failed.
+    # Same order as a normal reply - Nemotron, then Groq's big model, then
+    # its small one - but plain: no tools, and none of the club data that
+    # path pastes in (~1,200 tokens a summary doesn't need). -> text, or
+    # None when every provider failed.
     messages = [{"role": "system", "content": system_text}, {"role": "user", "content": user_text}]
+    reply = _ask_with_openrouter(messages, max_tokens=cs.SUMMARY_MAX_TOKENS)
+    if reply:
+        return reply
     try:
         response = _call_with_retry(lambda: groq_client.chat.completions.create(
             model=GROQ_MODEL, messages=messages, max_tokens=cs.SUMMARY_MAX_TOKENS,
@@ -1747,10 +1761,7 @@ def _summarise_chat(system_text, user_text):
             return reply
     except Exception as e:
         print(f"summary: main model failed: {repr(e)[:200]}", flush=True)
-    return (
-        _ask_with_small_groq(messages, max_tokens=cs.SUMMARY_MAX_TOKENS)
-        or _ask_with_openrouter(messages, max_tokens=cs.SUMMARY_MAX_TOKENS)
-    )
+    return _ask_with_small_groq(messages, max_tokens=cs.SUMMARY_MAX_TOKENS)
 
 
 async def _recent_channel_entries(channel, before):

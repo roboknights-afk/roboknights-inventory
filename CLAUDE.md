@@ -3053,3 +3053,15 @@ the `google-genai` dependency and `GEMINI_*` config are gone from
 `discord_bot/`. The fallback chain is now: Groq gpt-oss-120b (tools) ->
 same model plain -> Groq gpt-oss-20b -> OpenRouter free model. Summaries use
 the same order. Older notes below that mention Gemini are history.
+
+## Nemotron is the bot's main model (2026-11-03)
+
+Host's request. `NEMOTRON_MODEL = "nvidia/nemotron-3.5-lightning:free"` on
+OpenRouter answers first, with the same tools (`_tool_answer(_openrouter_chat, ...)`,
+reasoning excluded). On any failure (usually its free daily cap: ~50/day, ~1,000
+with $10 lifetime credit) the reply goes to Groq gpt-oss-120b with tools, then
+Groq plain, then gpt-oss-20b. Summaries: Nemotron, Groq 120b, Groq 20b. The
+Gemma OpenRouter fallback was dropped (served by Google AI Studio). Needs a
+working `OPENROUTER_API_KEY` on the VPS; without one, Groq answers everything.
+Tested before the switch on made-up data: tool calls work, 1-6s, no reasoning
+in the reply, Groq takes over on a 401.
