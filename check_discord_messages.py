@@ -22,9 +22,13 @@
 # still flagged - recorded in discord_flags and emailed - but nothing is ever
 # posted to Discord about it.)
 #
+# (From 2026-11-03, at the host's request, flagged messages are no longer
+# emailed either: they are only recorded in discord_flags. The one email
+# left is "did not run", when the review itself fails.)
+#
 # To test on your own laptop: `python check_discord_messages.py`
 # (needs the same .env file app.py uses). Add --dry-run to print the
-# report instead of emailing it.
+# report (on your own screen only - it is never emailed or logged).
 
 import json
 import os
@@ -386,8 +390,8 @@ def main():
         return
 
     # What has already been recorded, so a re-run doesn't record it twice.
-    # Nothing is ever posted to Discord from here: flags are recorded and
-    # emailed, and a person decides what to do about them.
+    # Nothing is ever posted to Discord or emailed from here: flags are
+    # recorded, and a person decides what to do about them.
     seen = already_handled([r["discord_message_id"] for r, _, _ in hits])
 
     # Every flag is recorded, so tomorrow's run knows this one has been seen.
@@ -444,12 +448,11 @@ def main():
         lines.append("")
     body = "\n".join(lines)
 
+    # Only printed on a local --dry-run. A real run (GitHub Actions) never
+    # prints it: the Actions log is visible to anyone who can see the repo.
     if dry_run:
-        print("\n----- report (dry run, not emailed) -----")
+        print("\n----- report (dry run) -----")
         print(body)
-        return
-    send_email(REPORT_EMAIL, f"Discord evening check: {len(hits)} flagged", body)
-    print(f"report emailed to {REPORT_EMAIL}", flush=True)
 
 
 if __name__ == "__main__":

@@ -97,32 +97,24 @@ check("both messages were still flagged (recorded)", sorted(r["discord_message_i
 check("recorded rows carry no warning fields",
       any("warned_at" in r or "warning_message_id" in r for r in store.upserts), False)
 check("recorded severity kept", {r["discord_message_id"]: r["severity"] for r in store.upserts}, {"m2": "clear", "m4": "borderline"})
-check("one report email", len(emails), 1)
-to, subject, body = emails[0]
-check("report subject counts the flags", subject, "Discord evening check: 2 flagged")
-check("report shows both flagged messages", "made-up message number 2" in body and "made-up message number 4" in body, True)
-check("report links back to the messages", "https://discord.com/channels/" in body and "/c1/m2" in body, True)
-check("report no longer claims a warning went out or didn't", "WARNED" in body or "warning sent" in body, False)
-check("report still shows the surrounding conversation", "what was being said around it:" in body, True)
+check("flags are no longer emailed", emails, [])
 
 # --- a re-run does not record the same flags twice -------------------------------------------------------------
 store.already_flagged = {"m2"}
 run([{"id": "m2", "reason": "aimed at a member", "severity": "clear"}])
 check("already-recorded flag is not recorded again", store.upserts, [])
-check("but it is still in the report", len(emails) == 1 and "made-up message number 2" in emails[0][2], True)
 store.already_flagged = set()
 
 # --- the backup model: the report says so ----------------------------------------------------------------------
 run([{"id": "m1", "reason": "r", "severity": "clear"}], full_quality=False)
-check("degraded run still emails", len(emails), 1)
-check("degraded run says the ratings deserve doubt", "backup one" in emails[0][2] and "more doubt than usual" in emails[0][2], True)
-check("degraded run says nothing about warnings", "warning" in emails[0][2].lower(), False)
+check("degraded run: still recorded", [r["discord_message_id"] for r in store.upserts], ["m1"])
+check("degraded run: not emailed", emails, [])
 check("degraded run posted nothing", http_calls, [])
 
 # --- the flags table missing: report still goes out, nothing recorded, nothing posted ----------------------------
 store.flags_table_works = False
 run([{"id": "m3", "reason": "r", "severity": "clear"}])
-check("without the table: still emailed", len(emails), 1)
+check("without the table: not emailed", emails, [])
 check("without the table: nothing recorded", store.upserts, [])
 check("without the table: nothing posted", http_calls, [])
 store.flags_table_works = True
