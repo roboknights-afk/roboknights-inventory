@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 import streamlit as st
 
 from shared import (
-    HOST_EMAILS, cached_table, get_client, get_storage_client, invalidate_cache, removal_email,
+    HOST_EMAILS, IST, cached_table, get_client, get_storage_client, invalidate_cache, removal_email,
     removed_emails, safe_write, send_email,
 )
 
@@ -59,6 +59,30 @@ def _removed_column_ready():
         return False
 
 
+def _upcoming_signups(user_id):
+    # [(volunteer row, label)] for every competition event this member is
+    # signed up or selected for that hasn't happened yet - not marked past,
+    # and dated today or later (or not dated yet).
+    today = datetime.now(timezone.utc).astimezone(IST).date().isoformat()
+    events = {e["event_id"]: e for e in cached_table("competition_events")}
+    comps = {c["competition_id"]: c for c in cached_table("competitions")}
+    found = []
+    for v in cached_table("event_volunteers"):
+        if v["user_id"] != user_id or v["event_id"] not in events:
+            continue
+        event = events[v["event_id"]]
+        comp = comps.get(event["competition_id"])
+        if not comp or comp.get("is_past") or (comp.get("competition_date") or "9999") < today:
+            continue
+        when = (
+            datetime.fromisoformat(comp["competition_date"]).strftime("%d %b")
+            if comp.get("competition_date") else "date not set"
+        )
+        label = f"{'selected' if v.get('selected') else 'signed up'} for {event['name']} at {comp['name']} ({when})"
+        found.append((v, label))
+    return found
+
+
 def _remove_members(targets):
     # Lines for the host, one per member. Each member on their own, so one
     # failure doesn't stop the rest.
@@ -85,7 +109,23 @@ def _remove_members(targets):
             except Exception:
                 pass
         mail_note = "emailed" if emailed else "NOT emailed (the email failed)"
-        # 3. The profile. Log tables only point at them, so those links are
+        # 3. Off every upcoming event, whether the profile below is deleted
+        # or only disabled (a disabled one would otherwise stay selected).
+        upcoming = _upcoming_signups(u["user_id"])
+        taken_off = []
+        for v, label in upcoming:
+            try:
+                client.table("event_volunteers").delete().eq("volunteer_id", v["volunteer_id"]).execute()
+                taken_off.append(label)
+            except Exception:
+                pass
+        events_note = (
+            f" Taken off {len(taken_off)} upcoming event{'s' if len(taken_off) != 1 else ''}: "
+            + "; ".join(taken_off) + "." if taken_off else ""
+        )
+        if len(taken_off) < len(upcoming):
+            events_note += " Couldn't take them off every upcoming event - check Competitions."
+        # 4. The profile. Log tables only point at them, so those links are
         # cleared rather than blocking the delete.
         try:
             for table, column in (("ai_chat_messages", "user_id"), ("discord_channel_log", "linked_user_id")):
@@ -105,14 +145,14 @@ def _remove_members(targets):
                 profile_note = "account disabled, not deleted (other records still point to it)"
             except Exception:
                 profile_note = "profile NOT deleted or disabled (blocked from signing in all the same)"
-        # 4. The login itself.
+        # 5. The login itself.
         try:
             if admin is None:
                 raise RuntimeError("no service key")
             admin.auth.admin.delete_user(u["user_id"])
         except Exception:
             profile_note += "; their login wasn't deleted, but it's blocked"
-        report.append(f"- {name}: {mail_note}, {profile_note}.")
+        report.append(f"- {name}: {mail_note}, {profile_note}.{events_note}")
     invalidate_cache()
     return ["Removed from the club:"] + report
 
@@ -494,8 +534,9 @@ else:
                 st.caption(
                     "Each member picked gets an email saying their dashboard access has been revoked "
                     "as they've been removed from the club. Their account is then deleted, and their "
-                    "school email can't be used to sign up or sign in again. Their competition "
-                    "sign-ups, RSVPs and logged results go with it. This can't be undone."
+                    "school email can't be used to sign up or sign in again. They're taken off "
+                    "upcoming competition events, and their competition sign-ups, RSVPs and logged "
+                    "results go with the account. This can't be undone."
                 )
                 kick_ids = st.multiselect(
                     "Members to remove",
@@ -506,6 +547,19 @@ else:
                 )
                 if kick_ids:
                     names = ", ".join(next(u["name"] for u in users if u["user_id"] == uid) for uid in kick_ids)
+                    # Teams they'd leave a gap in - shown before confirming,
+                    # so a replacement (or a word with the organisers) can
+                    # be sorted first. The dashboard doesn't do either.
+                    clashes = [
+                        f"- {next(u['name'] for u in users if u['user_id'] == uid)}: {label}"
+                        for uid in kick_ids for _, label in _upcoming_signups(uid)
+                    ]
+                    if clashes:
+                        st.warning(
+                            "These members are on upcoming competition events. Removing them takes "
+                            "them off, and nobody else is told - find a replacement and update the "
+                            "organisers' registration yourself:\n" + "\n".join(clashes)
+                        )
                     confirm = st.checkbox(
                         f"Yes, remove {len(kick_ids)} member{'s' if len(kick_ids) != 1 else ''}: {names}",
                         key="kick_confirm",

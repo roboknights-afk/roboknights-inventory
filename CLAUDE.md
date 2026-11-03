@@ -3040,3 +3040,8 @@ the service-key client. `removed_emails()` (shared.py, read fresh, cached 30s)
 blocks a removed email at Google sign-in, password sign-up, and on every page
 load (app.py "Removed-member gate"). Needs the `is_removed` migration at the
 end of supabase_schema.sql; until then the section only says so.
+Upcoming competition events (`_upcoming_signups`: competition not past, dated
+today or later or undated) are listed as a warning before confirming, and those
+`event_volunteers` rows are deleted explicitly in both the delete and the disable
+case; the summary names the events. Nobody else is notified, and the organisers'
+registration is the host's to update.
