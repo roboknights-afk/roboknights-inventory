@@ -1219,3 +1219,9 @@ alter table intraschool_forms
         check (kind in ('stayback', 'saturday'));
 alter table intraschool_forms
     add column if not exists from_time time;
+
+-- Members removed from the club (2026-11-03): the Members page's "Remove
+-- kicked members" deletes the account and sets this on their school email, so
+-- they can't sign up or sign in with Google again. Until this is run that
+-- section only explains it is waiting for this column.
+alter table access_roles add column if not exists is_removed boolean not null default false;

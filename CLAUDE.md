@@ -3027,3 +3027,16 @@ emailing flags earlier the same day. Rows already in `discord_channel_log` and
 lookup, the AI Logs page and joke of the day still read the old rows; joke of
 the day falls back to a plain robotics joke when there's no recent chat.
 `ai_chat_messages` (questions asked to the bot and its replies) is unchanged.
+
+## Remove kicked members (2026-11-03)
+
+Members page, host-only expander "Remove kicked members" (`_remove_members` in
+`app_pages/members.py`). For each member picked, in this order: their school
+email gets `access_roles.is_removed = true`; they're emailed `removal_email()`
+(shared.py; school + personal address); the `users` row is deleted (log links
+in `ai_chat_messages`/`discord_channel_log` nulled first), or disabled when
+other records still point to it; then their Supabase login is deleted with
+the service-key client. `removed_emails()` (shared.py, read fresh, cached 30s)
+blocks a removed email at Google sign-in, password sign-up, and on every page
+load (app.py "Removed-member gate"). Needs the `is_removed` migration at the
+end of supabase_schema.sql; until then the section only says so.

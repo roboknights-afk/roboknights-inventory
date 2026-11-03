@@ -34,7 +34,7 @@ from shared import (
     VIEWER_EMAILS, cached_table,
     get_client, has_unread_chats, has_unread_exun_channel, has_unread_queries, invalidate_cache,
     _audit_purge_device_data, log_action, request_client_info,
-    safe_write, send_email,
+    is_removed_email, safe_write, send_email,
     sync_member_to_clio_sheet,
 )
 
@@ -537,6 +537,15 @@ def _is_password_session(access_token):
     return "password" in methods and methods <= {"password", "token_refresh", "totp"}
 
 
+def _log_removed_block(email, summary):
+    # Same shape as _log_locked_block below: no actor, the account is gone.
+    _ip, _agent = request_client_info()
+    log_action(
+        "session.blocked_removed", "session", email, summary,
+        client_ip=_ip, user_agent=_agent, actor=(None, None, None),
+    )
+
+
 def _log_locked_block(email, summary):
     # No actor on purpose: the person doing this is NOT the account's owner,
     # so the row must not read as if they were.
@@ -712,6 +721,14 @@ def handle_google_oauth_callback(client):
         st.session_state.google_login_error = (
             "This account can't sign in with Google. Use its email and password instead."
         )
+        return
+
+    # A member removed from the club (Members page, "Remove kicked
+    # members"): no new session, and no new profile either.
+    if is_removed_email(email):
+        client.auth.sign_out({"scope": "local"})
+        _log_removed_block(email, "Blocked a Google sign-in by a member removed from the club")
+        st.session_state.google_login_error = "This account has been removed from RoboKnights and can no longer sign in."
         return
 
     st.session_state.auth_user = {"id": result.user.id, "email": email}
@@ -998,6 +1015,9 @@ def show_login_signup(client):
                 if st.button("Sign up", icon=":material/person_add:", type="primary", width="stretch"):
                     if email == ALLOWED_EMAIL_DOMAIN:
                         st.error("Enter your username.")
+                    elif is_removed_email(email):
+                        _log_removed_block(email, "Blocked a sign-up by a member removed from the club")
+                        st.error("This account has been removed from RoboKnights and can no longer sign in.")
                     else:
                         try:
                             # email_redirect_to: after Supabase confirms the
@@ -1318,6 +1338,17 @@ if _disabled_row and _disabled_row.get("is_disabled"):
     st.session_state.auth_user = None
     _clear_remember_token()
     st.error("This account has been disabled. Please contact the admin.")
+    st.stop()
+
+# --- Removed-member gate ---------------------------------------------------
+# Same idea as the disabled gate above, for a member removed from the club:
+# their account is deleted, but a session that was already open (or a
+# password sign-in, if deleting the login itself failed) ends here.
+if is_removed_email(st.session_state.auth_user["email"]):
+    _log_removed_block(st.session_state.auth_user["email"], "A member removed from the club tried to sign in")
+    st.session_state.auth_user = None
+    _clear_remember_token()
+    st.error("This account has been removed from RoboKnights and can no longer sign in.")
     st.stop()
 
 # Actually writing the "remember me" token set by any of the three login

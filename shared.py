@@ -2612,3 +2612,39 @@ def notify_exun_hub_post(author_email, discord_summary, email_body):
                 send_email(email, "Exun 2026 hub", email_body)
     except Exception:
         pass
+
+
+# --- Members removed from the club (2026-11-03) ----------------------------
+# A host removes a kicked member on the Members page: their school email is
+# set is_removed in access_roles, their account is deleted, and they get
+# removal_email(). Read fresh (cached 30s), not from the import-time
+# access_roles snapshot at the top of this file, so someone removed a
+# minute ago is blocked now rather than after the next server restart.
+# Best-effort: before the is_removed migration, nobody is removed.
+@st.cache_data(ttl=30)
+def removed_emails():
+    try:
+        rows = _raw_client().table("access_roles").select("email").eq("is_removed", True).execute().data
+    except Exception:
+        return set()
+    return {r["email"].strip().lower() for r in rows}
+
+
+def is_removed_email(email):
+    return (email or "").strip().lower() in removed_emails()
+
+
+def removal_email(name):
+    # (subject, body) of the email a removed member gets.
+    body = "\n".join([
+        f"Hi {name or 'there'},",
+        "",
+        "As you have been removed from the RoboKnights club, your access to the RoboKnights "
+        "dashboard has been revoked and your account has been deleted. You will no longer be "
+        "able to sign in.",
+        "",
+        "This is a no-reply email, and an automated mail.",
+        "",
+        "- RoboKnights",
+    ])
+    return "Your RoboKnights dashboard access has been revoked", body

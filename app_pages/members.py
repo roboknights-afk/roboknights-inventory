@@ -9,7 +9,10 @@ from datetime import datetime, timezone
 
 import streamlit as st
 
-from shared import cached_table, get_client, invalidate_cache, safe_write
+from shared import (
+    HOST_EMAILS, cached_table, get_client, get_storage_client, invalidate_cache, removal_email,
+    removed_emails, safe_write, send_email,
+)
 
 is_host = st.session_state.is_host
 is_exun = st.session_state.is_exun
@@ -46,6 +49,72 @@ if st.session_state.member_edit_message:
 # secondary key which one shows first would be an unreliable storage-order
 # artifact rather than something predictable.
 users = sorted(cached_table("users"), key=lambda u: (u["name"], u["user_id"]))
+
+
+def _removed_column_ready():
+    try:
+        client.table("access_roles").select("is_removed").limit(1).execute()
+        return True
+    except Exception:
+        return False
+
+
+def _remove_members(targets):
+    # Lines for the host, one per member. Each member on their own, so one
+    # failure doesn't stop the rest.
+    admin = get_storage_client()  # service key: the only client that can delete a login
+    report = []
+    for u in targets:
+        name = u["name"]
+        email = (u.get("email") or "").strip().lower()
+        # 1. Blocked first, so nothing below can leave them able to get back in.
+        try:
+            client.table("access_roles").upsert({"email": email, "is_removed": True}).execute()
+            removed_emails.clear()
+        except Exception as e:
+            report.append(f"- {name}: NOT removed - couldn't block their email ({e}).")
+            continue
+        # 2. The email, to their school address and personal one if on file.
+        subject, body = removal_email(name)
+        to = [a for a in {email, (u.get("personal_email") or "").strip().lower()} if a]
+        emailed = []
+        for address in to:
+            try:
+                send_email(address, subject, body, raise_errors=True)
+                emailed.append(address)
+            except Exception:
+                pass
+        mail_note = "emailed" if emailed else "NOT emailed (the email failed)"
+        # 3. The profile. Log tables only point at them, so those links are
+        # cleared rather than blocking the delete.
+        try:
+            for table, column in (("ai_chat_messages", "user_id"), ("discord_channel_log", "linked_user_id")):
+                try:
+                    client.table(table).update({column: None}).eq(column, u["user_id"]).execute()
+                except Exception:
+                    pass
+            client.table("users").delete().eq("user_id", u["user_id"]).execute()
+            profile_note = "account deleted"
+        except Exception:
+            try:
+                client.table("users").update({
+                    "is_disabled": True,
+                    "disabled_at": datetime.now(timezone.utc).isoformat(),
+                    "disabled_by": st.session_state.auth_user["email"],
+                }).eq("user_id", u["user_id"]).execute()
+                profile_note = "account disabled, not deleted (other records still point to it)"
+            except Exception:
+                profile_note = "profile NOT deleted or disabled (blocked from signing in all the same)"
+        # 4. The login itself.
+        try:
+            if admin is None:
+                raise RuntimeError("no service key")
+            admin.auth.admin.delete_user(u["user_id"])
+        except Exception:
+            profile_note += "; their login wasn't deleted, but it's blocked"
+        report.append(f"- {name}: {mail_note}, {profile_note}.")
+    invalidate_cache()
+    return ["Removed from the club:"] + report
 
 # --- At-a-glance numbers -----------------------------------------------------
 GRADE_OPTIONS = [7, 8, 9, 10, 11, 12]
@@ -403,4 +472,51 @@ else:
                         "Delete this member", icon=":material/delete:", key="delete_member_btn"
                     ):
                         st.session_state.confirming_delete_member_id = delete_target_id
+                        st.rerun()
+
+        # --- Remove kicked members (2026-11-03) ---------------------------
+        # For members kicked from the club. For each one picked: their
+        # school email is blocked (access_roles.is_removed - no sign-up or
+        # Google sign-in again, see app.py), they're emailed, their profile
+        # is deleted and so is their login itself (needs the service key).
+        # A profile other records still point to (parts, borrows, messages
+        # ...) can't be deleted without breaking those, so it's disabled
+        # instead - still blocked, still emailed.
+        with st.expander(":material/group_remove: Remove kicked members"):
+            if st.session_state.get("kick_report"):
+                st.info("\n".join(st.session_state.kick_report))
+            if not _removed_column_ready():
+                st.warning(
+                    "Needs a one-time database change first: run the last statement in "
+                    "supabase_schema.sql (access_roles.is_removed) in Supabase's SQL editor."
+                )
+            else:
+                st.caption(
+                    "Each member picked gets an email saying their dashboard access has been revoked "
+                    "as they've been removed from the club. Their account is then deleted, and their "
+                    "school email can't be used to sign up or sign in again. Their competition "
+                    "sign-ups, RSVPs and logged results go with it. This can't be undone."
+                )
+                kick_ids = st.multiselect(
+                    "Members to remove",
+                    options=[u["user_id"] for u in users if u["email"] not in HOST_EMAILS],
+                    format_func=lambda uid: next((u["name"] for u in users if u["user_id"] == uid), "Unknown"),
+                    key="kick_member_ids",
+                    placeholder="Choose members...",
+                )
+                if kick_ids:
+                    names = ", ".join(next(u["name"] for u in users if u["user_id"] == uid) for uid in kick_ids)
+                    confirm = st.checkbox(
+                        f"Yes, remove {len(kick_ids)} member{'s' if len(kick_ids) != 1 else ''}: {names}",
+                        key="kick_confirm",
+                    )
+                    if st.button(
+                        "Remove and email them", icon=":material/group_remove:", type="primary",
+                        disabled=not confirm, key="kick_members_btn",
+                    ):
+                        st.session_state.kick_report = _remove_members(
+                            [u for u in users if u["user_id"] in kick_ids]
+                        )
+                        st.session_state.pop("kick_member_ids", None)
+                        st.session_state.pop("kick_confirm", None)
                         st.rerun()
