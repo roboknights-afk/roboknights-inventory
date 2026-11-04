@@ -146,6 +146,7 @@ with tab_chats:
                     ("Where", lambda r: r.get("source") or ""),
                     ("Who", lambda r: "AI" if r.get("role") == "assistant" else _who(r, discord_names)),
                     ("Role", lambda r: r.get("role") or ""),
+                    ("Model", lambda r: r.get("model") or ""),
                     ("Message", lambda r: r.get("content") or ""),
                 ]),
                 file_name=f"roboknights_ai_chats_{stamp}.csv",
@@ -172,6 +173,7 @@ with tab_chats:
             with st.container(border=True):
                 head = (
                     f":material/smart_toy: **AI** · {r.get('source', '?')}"
+                    + (f" · {r['model']}" if r.get("model") else "")
                     if is_assistant
                     else f":material/person: **{_who(r, discord_names)}** · {r.get('source', '?')}"
                 )

@@ -1225,3 +1225,7 @@ alter table intraschool_forms
 -- they can't sign up or sign in with Google again. Until this is run that
 -- section only explains it is waiting for this column.
 alter table access_roles add column if not exists is_removed boolean not null default false;
+
+-- Which AI model wrote each Discord bot reply (2026-11-04), shown on the AI
+-- Logs page. Until this is run replies are logged exactly as before, without it.
+alter table ai_chat_messages add column if not exists model text;

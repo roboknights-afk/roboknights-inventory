@@ -94,7 +94,7 @@ supabase = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
 # whether the running bot is the current code. Unlike Railway, deploy-
 # bot.yml really does redeploy on every push now, but this is still
 # worth checking after one.
-BOT_BUILD = "2026-11-04 chat history read live from Discord"
+BOT_BUILD = "2026-11-04 record which model answered"
 
 # The bot now lives in a SECOND server it doesn't own — the Exun clan's,
 # in their RoboKnights channel, so their side can ask it about
@@ -1071,18 +1071,48 @@ def _linked_user(discord_user_id):
         return None, None
 
 
-def _log_chat(role, content, discord_user_id, discord_channel_id, linked_user_id):
+# Which model wrote the reply being built on this worker thread
+# (2026-11-04), so AI Logs can show it. Set by each provider at the moment
+# it succeeds; read by the *_tracked wrappers below, which are what the
+# event loop actually hands to asyncio.to_thread.
+_answered_by = threading.local()
+
+
+def _answered(model):
+    _answered_by.model = model
+
+
+def _ask_llm_tracked(*args):
+    _answered_by.model = None
+    reply = _ask_llm(*args)
+    return reply, _answered_by.model
+
+
+def _summarise_chat_tracked(*args):
+    _answered_by.model = None
+    reply = _summarise_chat(*args)
+    return reply, _answered_by.model
+
+
+def _log_chat(role, content, discord_user_id, discord_channel_id, linked_user_id, model=None):
+    row = {
+        "source": "discord",
+        "user_id": linked_user_id,
+        "discord_user_id": discord_user_id,
+        "discord_channel_id": discord_channel_id,
+        "role": role,
+        "content": content,
+    }
     try:
-        supabase.table("ai_chat_messages").insert({
-            "source": "discord",
-            "user_id": linked_user_id,
-            "discord_user_id": discord_user_id,
-            "discord_channel_id": discord_channel_id,
-            "role": role,
-            "content": content,
-        }).execute()
+        supabase.table("ai_chat_messages").insert({**row, **({"model": model} if model else {})}).execute()
     except Exception:
-        pass
+        # Most likely the `model` column migration hasn't been run yet -
+        # the reply is still logged, just without it.
+        if model:
+            try:
+                supabase.table("ai_chat_messages").insert(row).execute()
+            except Exception:
+                pass
 
 
 def _find_logged_message(message_id):
@@ -1397,6 +1427,7 @@ def _ask_with_openrouter(messages, max_tokens=MAX_REPLY_TOKENS):
             )
         else:
             _last_provider_error["openrouter"] = "ok"
+            _answered(NEMOTRON_MODEL)
         return reply
     except Exception as e:
         _last_provider_error["openrouter"] = repr(e)[:300]
@@ -1415,6 +1446,7 @@ def _ask_with_small_groq(no_tools_messages, max_tokens=MAX_REPLY_TOKENS):
             _last_provider_error["small_groq"] = "empty response"
             return None
         _last_provider_error["small_groq"] = "ok"
+        _answered(GROQ_SMALL_MODEL)
         # Flagged for the same reason the plain-70b path is: this model
         # has no tools and can't look anything up, and a confident wrong
         # answer presented as fact is worse than a hedged one. Deliberately
@@ -1464,6 +1496,7 @@ def _ask_with_fallback_chain(messages, channel_id=None):
             "*(Couldn't search the web for this one - answering from what I "
             "already know instead, so double-check this.)*\n\n" + plain_reply
         )
+        _answered(f"{GROQ_MODEL} (no tools)")
         return reply, []
     except Exception as groq_error:
         # The small Groq model - on its own, much larger daily budget -
@@ -1591,12 +1624,16 @@ def _ask_with_tools(messages, channel_id):
     original_messages = list(messages)
     if OPENROUTER_API_KEY:
         try:
-            return _tool_answer(_openrouter_chat, list(original_messages), channel_id)
+            answer = _tool_answer(_openrouter_chat, list(original_messages), channel_id)
+            _answered(NEMOTRON_MODEL)
+            return answer
         except Exception as e:
             _last_provider_error["openrouter"] = repr(e)[:300]
             print(f"nemotron failed, trying Groq: {repr(e)[:200]}", flush=True)
     try:
-        return _tool_answer(_groq_chat, list(original_messages), channel_id)
+        answer = _tool_answer(_groq_chat, list(original_messages), channel_id)
+        _answered(GROQ_MODEL)
+        return answer
     except Exception:
         return _ask_with_fallback_chain(original_messages, channel_id)
 
@@ -1761,6 +1798,7 @@ def _summarise_chat(system_text, user_text):
         ))
         reply = response.choices[0].message.content
         if reply:
+            _answered(GROQ_MODEL)
             return reply
     except Exception as e:
         print(f"summary: main model failed: {repr(e)[:200]}", flush=True)
@@ -1803,8 +1841,10 @@ def _member_detail_rows():
 async def _handle_summary_request(message, conversation_key, text, discord_user_id, discord_channel_id, linked_user_id):
     channel = message.channel
 
+    model_used = None
+
     async def say(reply, remember=False):
-        _log_chat("assistant", reply, discord_user_id, discord_channel_id, linked_user_id)
+        _log_chat("assistant", reply, discord_user_id, discord_channel_id, linked_user_id, model_used)
         if remember:
             # so a follow-up ("what was the second point?") has the summary to work from
             history[conversation_key].append({"role": "user", "content": text})
@@ -1838,7 +1878,9 @@ async def _handle_summary_request(message, conversation_key, text, discord_user_
 
     # to_thread for the same reason as _ask_llm below: blocking HTTP must not run on the event loop
     async with channel.typing():
-        body = await asyncio.to_thread(_summarise_chat, cs.SUMMARY_SYSTEM_PROMPT, cs.build_user_prompt(transcript))
+        body, model_used = await asyncio.to_thread(
+            _summarise_chat_tracked, cs.SUMMARY_SYSTEM_PROMPT, cs.build_user_prompt(transcript)
+        )
     if not body or not body.strip():
         _last_summary_at.pop(channel.id, None)
         await say(cs.FAILED_REPLY)
@@ -2037,11 +2079,11 @@ async def _handle_incoming(message, is_edit=False):
         llm_text = f'(Replying to this message you posted: "{reply_target.content}")\n\n{text}'
 
     async with message.channel.typing():
-        reply = await asyncio.to_thread(
-            _ask_llm, conversation_key, message.channel.id, llm_text, linked_name,
+        reply, model_used = await asyncio.to_thread(
+            _ask_llm_tracked, conversation_key, message.channel.id, llm_text, linked_name,
             discord_user_id in ARBITER_DISCORD_IDS,
         )
-    _log_chat("assistant", reply, discord_user_id, discord_channel_id, linked_user_id)
+    _log_chat("assistant", reply, discord_user_id, discord_channel_id, linked_user_id, model_used)
 
     await _send(message.channel, reply)
 
