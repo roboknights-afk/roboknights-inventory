@@ -94,7 +94,7 @@ supabase = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
 # whether the running bot is the current code. Unlike Railway, deploy-
 # bot.yml really does redeploy on every push now, but this is still
 # worth checking after one.
-BOT_BUILD = "2026-10-18 tag the bot and say summarise: summary of the last 100 messages"
+BOT_BUILD = "2026-11-04 chat history read live from Discord"
 
 # The bot now lives in a SECOND server it doesn't own — the Exun clan's,
 # in their RoboKnights channel, so their side can ask it about
@@ -293,12 +293,11 @@ def _tavily_search(query):
 
 # Separate from the small in-memory channel_log below (capped at
 # CHANNEL_LOG_SIZE, so it only ever covers the last day or so of an
-# active channel) - this queries discord_channel_log in Supabase, which
-# has logged EVERY message the bot has seen since it started, with no
-# cap. Added after the bot confidently claimed "I don't have access to
-# yesterday's chat logs" when it in fact does, just not in the small
-# rolling window that gets resent on every reply - this tool is what
-# actually gets that history, on demand, only when a question needs it.
+# active channel) - this reads the channel's real history from Discord,
+# on demand, only when a question needs it. Added after the bot
+# confidently claimed "I don't have access to yesterday's chat logs".
+# (Until 2026-11-03 it read discord_channel_log in Supabase; that log is
+# no longer written, so it now asks Discord directly and stores nothing.)
 CHAT_HISTORY_TOOL = {
     "type": "function",
     "function": {
@@ -308,9 +307,9 @@ CHAT_HISTORY_TOOL = {
                         "previously, who said what, or what happened on "
                         "a past day (e.g. 'what happened yesterday', "
                         "'why was X arguing with Y', 'did anyone mention "
-                        "the new motor'). Covers everything the bot has "
-                        "ever seen in this channel, not just recent "
-                        "messages.",
+                        "the new motor'). Reads up to the last "
+                        "150 messages in that time range, not just "
+                        "the recent ones you already see.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -349,37 +348,41 @@ CLUB_DATA_TOOL = {
 }
 
 
+HISTORY_FETCH_LIMIT = 150
+HISTORY_FETCH_TIMEOUT = 20  # seconds
+
+
 def _search_chat_history(channel_id, days_back):
+    # Read from Discord itself, when asked (2026-11-03): server messages
+    # are no longer saved anywhere, so there's no log to query. Nothing
+    # read here is stored. Always runs on a worker thread (_ask_llm is
+    # called through asyncio.to_thread), so it hands the actual Discord
+    # call to the bot's own event loop and waits for it - calling this on
+    # the event loop itself would deadlock.
     try:
-        # Up to a year back - "read all previous chats" in practice, since
-        # the log itself only starts when the bot did.
-        since = (datetime.now(IST) - timedelta(days=max(1, min(days_back, 365)))).isoformat()
-        rows = (
-            supabase.table("discord_channel_log")
-            .select("discord_display_name,content,created_at")
-            .eq("discord_channel_id", str(channel_id))
-            .gte("created_at", since)
-            # DESCENDING + limit, then reversed below, so a wide range
-            # returns the most RECENT messages in it. Ascending + limit
-            # (what this did at first) silently returned the oldest ones
-            # instead - for "what happened yesterday" over a week-long
-            # range, that's the wrong end of the log entirely.
-            .order("created_at", desc=True)
-            # Capped, same reasoning as _tavily_search - this app decides
-            # how much text a tool call can add, not an open-ended dump.
-            .limit(150)
-            .execute()
-            .data
-        )
-        if not rows:
-            return "(no messages found in that time range)"
-        return "\n".join(
-            f"[{r['created_at'][:16]}] {r.get('discord_display_name') or 'Unknown'}: {r['content']}"
-            for r in reversed(rows)
-            if r.get("content")
-        )
+        channel = client.get_channel(int(channel_id))
+        if channel is None:
+            return "(couldn't open this channel's history)"
+        after = datetime.now(timezone.utc) - timedelta(days=max(1, min(days_back or 1, 365)))
+
+        async def fetch():
+            found = []
+            # Newest first + limit, reversed below, so a wide range gives
+            # the most RECENT messages in it, not the oldest.
+            async for m in channel.history(limit=HISTORY_FETCH_LIMIT, after=after, oldest_first=False):
+                if m.type not in (discord.MessageType.default, discord.MessageType.reply):
+                    continue
+                text = m.clean_content
+                if m.attachments:
+                    text += f" [{len(m.attachments)} attachment{'s' if len(m.attachments) != 1 else ''}]"
+                if text.strip():
+                    found.append(f"[{m.created_at.astimezone(IST):%Y-%m-%d %H:%M}] {m.author.display_name}: {text}")
+            return list(reversed(found))
+
+        lines = asyncio.run_coroutine_threadsafe(fetch(), client.loop).result(timeout=HISTORY_FETCH_TIMEOUT)
+        return "\n".join(lines) if lines else "(no messages found in that time range)"
     except Exception as e:
-        print(f"Chat history search failed: {e!r}", flush=True)
+        print(f"Chat history read failed: {e!r}", flush=True)
         return "(couldn't read the chat history this time)"
 
 
