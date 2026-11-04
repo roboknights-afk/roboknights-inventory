@@ -2639,7 +2639,8 @@ def removal_email(name):
     body = "\n".join([
         f"Hi {name or 'there'},",
         "",
-        "We are writing to let you know that you have been removed from the RoboKnights club. "
+        "This is a follow-up to our previous email. We are writing to let you know that you "
+        "have been removed from the RoboKnights club. "
         "As a result, your access to the RoboKnights dashboard has been revoked and your "
         "dashboard account has been deleted.",
         "",
@@ -2661,6 +2662,6 @@ def removal_email(name):
         "This is a no-reply email, and an automated mail. Replies to this address are not read.",
         "",
         "Regards,",
-        "RoboKnights",
+        "RoboKnights Clan",
     ])
     return "Your RoboKnights dashboard access has been revoked", body
