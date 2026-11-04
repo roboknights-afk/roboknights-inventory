@@ -1,0 +1,21 @@
+name: Clio theme
+
+# Paints every tab of the Clio roster in the RoboKnights theme (near-black
+# and knight gold). Colours only; safe to re-run after a new tab is added.
+# Logs show counts only, never names.
+on:
+  workflow_dispatch:
+
+jobs:
+  theme:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install gspread google-auth
+      - name: Restyle Clio
+        run: python clio_theme.py
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON_B64: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON_B64 }}

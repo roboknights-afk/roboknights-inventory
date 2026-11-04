@@ -3111,3 +3111,6 @@ best-effort. The manual "Clio cleanup" workflow sweeps everyone with
 `access_roles.is_removed`. It prints counts only, since this repo's Actions logs
 are public. It doesn't import shared.py, so keep CLIO_SHEET_ID /
 CLIO_CURRENT_TAB_ID in step with it.
+`clio_theme.py` (manual "Clio theme" workflow) paints every Clio tab in the
+dashboard's theme: #242424 header and ADHOC label rows with bold #E8B33D text,
+white/#FBF3DF bands and gold tabs. It only sets colours, so it's safe to re-run.
