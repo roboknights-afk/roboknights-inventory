@@ -56,7 +56,7 @@ import os
 import re
 import threading
 import time
-from collections import defaultdict, deque
+from collections import Counter, defaultdict, deque
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
@@ -98,7 +98,7 @@ supabase = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
 # whether the running bot is the current code. Unlike Railway, deploy-
 # bot.yml really does redeploy on every push now, but this is still
 # worth checking after one.
-BOT_BUILD = "2026-11-04 club FAQ"
+BOT_BUILD = "2026-11-04 /botstatus and host outage alerts"
 
 # The bot now lives in a SECOND server it doesn't own — the Exun clan's,
 # in their RoboKnights channel, so their side can ask it about
@@ -1166,6 +1166,62 @@ _answered_by = threading.local()
 
 def _answered(model):
     _answered_by.model = model
+    _model_counts[model] += 1
+
+
+# For the host-only /botstatus (2026-11-04): replies per model and the
+# latest failures, since this process started.
+_started_at = datetime.now(IST)
+_model_counts = Counter()
+_failures = {}  # what -> (when, reason)
+
+
+def _note_failure(what, reason):
+    _failures[what] = (datetime.now(IST), str(reason)[:200])
+
+
+# Hosts are told by DM when the bot breaks (2026-11-04), once per kind of
+# problem per day - a failure nobody hears about is how this project's
+# worst outages went unnoticed for days. Hosts = access_roles.is_host whose
+# dashboard account has a linked Discord id.
+HOST_IDS_TTL_SECONDS = 600
+_host_ids_cache = {"at": 0.0, "ids": set()}
+_alerted = {}  # kind -> IST date already alerted
+
+
+def _host_discord_ids():
+    if time.time() - _host_ids_cache["at"] < HOST_IDS_TTL_SECONDS:
+        return _host_ids_cache["ids"]
+    try:
+        hosts = {r["email"].lower() for r in supabase.table("access_roles").select("email").eq("is_host", True).execute().data}
+        users = supabase.table("users").select("email,discord_user_id").execute().data
+        ids = {u["discord_user_id"] for u in users if u.get("discord_user_id") and (u.get("email") or "").lower() in hosts}
+        _host_ids_cache.update(at=time.time(), ids=ids)
+    except Exception as e:
+        print(f"Host lookup failed: {e!r}", flush=True)
+    return _host_ids_cache["ids"]
+
+
+async def _dm_hosts(text):
+    for discord_id in _host_discord_ids():
+        try:
+            user = await client.fetch_user(int(discord_id))
+            await user.send(text, allowed_mentions=discord.AllowedMentions.none())
+        except Exception as e:
+            print(f"Couldn't DM a host about an outage: {e!r}", flush=True)
+
+
+def _alert_hosts(kind, text):
+    # Safe from a worker thread: hands the DMs to the bot's event loop and
+    # doesn't wait for them.
+    today = _today_ist()
+    if _alerted.get(kind) == today:
+        return
+    _alerted[kind] = today
+    try:
+        asyncio.run_coroutine_threadsafe(_dm_hosts(text), client.loop)
+    except Exception as e:
+        print(f"Couldn't schedule the host alert: {e!r}", flush=True)
 
 
 def _ask_llm_tracked(*args):
@@ -1672,6 +1728,13 @@ def _ask_with_fallback_chain(messages, channel_id=None):
         print(f"ALL PROVIDERS FAILED - plain: {groq_error!r}; "
               f"small_groq: {_last_provider_error['small_groq']}; "
               f"openrouter: {_last_provider_error['openrouter']}", flush=True)
+        _note_failure("all models", repr(groq_error))
+        _alert_hosts("all_failed", (
+            ":rotating_light: **RoboKnights bot:** every AI model just failed, so members are "
+            "getting \"my AI service isn't responding\". Last errors - Groq: "
+            f"{str(groq_error)[:150]}; small model: {_last_provider_error['small_groq'][:150]}. "
+            "Use /botstatus for more. (You'll get this at most once a day.)"
+        ))
         # Deliberately no longer says "I'm maxed out on my daily AI
         # usage limit". Members read that as "I asked too much" and
         # started apologising for a one-line follow-up question, when
@@ -1782,12 +1845,20 @@ def _ask_with_tools(messages, channel_id):
             return answer
         except Exception as e:
             _last_provider_error["openrouter"] = repr(e)[:300]
+            _note_failure("nemotron", repr(e))
             print(f"nemotron failed, trying Groq: {repr(e)[:200]}", flush=True)
+            if "HTTP 401" in str(e) or "HTTP 403" in str(e):
+                _alert_hosts("openrouter_key", (
+                    ":warning: **RoboKnights bot:** OpenRouter rejected the bot's API key, so "
+                    "Nemotron (the main model) isn't being used - Groq is answering instead. "
+                    "Check OPENROUTER_API_KEY in the bot's .env on the VPS."
+                ))
     try:
         answer = _tool_answer(_groq_chat, list(original_messages), channel_id)
         _answered(GROQ_MODEL)
         return answer
-    except Exception:
+    except Exception as e:
+        _note_failure("groq tools", repr(e))
         return _ask_with_fallback_chain(original_messages, channel_id)
 
 
@@ -1955,6 +2026,47 @@ async def meetings_command(interaction: discord.Interaction):
             _rows("meeting_invitees", "meeting_id,user_id"), _today_ist(),
         )
     await _command_reply(interaction, build)
+
+
+def _openrouter_key_info():
+    if not OPENROUTER_API_KEY:
+        return "no key set - Nemotron is off, Groq answers everything"
+    try:
+        r = requests.get("https://openrouter.ai/api/v1/key",
+                         headers={"Authorization": f"Bearer {OPENROUTER_API_KEY}"}, timeout=10)
+        if r.status_code >= 300:
+            return f"key REJECTED (HTTP {r.status_code}) - Nemotron can't be used"
+        data = r.json().get("data") or {}
+        return ("key OK, free tier (no credit bought: about 50 free requests a day)"
+                if data.get("is_free_tier") else "key OK, credit bought (about 1,000 free requests a day)")
+    except Exception as e:
+        return f"couldn't check ({e!r})"[:120]
+
+
+def _bot_status_text():
+    up = datetime.now(IST) - _started_at
+    lines = [
+        "**RoboKnights bot status**",
+        f"Build: {BOT_BUILD}",
+        f"Up since {_started_at:%d %b %H:%M} IST ({up.days}d {up.seconds // 3600}h)",
+        f"OpenRouter (Nemotron): {_openrouter_key_info()}",
+        "",
+        "**Replies since start, by model**",
+    ]
+    lines += [f"- {model}: {count}" for model, count in _model_counts.most_common()] or ["- none yet"]
+    lines += ["", "**Latest failures**"]
+    lines += [f"- {what}: {when:%d %b %H:%M} - {reason}" for what, (when, reason) in sorted(_failures.items())] or ["- none"]
+    return "\n".join(lines)[:1900]
+
+
+@tree.command(name="botstatus", description="Hosts only: which AI model is answering, and recent failures")
+async def botstatus_command(interaction: discord.Interaction):
+    if not await _command_allowed(interaction):
+        return
+    if str(interaction.user.id) not in await asyncio.to_thread(_host_discord_ids):
+        await interaction.response.send_message("This one's for hosts.", ephemeral=True)
+        return
+    await _command_reply(interaction, _bot_status_text)
 
 
 @tree.command(name="help", description="What the RoboKnights bot can do")
