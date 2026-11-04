@@ -50,6 +50,7 @@
 # answers everything, as it did before.
 
 import asyncio
+import base64
 import json
 import os
 import re
@@ -96,7 +97,7 @@ supabase = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
 # whether the running bot is the current code. Unlike Railway, deploy-
 # bot.yml really does redeploy on every push now, but this is still
 # worth checking after one.
-BOT_BUILD = "2026-11-04 slash commands"
+BOT_BUILD = "2026-11-04 photo help"
 
 # The bot now lives in a SECOND server it doesn't own — the Exun clan's,
 # in their RoboKnights channel, so their side can ask it about
@@ -1436,6 +1437,69 @@ def _ask_with_openrouter(messages, max_tokens=MAX_REPLY_TOKENS):
         return None
 
 
+# --- Photo help (2026-11-04) ------------------------------------------------
+# A member tags the bot with a photo - a circuit, a robot, a part, an error
+# on a screen - and asks what's wrong. NVIDIA's free vision model on
+# OpenRouter looks at it. Tested before shipping: its free endpoint won't
+# fetch an image LINK (404 "No endpoints found that support image URLs"),
+# so the bot downloads the attachment and sends it inline as base64; and
+# it thinks before answering, so a small token budget came back EMPTY -
+# hence low reasoning effort and VISION_MAX_TOKENS. Nothing is stored: the
+# image only goes to the model for that one reply.
+VISION_MODEL = "nvidia/nemotron-3.5-super-vl:free"
+VISION_MAX_TOKENS = 1500
+VISION_MAX_IMAGES = 2
+VISION_MAX_BYTES = 5 * 1024 * 1024
+VISION_PROMPT = (
+    "You are RoboKnights' Discord bot, helping a member of a school robotics "
+    "club with a photo they sent. Look at the circuit, robot, part, code or "
+    "screen in it and answer their question practically: what you can see, "
+    "the most likely problem, and what to check or try. Keep it under 150 "
+    "words. Only talk about the technical content. If the photo shows people, "
+    "don't describe, identify or comment on them - say you only look at "
+    "circuits, parts and screens. Don't guess part numbers or labels you "
+    "can't actually read; say what you can't make out. You can only look - "
+    "you can't change anything on the club's dashboard."
+)
+
+
+def _ask_vision(question, images):
+    # images: [(content_type, bytes)]. -> reply text, or None on any failure.
+    if not OPENROUTER_API_KEY:
+        return None
+    content = [{"type": "text", "text": question}] + [
+        {"type": "image_url", "image_url": {"url": f"data:{kind};base64,{base64.b64encode(data).decode()}"}}
+        for kind, data in images
+    ]
+    try:
+        r = requests.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            headers={"Authorization": f"Bearer {OPENROUTER_API_KEY}"},
+            json={
+                "model": VISION_MODEL, "max_tokens": VISION_MAX_TOKENS,
+                "reasoning": {"effort": "low", "exclude": True},
+                "messages": [{"role": "system", "content": VISION_PROMPT}, {"role": "user", "content": content}],
+            },
+            timeout=60,
+        )
+        if r.status_code >= 300:
+            print(f"vision failed: HTTP {r.status_code}: {r.text[:200]}", flush=True)
+            return None
+        reply = _strip_reasoning(r.json()["choices"][0]["message"].get("content") or "")
+        if reply:
+            _answered(VISION_MODEL)
+        return reply or None
+    except Exception as e:
+        print(f"vision failed: {e!r}", flush=True)
+        return None
+
+
+def _ask_vision_tracked(question, images):
+    _answered_by.model = None
+    reply = _ask_vision(question, images)
+    return reply, _answered_by.model
+
+
 def _ask_with_small_groq(no_tools_messages, max_tokens=MAX_REPLY_TOKENS):
     # Same "record why, don't fail silently" contract as the other two
     # fallbacks - see _last_provider_error.
@@ -2065,6 +2129,14 @@ async def _handle_incoming(message, is_edit=False):
             continue
         for form in (f"<@{mentioned.id}>", f"<@!{mentioned.id}>"):
             text = text.replace(form, mentioned.display_name)
+    # Photos to look at (chunk 4, see VISION_MODEL). Only images, at most
+    # VISION_MAX_IMAGES, each under VISION_MAX_BYTES.
+    image_attachments = [
+        a for a in message.attachments
+        if (a.content_type or "").startswith("image/") and (a.size or 0) <= VISION_MAX_BYTES
+    ][:VISION_MAX_IMAGES]
+    if not text and image_attachments:
+        text = "What can you tell me about this? Anything wrong with it?"
     if not text:
         # A bare @mention with nothing else typed used to just return here
         # - no reply, no error, nothing. Confirmed live (2026-08-16): right
@@ -2163,6 +2235,25 @@ async def _handle_incoming(message, is_edit=False):
     # gets baked into history[conversation_key] (see _ask_llm) once, right
     # here, rather than needing to be re-injected on every later turn in
     # the same conversation.
+    if image_attachments:
+        try:
+            images = [(a.content_type, await a.read()) for a in image_attachments]
+            async with message.channel.typing():
+                reply, model_used = await asyncio.to_thread(_ask_vision_tracked, text, images)
+        except Exception as e:
+            print(f"couldn't read the attached image: {e!r}", flush=True)
+            reply, model_used = None, None
+        if reply:
+            reply = _tidy_truncation(reply)
+            history[conversation_key].append({"role": "user", "content": f"{text} [sent a photo]"})
+            history[conversation_key].append({"role": "assistant", "content": reply})
+            _log_chat("assistant", reply, discord_user_id, discord_channel_id, linked_user_id, model_used)
+            await _send(message.channel, reply)
+            return
+        # Couldn't look at it: the normal path still answers the words, told
+        # plainly that there was a photo it can't see.
+        text = f"{text}\n\n(They attached a photo, but you couldn't look at it this time - say so, and answer from the text.)"
+
     llm_text = text
     if reply_target is not None and reply_target.content:
         llm_text = f'(Replying to this message you posted: "{reply_target.content}")\n\n{text}'
