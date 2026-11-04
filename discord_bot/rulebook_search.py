@@ -19,7 +19,14 @@ STOPWORDS = {
 MAX_PAGES_RETURNED = 4
 MAX_PAGE_CHARS = 1800
 HEADER = 'From the official rulebook - answer from these pages and say which page, e.g. "(rulebook p. 2)":'
-NONE_UPLOADED = "(no rulebook has been uploaded on the dashboard for that competition - say so, don't guess the rules)"
+# Spelled out (2026-11-05): with only "don't guess", the bot still answered
+# rules from memory or a web search - the logs had invented, self-
+# contradicting rules for a real event.
+NONE_UPLOADED = (
+    "(no rulebook has been uploaded on the dashboard for that competition. Tell them exactly "
+    "that, point them to the competition's links from get_club_data (the brochure or website "
+    "has the official rules), and do NOT state any rule from memory or from a web search)"
+)
 
 
 def _words(text):

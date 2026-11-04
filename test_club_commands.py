@@ -67,8 +67,11 @@ check("mycomps signed up", "Maze at Later Fest" in text and "signed up (not sele
 check("mycomps skips past events", "Old Event" in text, False)
 check("mycomps not someone else's", "Robo Race" in text, False)
 check("mycomps not linked", cc.my_comps_text(None, COMPS, EVENTS, VOLS, TODAY), cc.NOT_LINKED)
-check("mycomps nothing", cc.my_comps_text("u9", COMPS, EVENTS, VOLS, TODAY),
-      "You're not signed up for any upcoming competition events.")
+check("mycomps nothing", cc.my_comps_text("u9", COMPS, EVENTS, VOLS, TODAY, name="Testy Kumar"),
+      cc.linked_as("Testy Kumar") + "\nYou're not signed up for any upcoming competition events.")
+# Every personal reply says which account it's for, so a wrong link shows.
+check("mycomps says who", cc.my_comps_text("u1", COMPS, EVENTS, VOLS, TODAY, name="Testy Kumar")
+      .startswith("*Linked as Testy Kumar."), True)
 
 # --- /meetings: private ones only for invitees, never a link ------------------------
 MEETINGS = [
@@ -85,6 +88,9 @@ check("meetings never a join link", "meet.google" in text or "password" in text.
 text = cc.meetings_text("u2", MEETINGS, INVITEES, TODAY)
 check("meetings non-invitee doesn't see private", "Core Meet" in text, False)
 check("meetings unlinked sees open ones", "Open Meet" in cc.meetings_text(None, MEETINGS, INVITEES, TODAY), True)
+check("meetings says who", cc.meetings_text("u1", MEETINGS, INVITEES, TODAY, name="Testy Kumar")
+      .startswith("*Linked as Testy Kumar."), True)
+check("meetings unlinked has no line", "Linked as" in cc.meetings_text(None, MEETINGS, INVITEES, TODAY), False)
 
 # --- the bot's status countdown -----------------------------------------------------
 check("countdown next dated comp", cc.countdown_status(COMPS, TODAY), "\N{CHEQUERED FLAG} Test Cup in 16 days")

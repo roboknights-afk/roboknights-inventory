@@ -11,8 +11,8 @@ import streamlit as st
 
 from clio_cleanup import remove_from_clio
 from shared import (
-    HOST_EMAILS, IST, cached_table, get_client, get_sheets_write_client, get_storage_client,
-    invalidate_cache, removal_email, removed_emails, safe_write, send_email,
+    HOST_EMAILS, IST, cached_table, discord_id_problem, get_client, get_sheets_write_client,
+    get_storage_client, invalidate_cache, removal_email, removed_emails, safe_write, send_email,
 )
 
 is_host = st.session_state.is_host
@@ -44,6 +44,9 @@ if "confirming_delete_member_id" not in st.session_state:
 if st.session_state.member_edit_message:
     st.toast(st.session_state.member_edit_message, icon=":material/check_circle:")
     st.session_state.member_edit_message = None
+# Discord IDs that weren't saved - a warning, not a toast, so it can't be missed.
+for problem in st.session_state.pop("member_edit_problems", None) or []:
+    st.warning(problem, icon=":material/warning:")
 
 # Sorted by name with user_id as a tiebreak — two members can share a name
 # (there are duplicates in the real data), and without a deterministic
@@ -383,6 +386,12 @@ else:
             # pairing edits with the unfiltered list would write them to the
             # wrong people whenever a search or grade filter is active.
             changed = 0
+            # Discord IDs are checked before saving (discord_id_problem in
+            # shared.py, 2026-11-05): the bot trusts whichever account
+            # carries an ID, so the same ID on two accounts is never saved -
+            # including two rows given the same ID in this one save.
+            discord_problems = []
+            assigned_ids = {}
             with safe_write("save member changes"):
                 for original, edited in zip(visible_users, edited_rows):
                     updates = {}
@@ -400,8 +409,17 @@ else:
                         updates["admission_no"] = edited["Admission no."].strip()
                     if edited["Phone no."].strip() != (original.get("phone_no") or ""):
                         updates["phone_no"] = edited["Phone no."].strip()
-                    if edited["Discord ID"].strip() != (original.get("discord_user_id") or ""):
-                        updates["discord_user_id"] = edited["Discord ID"].strip() or None
+                    new_discord_id = edited["Discord ID"].strip()
+                    if new_discord_id != (original.get("discord_user_id") or ""):
+                        problem = discord_id_problem(new_discord_id, original["user_id"], users, name_the_other=True)
+                        if not problem and new_discord_id and assigned_ids.get(new_discord_id, original["user_id"]) != original["user_id"]:
+                            problem = "That Discord ID is being given to another member in this same save."
+                        if problem:
+                            discord_problems.append(f"{original['name']}'s Discord ID wasn't saved. {problem}")
+                        else:
+                            updates["discord_user_id"] = new_discord_id or None
+                            if new_discord_id:
+                                assigned_ids[new_discord_id] = original["user_id"]
                     if edited["Verified"] != bool(original.get("details_verified")):
                         updates["details_verified"] = edited["Verified"]
                     if edited["Disabled"] != bool(original.get("is_disabled")):
@@ -427,6 +445,7 @@ else:
             st.session_state.member_edit_message = (
                 f"Updated {changed} member(s)." if changed else "No changes to save."
             )
+            st.session_state.member_edit_problems = discord_problems
             st.rerun()
 
         with st.expander(":material/person_remove: Delete a member"):

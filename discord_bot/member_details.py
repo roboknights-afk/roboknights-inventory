@@ -1,8 +1,11 @@
 # "@bot details of X" answered straight from the database (2026-10-28). No
-# model call, so it works the same when the AI budget is spent: the backup
-# model is deliberately handed the roster WITHOUT contact details (they made
-# its requests too big), so it was answering "Not available right now" for
-# phone, email and admission no. - caught live on a real lookup.
+# model call, so it works the same when the AI budget is spent.
+#
+# Name, class and designation only (2026-11-05, host's call). Phone, email
+# and admission no. used to be on the card, but the bot answers in channels
+# anyone in the server can read, and the people whose numbers these are are
+# mostly minors - a log review found them in replies about other members.
+# Hosts still see them on the dashboard's Members page.
 #
 # Same split as channel_summary.py: the pure parts live here so
 # test_member_details.py can run them without starting the bot.
@@ -76,11 +79,12 @@ def format_card(u):
         f"**Name :** {_value(u.get('name'))}",
         f"**Class and section :** {klass}",
         f"**Designation :** {ROLE_LABELS.get(role, role) if role else NOT_ON_FILE}",
-        f"**Phone no :** {_value(u.get('phone_no'))}",
-        f"**Email :** {_value(u.get('email'))}",
-        f"**Admission no :** {_value(u.get('admission_no'))}",
     ])
 
 
+CONTACT_NOTE = "*Phone numbers, emails and admission numbers aren't shared on Discord - a host can help.*"
+
+
 def format_reply(members):
-    return "\n\n".join(format_card(u) for u in members)
+    return "\n\n".join(format_card(u) for u in members) + "\n\n" + CONTACT_NOTE
+

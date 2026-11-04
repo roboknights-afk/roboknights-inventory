@@ -16,7 +16,7 @@ from datetime import date
 import streamlit as st
 
 from shared import (
-    cached_table, format_ist, get_client, invalidate_cache, is_meeting_visible,
+    cached_table, discord_id_problem, format_ist, get_client, invalidate_cache, is_meeting_visible,
     meeting_invited_ids, meeting_invitee_rows, relative_days_label, safe_write, today_ist,
 )
 
@@ -330,17 +330,20 @@ with side_col:
         if is_host or is_exun or is_viewer:
             st.page_link("app_pages/members.py", label="Members", icon=":material/badge:")
 
-    # Automatic notifications now ping the @member / @adhoc server roles
-    # instead of individual members, so this ID is no longer read by any
-    # automatic tagging — it's stored purely so a host can look it up on
-    # the Members page and @mention you directly in a one-off custom
-    # Discord message, without having to ask you for it each time.
+    # The linked ID is how the RoboKnights bot knows who you are: /mycomps,
+    # "which comps am I in", meeting and consent-form reminder DMs, and
+    # whether you count as a host. (The old caption said it was only for a
+    # host to @mention you - out of date since the bot started using it.)
+    # Checked before saving (discord_id_problem, 2026-11-05) after one
+    # member's ID was saved on another member's account.
     if not is_read_only:
         st.subheader(":material/forum: Discord")
         with st.container(border=True, key="rkcard_home_discord"):
             st.caption(
-                "Link your Discord account so a host can @mention you directly "
-                "in a one-off Discord message, if they ever need to."
+                "Link your Discord account so the RoboKnights bot knows it's you: "
+                "`/mycomps`, questions like \"which comps am I in\", and reminder "
+                "DMs for your meetings and competitions all use it. Only put in "
+                "your own ID."
             )
             my_row = next(
                 (u for u in cached_table("users") if u["user_id"] == current_user_id), None
@@ -354,10 +357,17 @@ with side_col:
                      "right-click your own name anywhere and choose Copy User ID.",
             )
             if st.button("Save", icon=":material/check:", key="save_discord_id_btn"):
-                with safe_write("link your Discord account"):
-                    get_client().table("users").update({
-                        "discord_user_id": new_discord_id.strip() or None,
-                    }).eq("user_id", current_user_id).execute()
-                    invalidate_cache()
-                st.toast("Discord linked!", icon=":material/check_circle:")
-                st.rerun()
+                problem = discord_id_problem(new_discord_id, current_user_id, cached_table("users"))
+                if problem:
+                    st.error(problem, icon=":material/error:")
+                else:
+                    with safe_write("link your Discord account"):
+                        get_client().table("users").update({
+                            "discord_user_id": new_discord_id.strip() or None,
+                        }).eq("user_id", current_user_id).execute()
+                        invalidate_cache()
+                    st.toast(
+                        "Discord linked!" if new_discord_id.strip() else "Discord unlinked.",
+                        icon=":material/check_circle:",
+                    )
+                    st.rerun()

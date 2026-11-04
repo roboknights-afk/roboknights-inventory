@@ -1401,6 +1401,35 @@ def invalidate_cache():
     cached_table.clear()
 
 
+DISCORD_ID_RE = re.compile(r"\d{17,20}")
+
+
+def discord_id_problem(discord_id, user_id, users, name_the_other=False):
+    """Why `discord_id` can't be saved on `user_id`'s account, or None if it
+    can. Blank is always fine (it unlinks).
+
+    Added 2026-11-05: the field was free text, so one member's Discord ID
+    ended up on a different member's account and the bot answered him with
+    the other member's data. The bot takes whichever account carries an ID,
+    so the same ID on two accounts must never be saved. A real Discord user
+    ID is 17-20 digits - not a username, not an @mention."""
+    discord_id = (discord_id or "").strip()
+    if not discord_id:
+        return None
+    if not DISCORD_ID_RE.fullmatch(discord_id):
+        return ("A Discord User ID is 17 to 20 digits, numbers only - not your username. "
+                "Copy it from Discord (Developer Mode on, right-click your name, Copy User ID).")
+    other = next(
+        (u for u in users if (u.get("discord_user_id") or "").strip() == discord_id and u["user_id"] != user_id),
+        None,
+    )
+    if other:
+        who = f" ({other.get('name') or 'another member'})" if name_the_other else ""
+        return (f"That Discord ID is already linked to another member's account{who}. "
+                "Each Discord account can only be linked to one member - if it's yours, ask a host.")
+    return None
+
+
 def has_unread_queries(user_id, is_host):
     # Same "message from the other side newer than my last read" check
     # queries.py itself does per-thread (see render_thread there) — reused

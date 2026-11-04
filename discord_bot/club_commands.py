@@ -107,7 +107,15 @@ def deadlines_text(competitions, today):
     ))
 
 
-def my_comps_text(user_id, competitions, events, volunteers, today):
+def linked_as(name):
+    # First line of every personal reply (2026-11-05): says which dashboard
+    # account this Discord account is linked to, so a wrong link shows up
+    # straight away - one member's Discord ID had been saved on another
+    # member's account, and the bot answered him with that member's events.
+    return f"*Linked as {name or 'a dashboard account with no name'}. Not you? Fix it at Home -> Discord: <{DASHBOARD}>*"
+
+
+def my_comps_text(user_id, competitions, events, volunteers, today, name=None):
     if not user_id:
         return NOT_LINKED
     upcoming = {c["competition_id"]: c for c in upcoming_competitions(competitions, today)}
@@ -118,16 +126,16 @@ def my_comps_text(user_id, competitions, events, volunteers, today):
         if v["user_id"] == user_id and event:
             mine.append((upcoming[event["competition_id"]], event, v))
     if not mine:
-        return "You're not signed up for any upcoming competition events."
+        return linked_as(name) + "\nYou're not signed up for any upcoming competition events."
     mine.sort(key=lambda x: (_d(x[0].get("competition_date")) or date.max, x[0]["name"], x[1]["name"]))
-    lines = ["**Your upcoming events**"]
+    lines = [linked_as(name), "**Your upcoming events**"]
     for comp, event, v in mine:
         status = "selected" if v.get("selected") else "signed up (not selected yet)"
         lines.append(f"- {event['name']} at {comp['name']}, {_when(_d(comp.get('competition_date')), today)}: {status}")
     return _clip("\n".join(lines))
 
 
-def meetings_text(user_id, meetings, invitees, today, limit=5):
+def meetings_text(user_id, meetings, invitees, today, limit=5, name=None):
     # A meeting with invitees is private to them (hosts see those on the
     # dashboard); one with none is open to the whole club - the same rule
     # the dashboard uses.
@@ -140,9 +148,10 @@ def meetings_text(user_id, meetings, invitees, today, limit=5):
          and (m["meeting_id"] not in invited or user_id in invited[m["meeting_id"]])),
         key=lambda m: (m["meeting_date"], m.get("meeting_time") or ""),
     )[:limit]
+    header = [linked_as(name)] if user_id else []
     if not found:
-        return "No upcoming meetings for you on the dashboard."
-    lines = ["**Upcoming meetings**"]
+        return "\n".join(header + ["No upcoming meetings for you on the dashboard."])
+    lines = header + ["**Upcoming meetings**"]
     for m in found:
         at = f" at {m['meeting_time'][:5]}" if m.get("meeting_time") else ""
         private = " (private)" if m["meeting_id"] in invited else ""

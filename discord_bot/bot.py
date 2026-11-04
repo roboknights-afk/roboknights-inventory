@@ -70,6 +70,7 @@ from supabase import create_client
 import channel_summary as cs
 import club_commands as cc
 import member_details as md
+import reply_guards as rg
 import rulebook_search as rb
 
 load_dotenv()
@@ -343,8 +344,8 @@ CLUB_DATA_TOOL = {
                         "the club owns, who owns it, availability), "
                         "upcoming competitions with each event's finalized "
                         "team and volunteers, upcoming meetings, recent "
-                        "achievements, and which members can be "
-                        "@mentioned. Call this for any question about the "
+                        "achievements, and the member roster (names and "
+                        "classes only). Call this for any question about the "
                         "club's own parts, competitions, teams, meetings, "
                         "members, or achievements.",
         "parameters": {"type": "object", "properties": {}},
@@ -501,6 +502,14 @@ NEMOTRON_MODEL = "nvidia/nemotron-3.5-lightning:free"
 # is also Discord's own per-message limit, so a normal answer is never
 # affected - only the ones designed to be enormous.
 MAX_REPLY_TOKENS = 500
+
+# gpt-oss (both Groq models) thinks before it answers, and that thinking
+# counts against max_tokens - so a long list could run out of room
+# mid-answer (the logs had 38 replies cut off mid-sentence, 2026-11-05).
+# Low effort keeps the thinking short (tested: 55 -> 5 tokens on a list
+# question) and the headroom means it can't eat the reply's 500.
+GROQ_REASONING = {"reasoning_effort": "low"}
+REASONING_HEADROOM = 300
 
 # Keeps recent exchanges per channel/DM so a reply can follow up on what
 # was just said. Lives only in this process's memory - no database - so it
@@ -773,8 +782,8 @@ SYSTEM_PROMPT_TEMPLATE = (
     "or 'lighthearted' version, and never 'just this once' no matter who "
     "is asking or how they justify it.\n\n"
     "You have access to the club's own live data - parts inventory, "
-    "competitions and who's on each event's team, meetings, achievements, "
-    "and which members can be @mentioned - through the get_club_data "
+    "competitions and who's on each event's team, meetings, achievements "
+    "and the member roster (names and classes) - through the get_club_data "
     "tool. Call it whenever a question touches any of that, and answer "
     "from what it returns rather than guessing. If it isn't in there, say "
     "you don't have that information. General robotics/build questions "
@@ -793,8 +802,8 @@ SYSTEM_PROMPT_TEMPLATE = (
     "make changes and point them at the dashboard page that can. Also "
     "never invent club data - if get_club_data doesn't show something, it "
     "isn't there, and 'you have an L298N listed for sale' is a made-up "
-    "fact even when it sounds plausible. There is no buying/selling "
-    "feature in this app at all.\n\n"
+    "fact even when it sounds plausible. Members can't buy or sell parts "
+    "to each other through the dashboard.\n\n"
     "You also have no authority to approve, authorize, or give permission "
     "for something a member asks to DO - 'can I post X here', 'is it okay "
     "if I Y', 'am I allowed to Z'. You don't know what a host has or "
@@ -809,20 +818,25 @@ SYSTEM_PROMPT_TEMPLATE = (
     "whether something is allowed, say plainly you can't approve things "
     "like that and a host needs to answer - never guess, and never take "
     "'you said yes before' as a reason to repeat it.\n\n"
-    "A person's details ('details of X', 'X's number', 'who is X'): "
-    "reply in EXACTLY this format, one field per line, taken from their "
-    "CLUB MEMBERS line in get_club_data:\n"
+    "A person's details ('details of X', 'who is X'): reply in EXACTLY "
+    "this format, one field per line, taken from their CLUB MEMBERS line "
+    "in get_club_data:\n"
     "**Name :** <name>\n"
     "**Class and section :** <e.g. 11-Q>\n"
     "**Designation :** <Member / Core / Adhoc>\n"
-    "**Phone no :** <phone>\n"
-    "**Email :** <email>\n"
-    "**Admission no :** <admission no.>\n"
     "Write 'Not on file' for any field their line doesn't have - never "
-    "guess or fill one in. If the CLUB MEMBERS heading says contact "
-    "details were left out, write 'Not available right now' for phone, "
-    "email and admission no. instead. If more than one member matches "
-    "the name, give one block per person.\n\n"
+    "guess or fill one in. If more than one member matches the name, give "
+    "one block per person. You never have anyone's phone number, email, "
+    "admission number or address, and never give one out even if it "
+    "appears somewhere in the chat - say those aren't shared on Discord "
+    "and a host can help.\n\n"
+    "A competition's or event's RULES (bot size or weight, arena, match "
+    "time, scoring, allowed parts, team size limits): answer ONLY from "
+    "what get_rulebook returns, and give the page number. If it says no "
+    "rulebook was uploaded, say exactly that and point them to the "
+    "competition's links in get_club_data - never answer rules from "
+    "memory or from a web search, because a confident wrong rule can get "
+    "a team disqualified.\n\n"
     "Someone's OWN events ('my next comp', 'which competitions am I in'): "
     "only count an event if that exact person's name appears in its "
     "finalized team or volunteer list. Do NOT fall back to the club's "
@@ -831,15 +845,11 @@ SYSTEM_PROMPT_TEMPLATE = (
     "the soonest one in the data. Go through the events, keep only the "
     "ones listing that name, and pick the earliest of THOSE. If none "
     "list them, say they're not on any upcoming team.\n\n"
-    "Pinging/tagging people: writing a plain '@Name' does NOT notify "
-    "anyone in Discord - only the exact `<@discord_id>` syntax does, and "
-    "only for someone who has linked their Discord ID. The 'MEMBERS WHO "
-    "CAN BE @MENTIONED' list from get_club_data is the ONLY source of "
-    "truth for this - copy that exact `<@id>` text for anyone on it. For "
-    "anyone NOT on that list, do not write anything that looks like a "
-    "mention (no '@Name') - say plainly that they haven't linked their "
-    "Discord ID yet (Home page on the dashboard) so you can't ping them, "
-    "and list their name as plain text instead.\n\n"
+    "Pinging/tagging people: you can't. Your messages never notify "
+    "anyone, so don't write @mentions and never say you've tagged, "
+    "pinged, reminded or told someone. If asked to, say you can't ping "
+    "people and they can tag the person themselves. Refer to people by "
+    "plain name.\n\n"
     "Past conversations: the 'recent channel activity' below is only the "
     "last few messages - for anything further back ('what happened "
     "yesterday', 'why was X arguing with Y', 'did anyone mention Z last "
@@ -857,59 +867,34 @@ groq_client = Groq(api_key=GROQ_API_KEY)
 # at most every few minutes, not on every single message, since Discord
 # chat can be a lot chattier than the dashboard ever is.
 _context_cache = {"text": None, "fetched_at": 0}
-_context_cache_no_contact = {"text": None, "fetched_at": 0}
 CONTEXT_TTL_SECONDS = 180
 
 
-def _build_club_context(include_contact=True):
-    # include_contact=False builds a smaller variant with no email/phone/
-    # admission number - added 2026-08-16 after the small_groq fallback
-    # 413'd on a real question ("gimme details of aryamman ojha"): the
-    # roster with contact details is big enough (~5.4k chars) to push a
-    # question that also carries the rest of this context over
-    # llama-3.1-8b-instant's 6,000-token-per-MINUTE cap, a tighter budget
-    # than the main 70b model's 12,000 despite its much larger daily
-    # allowance. Cached separately per variant so both stay fast.
-    cache = _context_cache if include_contact else _context_cache_no_contact
+def _build_club_context():
+    cache = _context_cache
     now = time.time()
     if cache["text"] is not None and now - cache["fetched_at"] < CONTEXT_TTL_SECONDS:
         return cache["text"]
 
-    # Contact details (email, phone, admission number) ARE included, as of
-    # 2026-08-16, on the host's explicit call when the bot was added to the
-    # Exun server - they asked for it to be able to give out full member
-    # and ad-hoc details there. This reverses the original rule, which held
-    # that a bot replying in a channel anyone can read should only ever
-    # know the roster facts members already know about each other.
+    # No contact details (email, phone, admission number) - 2026-11-05,
+    # host's call. They were added on 2026-08-16 so the bot could hand out
+    # full member details, but a review of its logs found phone numbers,
+    # emails and admission numbers in replies about OTHER members, in
+    # channels anyone can read, and the backup model once gave out the
+    # wrong member's details. Most of these people are minors. Hosts see
+    # contact details on the dashboard's Members page; the bot doesn't.
     #
-    # Worth being clear-eyed about what that means, since the reasoning
-    # that kept them out was sound: the bot will read a member's phone
-    # number or admission number out loud to whoever asks, in a channel
-    # that is not access-controlled the way the dashboard's Members page
-    # is, and the people whose numbers these are (mostly minors) never
-    # agreed to that specifically. The host was told this and chose it
-    # anyway; it is a deliberate decision, not an oversight, and this
-    # comment is here so nobody "fixes" it back by accident. Reverting is
-    # one line: drop the three fields from the select below.
+    # No Discord IDs or "who can be @mentioned" list either (same day): the
+    # bot doesn't ping people any more - every reply is sent with mentions
+    # off (see _send) - so the list only invited it to try.
     all_users = (
         supabase.table("users")
-        .select("user_id,name,discord_user_id,grade,section,role,email,phone_no,admission_no")
+        .select("user_id,name,grade,section,role")
         .execute()
         .data
     )
     users_by_id = {u["user_id"]: u["name"] for u in all_users}
     today = _today_ist()
-
-    # Who can actually be @mentioned by the bot — only members who've
-    # linked their real Discord ID (Home page, dashboard). This is the
-    # ONLY thing that makes a mention actually notify someone; a bot just
-    # writing "@Name" as plain text pings nobody, and it did exactly that
-    # once before this section existed (see supabase_schema.sql comment
-    # on discord_channel_log). The system prompt below is told to use
-    # ONLY this list for pings.
-    linked_lines = [
-        f"- {u['name']}: <@{u['discord_user_id']}>" for u in all_users if u.get("discord_user_id")
-    ]
 
     # The full roster. Without it the bot only knew people who happened to
     # own a part or be on a team, so "gimme the details of Krishna"
@@ -926,31 +911,25 @@ def _build_club_context(include_contact=True):
             bits.append(f"class {u['grade']}" + (f"-{section}" if section else ""))
         if u.get("role"):
             bits.append(f"designation {ROLE_LABELS.get(u['role'], u['role'])}")
-        # Contact fields are frequently blank - most members signed up
-        # before some of them existed, and staff accounts never have an
-        # admission number at all. Only the ones actually on file are
-        # listed, so the model has no empty value to invent a plausible
-        # replacement for.
-        if include_contact:
-            for label, key in (("email", "email"), ("phone", "phone_no"), ("admission no.", "admission_no")):
-                if u.get(key):
-                    bits.append(f"{label} {u[key]}")
         member_lines.append(f"- {u['name']}" + (f" ({', '.join(bits)})" if bits else ""))
 
-    parts = supabase.table("parts").select("part_number,name,status,owner_id").execute().data
-    parts_lines = [
-        f"- {p['name']} ({p['part_number']}), owned by {users_by_id.get(p['owner_id'], 'Unknown')}, "
-        f"status: {p['status']}"
-        for p in parts
-    ]
+    parts = supabase.table("parts").select("*").execute().data
+    parts_lines = []
+    for p in parts:
+        # A bulk row is many identical pieces (quantity says how many);
+        # without that the model counted it as one part.
+        qty = f"{p['quantity']} pieces, " if p.get("is_bulk") and p.get("quantity") else ""
+        parts_lines.append(
+            f"- {p['name']} ({p['part_number']}), {qty}owned by "
+            f"{users_by_id.get(p['owner_id'], 'Unknown')}, status: {p['status']}"
+        )
 
-    competitions = (
-        supabase.table("competitions")
-        .select("competition_id,name,venue,competition_date,registration_deadline")
-        .order("competition_date")
-        .execute()
-        .data
-    )
+    # Same "upcoming" rule as the slash commands (club_commands.py): a
+    # competition a host marked past is gone even if its date hasn't come,
+    # and one the club isn't attending is labelled so. Before 2026-11-05
+    # this filtered by date only, so /nextcomp and the AI could disagree.
+    all_competitions = supabase.table("competitions").select("*").execute().data
+    competitions = cc.upcoming_competitions(all_competitions, today)
     events = (
         supabase.table("competition_events")
         .select("event_id,competition_id,name,min_grade,max_grade")
@@ -1008,6 +987,8 @@ def _build_club_context(include_contact=True):
         if comp_date and comp_date < today.isoformat():
             continue  # past competitions aren't relevant to answer live questions with
         line = f"- {c['name']}"
+        if c.get("not_attending"):
+            line += " (the club is NOT attending this one)"
         if c.get("venue"):
             line += f" at {c['venue']}"
         if comp_date:
@@ -1071,7 +1052,7 @@ def _build_club_context(include_contact=True):
         .execute()
         .data
     )
-    comps_by_id = {c["competition_id"]: c["name"] for c in competitions}
+    comps_by_id = {c["competition_id"]: c["name"] for c in all_competitions}
     achievement_lines = [
         f"- {users_by_id.get(a['user_id'], 'Unknown')} at {comps_by_id.get(a['competition_id'], 'a competition')}"
         + (f": {a['position']}" if a.get("position") else "")
@@ -1083,11 +1064,8 @@ def _build_club_context(include_contact=True):
         + f"\n\nUPCOMING COMPETITIONS:\n" + ("\n".join(comp_lines) or "(none upcoming)")
         + f"\n\nUPCOMING MEETINGS:\n" + ("\n".join(meeting_lines) or "(none upcoming)")
         + f"\n\nRECENT ACHIEVEMENTS:\n" + ("\n".join(achievement_lines) or "(none logged)")
-        + f"\n\nCLUB MEMBERS ({len(member_lines)})"
-        + ("" if include_contact else " - contact details were left out of this snapshot")
-        + ":\n" + ("\n".join(member_lines) or "(none)")
-        + "\n\nMEMBERS WHO CAN BE @MENTIONED (linked their Discord ID):\n"
-        + ("\n".join(linked_lines) or "(nobody has linked their Discord ID yet)")
+        + f"\n\nCLUB MEMBERS ({len(member_lines)}, no contact details - those are never shared on Discord):\n"
+        + ("\n".join(member_lines) or "(none)")
     )
     cache["text"] = context
     cache["fetched_at"] = now
@@ -1118,12 +1096,12 @@ def _personal_events(asker_name):
     )
 
 
-def _safe_club_context(include_contact=True):
+def _safe_club_context():
     # A Supabase hiccup shouldn't turn into a failed reply - the model
     # gets told the data is unavailable and answers around it, same
     # best-effort spirit as everything else here.
     try:
-        return _build_club_context(include_contact=include_contact)
+        return _build_club_context()
     except Exception as e:
         print(f"Club data fetch failed: {e!r}", flush=True)
         return "(the club's data isn't reachable right now)"
@@ -1439,7 +1417,7 @@ def _needs_chat_history(messages):
     return any(k in _last_user_text(messages) for k in HISTORY_KEYWORDS)
 
 
-def _with_no_tools_note(messages, channel_id=None, include_contact=True, include_history=True):
+def _with_no_tools_note(messages, channel_id=None, include_history=True):
     # Inline whichever data the question actually needs, so these paths
     # can still answer it; otherwise just say the tools are off.
     # Club data goes in UNCONDITIONALLY on this path. It started
@@ -1451,17 +1429,12 @@ def _with_no_tools_note(messages, channel_id=None, include_contact=True, include
     # endless phrasings. ~1,200 tokens on a path that only runs when
     # Groq is already down is worth never wrongly claiming ignorance.
     #
-    # include_contact/include_history let a size-constrained caller (the
-    # small_groq fallback, 6,000 tokens/MINUTE - a tighter window than the
-    # main model's 12,000 despite its bigger daily budget) drop the two
-    # biggest optional additions rather than 413 outright. Added
-    # 2026-08-16 after a real question ("gimme details of aryamman ojha")
-    # 413'd on small_groq specifically because the contact-detail roster
-    # (~5.4k chars since that data was added the same night) pushed this
-    # already-large payload over 6,000 tokens. Losing contact details or
-    # deep history on THIS ONE fallback attempt is a fair trade for
-    # answering at all instead of failing outright.
-    extras = ["The club's CURRENT data:\n\n" + _safe_club_context(include_contact=include_contact)]
+    # include_history lets a size-constrained caller (the small_groq
+    # fallback, 6,000 tokens/MINUTE - a tighter window than the main
+    # model's 12,000) drop the deep chat history rather than 413 outright.
+    # (It used to drop the roster's contact details too; those are gone
+    # from the club data altogether since 2026-11-05.)
+    extras = ["The club's CURRENT data:\n\n" + _safe_club_context()]
     if include_history and _needs_chat_history(messages) and channel_id is not None:
         extras.append(
             "THIS CHANNEL'S ACTUAL MESSAGE LOG for the last few days is below - "
@@ -1644,7 +1617,8 @@ def _ask_with_small_groq(no_tools_messages, max_tokens=MAX_REPLY_TOKENS):
     # fallbacks - see _last_provider_error.
     try:
         response = _call_with_retry(lambda: groq_client.chat.completions.create(
-            model=GROQ_SMALL_MODEL, messages=no_tools_messages, max_tokens=max_tokens,
+            model=GROQ_SMALL_MODEL, messages=no_tools_messages,
+            max_tokens=max_tokens + REASONING_HEADROOM, **GROQ_REASONING,
         ))
         reply = response.choices[0].message.content
         if not reply:
@@ -1702,7 +1676,8 @@ def _ask_small_talk(messages):
     ]
     try:
         response = _call_with_retry(lambda: groq_client.chat.completions.create(
-            model=GROQ_SMALL_MODEL, messages=patched, max_tokens=MAX_REPLY_TOKENS,
+            model=GROQ_SMALL_MODEL, messages=patched, max_tokens=MAX_REPLY_TOKENS + REASONING_HEADROOM,
+            **GROQ_REASONING,
         ))
         reply = response.choices[0].message.content
         if reply:
@@ -1734,7 +1709,8 @@ def _ask_with_fallback_chain(messages, channel_id=None):
     _last_provider_error.update(small_groq="not attempted")
     try:
         response = _call_with_retry(lambda: groq_client.chat.completions.create(
-            model=GROQ_MODEL, messages=no_tools_messages, max_tokens=MAX_REPLY_TOKENS,
+            model=GROQ_MODEL, messages=no_tools_messages, max_tokens=MAX_REPLY_TOKENS + REASONING_HEADROOM,
+            **GROQ_REASONING,
         ))
         plain_reply = response.choices[0].message.content
         if not plain_reply:
@@ -1754,15 +1730,11 @@ def _ask_with_fallback_chain(messages, channel_id=None):
         # The small Groq model - on its own, much larger daily budget -
         # is what keeps the bot answering once the big one is spent. NOT the same no_tools_messages
         # the plain retry above got - this model's per-minute token
-        # cap (6,000) is smaller than 70b's (12,000), and the full
-        # club context (with contact details) is big enough on its
-        # own to 413 here on a real question (confirmed live,
-        # 2026-08-16). Rebuilt without contact details or deep chat
-        # history so it actually fits.
+        # cap (6,000) is smaller than 70b's (12,000), so it gets the
+        # club data without the deep chat history (a 413 here was
+        # confirmed live, 2026-08-16).
         small_reply = _ask_with_small_groq(
-            _with_no_tools_note(
-                messages, channel_id, include_contact=False, include_history=False
-            )
+            _with_no_tools_note(messages, channel_id, include_history=False)
         )
         if small_reply is not None:
             return small_reply, []
@@ -1801,7 +1773,8 @@ def _groq_chat(messages, tools=None):
     # shape _openrouter_chat returns, so _tool_answer can drive either.
     kwargs = {"tools": tools, "tool_choice": "auto"} if tools else {}
     response = _call_with_retry(lambda: groq_client.chat.completions.create(
-        model=GROQ_MODEL, messages=messages, max_tokens=MAX_REPLY_TOKENS, **kwargs,
+        model=GROQ_MODEL, messages=messages, max_tokens=MAX_REPLY_TOKENS + REASONING_HEADROOM,
+        **GROQ_REASONING, **kwargs,
     ))
     msg = response.choices[0].message
     return {"content": msg.content, "tool_calls": [tc.model_dump() for tc in (msg.tool_calls or [])]}
@@ -2005,17 +1978,79 @@ def _ask_llm(conversation_key, channel_id, user_text, asker_name=None, is_arbite
     return reply
 
 
-async def _send(channel, text, allowed_mentions=None):
+DISCORD_MAX_LEN = 2000
+
+
+def _split_for_discord(text, limit=DISCORD_MAX_LEN):
     # Discord hard-caps a single message at 2000 characters - split rather
     # than truncate, since a cut-off answer is worse than two messages.
-    #
+    # Splits at the last line break (or else space) before the limit, so a
+    # word or a list item is never cut in half across two messages.
+    chunks = []
+    while len(text) > limit:
+        cut = text.rfind("\n", 0, limit)
+        if cut < limit // 2:
+            cut = text.rfind(" ", 0, limit)
+        if cut < limit // 2:
+            cut = limit
+        chunks.append(text[:cut].rstrip())
+        text = text[cut:].lstrip("\n ")
+    if text:
+        chunks.append(text)
+    return chunks
+
+
+async def _send(channel, text, allowed_mentions=None):
     # suppress_embeds stops Discord expanding any URL in a reply into a
     # big link-preview card. A single error message that happened to
     # contain a billing URL turned into a huge embed in the channel;
     # source links on search answers would do the same. The links stay
     # clickable, they just don't unfurl.
-    for i in range(0, len(text), 2000):
-        await channel.send(text[i:i + 2000], suppress_embeds=True, allowed_mentions=allowed_mentions)
+    #
+    # Mentions are OFF unless a caller passes something else (2026-11-05):
+    # the logs had 20 AI replies containing real pings and 13 requests to
+    # ping someone. A <@id> in a reply still shows the name; it just
+    # notifies nobody.
+    if allowed_mentions is None:
+        allowed_mentions = discord.AllowedMentions.none()
+    for chunk in _split_for_discord(text):
+        await channel.send(chunk, suppress_embeds=True, allowed_mentions=allowed_mentions)
+
+
+MEMBER_EMAILS_TTL_SECONDS = 600
+_member_emails_cache = {"at": 0.0, "emails": ()}
+
+
+def _member_emails():
+    # Only so reply_guards.scrub_private can hide a member's personal email
+    # if a reply ever repeats one. Never sent to a model. Blocking - call
+    # through asyncio.to_thread.
+    if time.time() - _member_emails_cache["at"] < MEMBER_EMAILS_TTL_SECONDS:
+        return _member_emails_cache["emails"]
+    try:
+        rows = supabase.table("users").select("email").execute().data
+        _member_emails_cache.update(at=time.time(), emails=tuple(r["email"] for r in rows if r.get("email")))
+    except Exception as e:
+        print(f"Member email lookup failed: {e!r}", flush=True)
+    return _member_emails_cache["emails"]
+
+
+def _guard_reply(reply, conversation_key=None):
+    # Last check on an AI reply before it goes out (reply_guards.py): a
+    # claimed action is replaced outright - a false "done" is worse than no
+    # answer, because the member stops checking - and contact details are
+    # hidden. The conversation memory gets the same text, so the next reply
+    # doesn't build on the version nobody saw. Blocking - run in a thread.
+    original = reply
+    if rg.claims_action(reply):
+        print("Replaced a reply that claimed an action the bot can't take.", flush=True)
+        reply = rg.ACTION_CLAIM_REPLY
+    reply = rg.scrub_private(reply, _member_emails())
+    if reply != original and conversation_key is not None:
+        turns = history[conversation_key]
+        if turns and turns[-1].get("role") == "assistant" and turns[-1].get("content") == original:
+            turns[-1]["content"] = reply
+    return reply
 
 
 # --- Slash commands (2026-11-04) -------------------------------------------
@@ -2054,6 +2089,18 @@ async def _command_reply(interaction, build):
         print(f"/{interaction.command.name} failed: {e!r}", flush=True)
         text = "I couldn't load that right now. Try again in a bit."
     await interaction.followup.send(text, ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
+    await asyncio.to_thread(_log_command, interaction, text)
+
+
+def _log_command(interaction, reply):
+    # Slash commands go in the same log as everything else (2026-11-05),
+    # marked "slash command" in the model column - until now nothing was
+    # recorded, so nobody could tell whether anyone used them.
+    discord_user_id = str(interaction.user.id)
+    channel_id = str(interaction.channel_id) if interaction.channel_id else None
+    linked_user_id, _name = _linked_user(discord_user_id)
+    _log_chat("user", f"/{interaction.command.name}", discord_user_id, channel_id, linked_user_id)
+    _log_chat("assistant", reply, discord_user_id, channel_id, linked_user_id, model="slash command")
 
 
 @tree.command(name="nextcomp", description="The club's next competition and its events")
@@ -2070,12 +2117,12 @@ async def deadlines_command(interaction: discord.Interaction):
 @tree.command(name="mycomps", description="The upcoming events you're signed up or selected for")
 async def mycomps_command(interaction: discord.Interaction):
     def build():
-        user_id, _name = _linked_user(str(interaction.user.id))
+        user_id, name = _linked_user(str(interaction.user.id))
         if not user_id:
             return cc.NOT_LINKED
         return cc.my_comps_text(
             user_id, _rows("competitions"), _rows("competition_events"),
-            _rows("event_volunteers", "event_id,user_id,selected"), _today_ist(),
+            _rows("event_volunteers", "event_id,user_id,selected"), _today_ist(), name=name,
         )
     await _command_reply(interaction, build)
 
@@ -2083,10 +2130,10 @@ async def mycomps_command(interaction: discord.Interaction):
 @tree.command(name="meetings", description="Upcoming meetings you're invited to")
 async def meetings_command(interaction: discord.Interaction):
     def build():
-        user_id, _name = _linked_user(str(interaction.user.id))
+        user_id, name = _linked_user(str(interaction.user.id))
         return cc.meetings_text(
             user_id, _rows("meetings", "meeting_id,title,meeting_date,meeting_time"),
-            _rows("meeting_invitees", "meeting_id,user_id"), _today_ist(),
+            _rows("meeting_invitees", "meeting_id,user_id"), _today_ist(), name=name,
         )
     await _command_reply(interaction, build)
 
@@ -2293,9 +2340,10 @@ async def _recent_channel_entries(channel, before):
 
 def _member_detail_rows():
     # Blocking Supabase call - only ever run through asyncio.to_thread.
+    # No contact columns: they never go to Discord (member_details.py).
     return (
         supabase.table("users")
-        .select("name,grade,section,role,email,phone_no,admission_no")
+        .select("name,grade,section,role")
         .execute()
         .data
     )
@@ -2307,6 +2355,9 @@ async def _handle_summary_request(message, conversation_key, text, discord_user_
     model_used = None
 
     async def say(reply, remember=False):
+        # A summary retells what members wrote, so a phone number someone
+        # posted would otherwise be repeated (reply_guards.py).
+        reply = rg.scrub_private(reply, await asyncio.to_thread(_member_emails))
         _log_chat("assistant", reply, discord_user_id, discord_channel_id, linked_user_id, model_used)
         if remember:
             # so a follow-up ("what was the second point?") has the summary to work from
@@ -2486,6 +2537,19 @@ async def _handle_incoming(message, is_edit=False):
         await _send(message.channel, ROAST_REFUSAL)
         return
 
+    # Same idea, same place (2026-11-05, reply_guards.py): "can I post X
+    # here" gets a fixed "ask a host" - the bot once said yes to another
+    # server's invite, twice - and "count to a million"-style requests are
+    # refused before they reach a model. Both kept out of history too.
+    for matches, canned_reply in (
+        (rg.permission_question, rg.PERMISSION_REPLY),
+        (rg.budget_burn_request, rg.BUDGET_REPLY),
+    ):
+        if matches(text):
+            _log_chat("assistant", canned_reply, discord_user_id, discord_channel_id, linked_user_id)
+            await _send(message.channel, canned_reply)
+            return
+
     # "@bot details of X": answered straight from the users table, no model
     # call (member_details.py says why). Before the rate limit since it
     # costs nothing. A name that matches nobody falls through to the
@@ -2554,7 +2618,7 @@ async def _handle_incoming(message, is_edit=False):
             print(f"couldn't read the attached image: {e!r}", flush=True)
             reply, model_used = None, None
         if reply:
-            reply = _tidy_truncation(reply)
+            reply = await asyncio.to_thread(_guard_reply, _tidy_truncation(reply))
             history[conversation_key].append({"role": "user", "content": f"{text} [sent a photo]"})
             history[conversation_key].append({"role": "assistant", "content": reply})
             _log_chat("assistant", reply, discord_user_id, discord_channel_id, linked_user_id, model_used)
@@ -2573,7 +2637,12 @@ async def _handle_incoming(message, is_edit=False):
             _ask_llm_tracked, conversation_key, message.channel.id, llm_text, linked_name,
             discord_user_id in ARBITER_DISCORD_IDS,
         )
-    _log_chat("assistant", reply, discord_user_id, discord_channel_id, linked_user_id, model_used)
+        reply = await asyncio.to_thread(_guard_reply, reply, conversation_key)
+    # "none recorded" rather than a blank: in the logs a blank model meant
+    # either "before this column existed" or "every provider failed", and
+    # the two couldn't be told apart (2026-11-05).
+    _log_chat("assistant", reply, discord_user_id, discord_channel_id, linked_user_id,
+              model_used or "none recorded")
 
     await _send(message.channel, reply)
 

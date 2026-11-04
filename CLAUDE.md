@@ -1400,7 +1400,7 @@ guest in a server we don't own is different from being at home:
   keep. `ai_chat_messages` still records every question the bot is asked
   in either server, which is what the AI Logs page actually reviews.
 
-**Member contact details are now in the bot's club data** — email, phone
+**REVERSED 2026-11-05 — the bot has no contact details any more; see "Bot trust fixes" at the end of this file.** (History:) **Member contact details are now in the bot's club data** — email, phone
 number and admission number, added at the same time on the student's
 explicit call, after being asked and choosing "everywhere, Exun channel
 included". This reverses the original rule (the old comment in
@@ -3114,3 +3114,43 @@ CLIO_CURRENT_TAB_ID in step with it.
 `clio_theme.py` (manual "Clio theme" workflow) paints every Clio tab in the
 dashboard's theme: #242424 header and ADHOC label rows with bold #E8B33D text,
 white/#FBF3DF bands and gold tabs. It only sets colours, so it's safe to re-run.
+
+## Bot trust fixes (2026-11-05)
+
+From a review of the bot's own logs (1,051 questions, 11 Aug to 4 Nov). The
+review's notes summarise members' messages, so they were kept out of this
+public repo.
+
+- **No contact details on Discord.** Phone, email and admission no. are gone
+  from `get_club_data` and the "details of X" card, on the host's call. This
+  reverses the 2026-08-16 decision above: replies had carried members'
+  numbers, including other members', and the backup model once gave out the
+  wrong member's details. `reply_guards.scrub_private` also hides Indian
+  mobile numbers, admission numbers, @dpsrkp.net addresses and members'
+  personal emails in any AI reply or summary.
+- **Code-level guards** (`discord_bot/reply_guards.py`, tested by
+  `test_reply_guards.py`). Before any model call: "can I post X here" gets a
+  fixed "ask a host", and budget-burning requests are refused. After the
+  model: a reply claiming an action the bot can't take ("I've removed it",
+  "I'll let the hosts know") is replaced. Keep the patterns narrow, because
+  coding answers ("I've updated the code") must still pass.
+- **No pings.** `_send` defaults to `AllowedMentions.none()`, and the "who can
+  be @mentioned" list is gone from the club data.
+- **Rules answers** come only from uploaded rulebooks, with a page number;
+  otherwise the bot says none is uploaded and points to the links.
+- **Competitions** in the AI data use the same `cc.upcoming_competitions`
+  rule as the slash commands, and carry a "not attending" label. Parts show
+  bulk quantities.
+- **Cut-off replies:** gpt-oss counts its thinking against `max_tokens`, so
+  every Groq call now sends `reasoning_effort="low"` plus
+  `REASONING_HEADROOM`. `_send` splits long replies at a line break.
+- **Logging:** slash commands are logged to `ai_chat_messages` with model
+  "slash command". An AI reply with no recorded model is logged as "none
+  recorded" instead of blank.
+- **Discord linking** (`discord_id_problem` in shared.py, used on Home and
+  Members): the ID must be 17-20 digits and not already on another account.
+  Personal slash replies start with "Linked as <name>". The Home caption now
+  says what the link is for.
+- **Not changed, on purpose:** the "I don't talk about that here" filter. The
+  questions it blocked were about the sister club's event, which the standing
+  no-Exun rule covers.

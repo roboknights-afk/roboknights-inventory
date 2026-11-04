@@ -50,13 +50,17 @@ check("no partial words", md.find_members("test", users), [])
 check("no match", md.find_members("nobody here", users), [])
 
 check("full card", md.format_card(users[0]),
-      "**Name :** Testy Kumar\n**Class and section :** 11-Q\n**Designation :** Core\n"
-      "**Phone no :** 9000000001\n**Email :** testy@example.com\n**Admission no :** R11111")
+      "**Name :** Testy Kumar\n**Class and section :** 11-Q\n**Designation :** Core")
 check("blanks", md.format_card(users[1]),
-      "**Name :** Testy Verma\n**Class and section :** 9\n**Designation :** Member\n"
-      "**Phone no :** Not on file\n**Email :** verma@example.com\n**Admission no :** Not on file")
-check("all blank", md.format_card(users[2]).count("Not on file"), 5)
+      "**Name :** Testy Verma\n**Class and section :** 9\n**Designation :** Member")
+check("all blank", md.format_card(users[2]).count("Not on file"), 2)
 check("two cards", md.format_reply(users[:2]).count("**Name :**"), 2)
+# Contact details never reach Discord, even when they're on file.
+for u in users:
+    reply = md.format_reply([u])
+    for secret in ("9000000001", "testy@example.com", "verma@example.com", "R11111"):
+        check(f"no {secret} for {u['name']}", secret in reply, False)
+check("contact note", md.format_reply(users[:1]).endswith(md.CONTACT_NOTE), True)
 
 if failures:
     print("\n".join(failures))
