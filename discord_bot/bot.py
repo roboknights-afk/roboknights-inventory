@@ -98,7 +98,7 @@ supabase = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
 # whether the running bot is the current code. Unlike Railway, deploy-
 # bot.yml really does redeploy on every push now, but this is still
 # worth checking after one.
-BOT_BUILD = "2026-11-04 /botstatus and host outage alerts"
+BOT_BUILD = "2026-11-04 small talk on the small model"
 
 # The bot now lives in a SECOND server it doesn't own — the Exun clan's,
 # in their RoboKnights channel, so their side can ask it about
@@ -1543,7 +1543,7 @@ def _ask_with_openrouter(messages, max_tokens=MAX_REPLY_TOKENS):
                 headers={"Authorization": f"Bearer {OPENROUTER_API_KEY}"},
                 json={
                     "model": NEMOTRON_MODEL, "messages": messages,
-                    "max_tokens": max_tokens, "reasoning": {"exclude": True},
+                    "max_tokens": max_tokens + 1000, "reasoning": {"effort": "low", "exclude": True},
                 },
                 timeout=30,
             )
@@ -1666,6 +1666,53 @@ def _ask_with_small_groq(no_tools_messages, max_tokens=MAX_REPLY_TOKENS):
         return None
 
 
+# --- Small talk goes to the small model (2026-11-04) -----------------------
+# Nemotron's free tier is about 50 requests a day, and a tool answer uses
+# two. Short chit-chat ("lol nice", "you're the best bot") needs no tools
+# and no big model, so it goes straight to Groq's small model, which has a
+# far bigger daily allowance - saving Nemotron for real questions.
+# Deliberately cautious: anything with a question word, a "?", or a club or
+# chat-history keyword is NOT small talk and takes the normal path.
+SMALL_TALK_MAX_CHARS = 60
+NOT_SMALL_TALK = (
+    "?", "who", "what", "when", "where", "why", "how", "which", "can you", "could you", "tell me",
+    "explain", "help", "find", "search", "latest", "price", "rule", "code", "write", "make", "list",
+    "details", "summar", "remind",
+    # technical words: a short message with any of these is a real question
+    "max", "min", "weight", "size", "limit", "robo", "bot ", "arena", "match", "cost", "spec", "pin",
+    "sensor", "motor", "arduino", "esp", "servo", "battery", "volt", "wire", "circuit", "error", "not working",
+    "difference", " vs", "versus", "best", "should", "does", "do i", "is it", "is there", "recommend",
+    "need", "want", "l298", "tb6612",
+)
+
+
+def _is_small_talk(text):
+    lowered = (text or "").lower().strip()
+    if not lowered or len(lowered) > SMALL_TALK_MAX_CHARS or any(w in lowered for w in NOT_SMALL_TALK):
+        return False
+    as_messages = [{"role": "user", "content": lowered}]
+    return not (_needs_club_data(as_messages) or _needs_chat_history(as_messages))
+
+
+def _ask_small_talk(messages):
+    # -> reply, or None (then the normal path answers instead).
+    patched = [
+        {"role": "system", "content": (m.get("content") or "") + NO_TOOLS_NOTE} if m.get("role") == "system" else m
+        for m in messages
+    ]
+    try:
+        response = _call_with_retry(lambda: groq_client.chat.completions.create(
+            model=GROQ_SMALL_MODEL, messages=patched, max_tokens=MAX_REPLY_TOKENS,
+        ))
+        reply = response.choices[0].message.content
+        if reply:
+            _answered(GROQ_SMALL_MODEL)
+            return reply
+    except Exception as e:
+        _note_failure("small talk", repr(e))
+    return None
+
+
 def _ask_with_fallback_chain(messages, channel_id=None):
     # Runs when the primary tool-calling path (_ask_with_tools) fails.
     # Used to try groq/compound first (Groq's own server-side
@@ -1760,6 +1807,13 @@ def _groq_chat(messages, tools=None):
     return {"content": msg.content, "tool_calls": [tc.model_dump() for tc in (msg.tool_calls or [])]}
 
 
+# Nemotron thinks before it answers, and its thinking counts against
+# max_tokens: with the plain 500-token reply cap it sometimes used the lot
+# thinking and returned NOTHING (seen in testing 2026-11-04). Low effort
+# keeps the thinking short, and the extra room keeps an answer coming.
+NEMOTRON_MAX_TOKENS = MAX_REPLY_TOKENS + 1000
+
+
 def _openrouter_chat(messages, tools=None):
     # Nemotron on OpenRouter. No retry: a 429 here is usually the free
     # daily cap, which waiting 2s won't fix, and Groq is right behind it.
@@ -1768,8 +1822,8 @@ def _openrouter_chat(messages, tools=None):
     if not OPENROUTER_API_KEY:
         raise RuntimeError("no OPENROUTER_API_KEY set")
     body = {
-        "model": NEMOTRON_MODEL, "messages": messages, "max_tokens": MAX_REPLY_TOKENS,
-        "reasoning": {"exclude": True},
+        "model": NEMOTRON_MODEL, "messages": messages, "max_tokens": NEMOTRON_MAX_TOKENS,
+        "reasoning": {"effort": "low", "exclude": True},
     }
     if tools:
         body.update(tools=tools, tool_choice="auto")
@@ -1781,6 +1835,11 @@ def _openrouter_chat(messages, tools=None):
         raise RuntimeError(f"HTTP {r.status_code}: {r.text[:200]}")
     msg = r.json()["choices"][0]["message"]
     content = msg.get("content")
+    # Seen in testing: a tool call written out as TEXT ("<tool_call>
+    # <function=get_club_data>...") instead of a real one. That must never
+    # reach a member, so it counts as a failure and Groq answers instead.
+    if content and "<tool_call>" in content:
+        raise ValueError("tool call written as text")
     return {
         "content": _strip_reasoning(content) if content else content,
         "tool_calls": msg.get("tool_calls") or [],
@@ -1932,7 +1991,11 @@ def _ask_llm(conversation_key, channel_id, user_text, asker_name=None, is_arbite
     )
     messages = [{"role": "system", "content": system_content}] + list(history[conversation_key])
 
-    reply, sources = _ask_with_tools(messages, channel_id)
+    small = _ask_small_talk(messages) if _is_small_talk(user_text) else None
+    if small:
+        reply, sources = small, []
+    else:
+        reply, sources = _ask_with_tools(messages, channel_id)
     reply = _tidy_truncation(reply)
 
     if sources:

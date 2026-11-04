@@ -3065,3 +3065,39 @@ Gemma OpenRouter fallback was dropped (served by Google AI Studio). Needs a
 working `OPENROUTER_API_KEY` on the VPS; without one, Groq answers everything.
 Tested before the switch on made-up data: tool calls work, 1-6s, no reasoning
 in the reply, Groq takes over on a 401.
+
+## Bot update, ten chunks (2026-11-04)
+
+Host's request, one commit each:
+1. **Chat history** (`_search_chat_history`) reads up to 150 messages live from
+   Discord via `run_coroutine_threadsafe` (the log stopped 3 Nov); nothing stored.
+2. **Which model answered**: `_answered()` + `_ask_llm_tracked`/`_summarise_chat_tracked`
+   -> `ai_chat_messages.model` (migration), shown on AI Logs.
+3. **Slash commands** `/nextcomp /mycomps /meetings /deadlines /help`
+   (`discord_bot/club_commands.py`, `test_club_commands.py`): no AI, ephemeral,
+   synced globally - DMs, home server, and guest servers' allowed channels only.
+4. **Photo help**: images go inline (base64 - the free endpoint 404s on URLs) to
+   `nvidia/nemotron-3.5-super-vl:free`; technical content only, never people.
+5. **Rulebooks**: hosts upload rules PDFs on each competition card (`rulebooks.py`,
+   pypdf, text only, `competition_rulebooks` migration); bot tool `get_rulebook`
+   (`discord_bot/rulebook_search.py`, `test_rulebook_search.py`). Page citations
+   are asked for but the model doesn't always give them.
+6. **Reminder DMs** (`reminder_dms.py`): day-before bot status, competition-day
+   "log your result", and online consent forms not submitted for tomorrow.
+7. **Status countdown** to the next attended competition, hourly.
+8. **Club FAQ**: hosts edit it at the bottom of Discord Messages (`bot_faq.py`,
+   `club_faq` migration); bot tool `get_club_faq`.
+9. **`/botstatus`** (hosts = access_roles.is_host with a linked Discord id) and
+   host DMs, once a day per problem, when OpenRouter rejects the key or all models fail.
+10. **Small talk** (`_is_small_talk`, cautious word lists) goes to gpt-oss-20b to
+   save Nemotron's ~50 free requests/day.
+
+**Nemotron finding (same day):** its thinking counts against max_tokens; at the old
+500 cap it often returned NOTHING (so Groq was quietly answering). Now
+`NEMOTRON_MAX_TOKENS` = 1500 with reasoning effort "low": correct, but 9-26s a
+reply. Thinking fully off is 2-6s but skipped tools and once posted raw
+`<tool_call>` text (now rejected as a failure). Speed vs Groq (~2-4s) is an open
+call for the host.
+
+Migrations to run (end of supabase_schema.sql): `ai_chat_messages.model`,
+`access_roles.is_removed`, `competition_rulebooks`, `club_faq`.
