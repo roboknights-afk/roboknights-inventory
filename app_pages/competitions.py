@@ -15,6 +15,7 @@ from datetime import date, datetime
 import streamlit as st
 
 from e2c_import import find_e2c_competition, scan_e2c_sheet
+from rulebooks import render_rulebooks
 from slip_dialog import FLAG_KEY as SLIP_FLAG, open_slip, render_slip_dialog
 from shared import (
     EXUN_EMAILS, HOST_EMAILS, IST, cached_table, discord_role_tags, get_client, invalidate_cache,
@@ -1976,6 +1977,10 @@ def render_competition_card(comp):
                             icon=_link_icon(l["label"]), type="tertiary",
                             key=f"complink_{cid}_{link_no}",
                         )
+
+            # Rules PDFs the Discord bot answers rules questions from.
+            if is_host:
+                render_rulebooks(comp, events)
 
             if events:
                 st.markdown("**Events**")

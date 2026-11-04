@@ -70,6 +70,7 @@ from supabase import create_client
 import channel_summary as cs
 import club_commands as cc
 import member_details as md
+import rulebook_search as rb
 
 load_dotenv()
 
@@ -97,7 +98,7 @@ supabase = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
 # whether the running bot is the current code. Unlike Railway, deploy-
 # bot.yml really does redeploy on every push now, but this is still
 # worth checking after one.
-BOT_BUILD = "2026-11-04 photo help"
+BOT_BUILD = "2026-11-04 rulebook answers"
 
 # The bot now lives in a SECOND server it doesn't own — the Exun clan's,
 # in their RoboKnights channel, so their side can ask it about
@@ -353,6 +354,57 @@ CLUB_DATA_TOOL = {
 
 HISTORY_FETCH_LIMIT = 150
 HISTORY_FETCH_TIMEOUT = 20  # seconds
+
+
+# Competition rulebooks (2026-11-04): hosts upload an event's rules PDF on
+# the dashboard's Competitions page; this tool hands the model the most
+# relevant pages (rulebook_search.py picks them), so a rules answer comes
+# from the real rulebook with a page number instead of a guess.
+RULEBOOK_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "get_rulebook",
+        "description": "Look up a competition's official rules, from the rulebook a host "
+                        "uploaded on the dashboard. Use it for ANY question about a "
+                        "competition's or event's rules: bot size or weight limits, arena, "
+                        "match time, scoring, team size, allowed or banned parts. Quote the "
+                        "page number in your answer. If it says no rulebook was uploaded, "
+                        "say so - never guess rules.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "competition": {
+                    "type": "string",
+                    "description": "The competition and/or event the member named, e.g. 'NYRC robo war'.",
+                },
+                "question": {
+                    "type": "string",
+                    "description": "What they want to know, in a few keywords, e.g. 'max bot weight'.",
+                },
+            },
+            "required": ["question"],
+        },
+    },
+}
+RULEBOOK_CACHE_SECONDS = 300
+_rulebook_cache = {"at": 0.0, "rows": None}
+
+
+def _rulebook_lookup(competition, question):
+    try:
+        if _rulebook_cache["rows"] is None or time.time() - _rulebook_cache["at"] > RULEBOOK_CACHE_SECONDS:
+            _rulebook_cache["rows"] = (
+                supabase.table("competition_rulebooks").select("*").execute().data,
+                supabase.table("competitions").select("competition_id,name").execute().data,
+                supabase.table("competition_events").select("event_id,competition_id,name").execute().data,
+            )
+            _rulebook_cache["at"] = time.time()
+        books, comps, events = _rulebook_cache["rows"]
+        return rb.search(books, comps, events, competition or "", question or "")
+    except Exception as e:
+        # Most likely the competition_rulebooks migration hasn't been run.
+        print(f"Rulebook lookup failed: {e!r}", flush=True)
+        return rb.NONE_UPLOADED
 
 
 def _search_chat_history(channel_id, days_back):
@@ -1647,7 +1699,7 @@ def _tool_answer(chat, messages, channel_id):
     # run those and control how much text comes back (see the
     # TAVILY_API_KEY/CHAT_HISTORY_TOOL comments above). Raises on any
     # failure, including an empty reply, so the caller moves on.
-    tools = [CLUB_DATA_TOOL, CHAT_HISTORY_TOOL] + ([WEB_SEARCH_TOOL] if TAVILY_API_KEY else [])
+    tools = [CLUB_DATA_TOOL, CHAT_HISTORY_TOOL, RULEBOOK_TOOL] + ([WEB_SEARCH_TOOL] if TAVILY_API_KEY else [])
     msg = chat(messages, tools)
     if not msg["tool_calls"]:
         if msg["content"]:
@@ -1668,6 +1720,8 @@ def _tool_answer(chat, messages, channel_id):
             result_text = _safe_club_context()
         elif name == "search_chat_history":
             result_text = _search_chat_history(channel_id, args.get("days_back") or 1)
+        elif name == "get_rulebook":
+            result_text = _rulebook_lookup(args.get("competition"), args.get("question"))
         else:
             result_text, result_sources = _tavily_search(args.get("query") or "")
             all_sources.extend(result_sources)
