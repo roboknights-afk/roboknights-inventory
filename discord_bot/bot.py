@@ -98,7 +98,7 @@ supabase = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
 # whether the running bot is the current code. Unlike Railway, deploy-
 # bot.yml really does redeploy on every push now, but this is still
 # worth checking after one.
-BOT_BUILD = "2026-11-04 status countdown"
+BOT_BUILD = "2026-11-04 club FAQ"
 
 # The bot now lives in a SECOND server it doesn't own — the Exun clan's,
 # in their RoboKnights channel, so their side can ask it about
@@ -386,6 +386,37 @@ RULEBOOK_TOOL = {
         },
     },
 }
+# The club's own FAQ (2026-11-04), written by hosts on the dashboard's
+# Discord Messages page (bot_faq.py there): how to borrow a part, log a
+# result, club rules... so "how do I..." about the club is answered from
+# what the club actually says, not a guess.
+FAQ_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "get_club_faq",
+        "description": "The club's own answers to common questions about how RoboKnights "
+                        "and its dashboard work: borrowing parts, logging results, signing "
+                        "up for competitions, consent forms, club rules, merch and so on. "
+                        "Check this before answering any 'how do I...' or rules question "
+                        "about the club itself, and answer from it.",
+        "parameters": {"type": "object", "properties": {}},
+    },
+}
+FAQ_MAX_CHARS = 8000
+
+
+def _club_faq():
+    try:
+        rows = supabase.table("club_faq").select("question,answer").order("faq_id").execute().data
+    except Exception as e:
+        print(f"FAQ lookup failed: {e!r}", flush=True)
+        rows = []
+    if not rows:
+        return "(the club hasn't written any FAQ answers yet - answer from what you know, and say a host can confirm)"
+    text = "\n\n".join(f"Q: {r['question']}\nA: {r['answer']}" for r in rows)
+    return text[:FAQ_MAX_CHARS]
+
+
 RULEBOOK_CACHE_SECONDS = 300
 _rulebook_cache = {"at": 0.0, "rows": None}
 
@@ -1699,7 +1730,7 @@ def _tool_answer(chat, messages, channel_id):
     # run those and control how much text comes back (see the
     # TAVILY_API_KEY/CHAT_HISTORY_TOOL comments above). Raises on any
     # failure, including an empty reply, so the caller moves on.
-    tools = [CLUB_DATA_TOOL, CHAT_HISTORY_TOOL, RULEBOOK_TOOL] + ([WEB_SEARCH_TOOL] if TAVILY_API_KEY else [])
+    tools = [CLUB_DATA_TOOL, CHAT_HISTORY_TOOL, RULEBOOK_TOOL, FAQ_TOOL] + ([WEB_SEARCH_TOOL] if TAVILY_API_KEY else [])
     msg = chat(messages, tools)
     if not msg["tool_calls"]:
         if msg["content"]:
@@ -1722,6 +1753,8 @@ def _tool_answer(chat, messages, channel_id):
             result_text = _search_chat_history(channel_id, args.get("days_back") or 1)
         elif name == "get_rulebook":
             result_text = _rulebook_lookup(args.get("competition"), args.get("question"))
+        elif name == "get_club_faq":
+            result_text = _club_faq()
         else:
             result_text, result_sources = _tavily_search(args.get("query") or "")
             all_sources.extend(result_sources)

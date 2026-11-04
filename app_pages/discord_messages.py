@@ -11,6 +11,8 @@ import os
 import streamlit as st
 from groq import Groq
 
+from bot_faq import render_bot_faq
+
 from shared import (
     CUSTOM_DISCORD_MESSAGE_HOURLY_LIMIT, DISCORD_CHANNELS, ROAST_REFUSAL, _roast_request,
     build_vacant_events_message, cached_table, custom_discord_send_allowed, delete_discord_message,
@@ -388,3 +390,7 @@ st.divider()
 if selected_channel == "competitions":
     render_vacant_events_reminder()
 render_custom_message_section(selected_channel)
+
+# The bot's club FAQ - not tied to a channel, so it sits below them all.
+st.divider()
+render_bot_faq()
