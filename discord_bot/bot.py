@@ -98,7 +98,7 @@ supabase = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
 # whether the running bot is the current code. Unlike Railway, deploy-
 # bot.yml really does redeploy on every push now, but this is still
 # worth checking after one.
-BOT_BUILD = "2026-11-04 rulebook answers"
+BOT_BUILD = "2026-11-04 slash commands everywhere"
 
 # The bot now lives in a SECOND server it doesn't own — the Exun clan's,
 # in their RoboKnights channel, so their side can ask it about
@@ -1856,8 +1856,9 @@ async def _send(channel, text, allowed_mentions=None):
 # club's own data with no AI (see club_commands.py), so they're instant and
 # don't touch the models' daily limits. Replies are ephemeral: only the
 # person who asked sees them, so nothing personal lands in a channel.
-# Registered for our own server only (on_ready syncs them there), so they
-# don't appear in guest servers or DMs.
+# Registered globally (host's request, 2026-11-04): they work in our
+# server, in DMs with the bot, and in a guest server - but there only in
+# its allowed channels (DISCORD_GUEST_CHANNEL_IDS), same rule as replies.
 tree = app_commands.CommandTree(client)
 _commands_synced = False
 
@@ -1866,7 +1867,19 @@ def _rows(table, columns="*"):
     return supabase.table(table).select(columns).execute().data
 
 
+GUEST_ELSEWHERE = "In this server I only answer in the RoboKnights channel - try it there."
+
+
+async def _command_allowed(interaction):
+    if _channel_allowed(interaction.channel):
+        return True
+    await interaction.response.send_message(GUEST_ELSEWHERE, ephemeral=True)
+    return False
+
+
 async def _command_reply(interaction, build):
+    if not await _command_allowed(interaction):
+        return
     await interaction.response.defer(ephemeral=True, thinking=True)
     try:
         text = await asyncio.to_thread(build)
@@ -1913,25 +1926,28 @@ async def meetings_command(interaction: discord.Interaction):
 
 @tree.command(name="help", description="What the RoboKnights bot can do")
 async def help_command(interaction: discord.Interaction):
-    await interaction.response.send_message(cc.HELP_TEXT, ephemeral=True)
+    if await _command_allowed(interaction):
+        await interaction.response.send_message(cc.HELP_TEXT, ephemeral=True)
 
 
 async def _sync_commands():
-    # Once per process (on_ready also fires on every reconnect). Synced to
-    # our own server, where it shows up straight away; a global sync can
-    # take up to an hour. Needs the bot to have been invited with the
-    # applications.commands scope - a 403 here means re-invite it with that.
+    # Once per process (on_ready also fires on every reconnect). A global
+    # sync, so the commands work in DMs and guest servers too; Discord can
+    # take up to an hour to show a change everywhere. The first version
+    # synced a copy to our own server only - that copy is cleared here, or
+    # every command would show up twice in our server. Needs the bot to have
+    # been invited with the applications.commands scope (a 403 here means
+    # re-invite it with that).
     global _commands_synced
     if _commands_synced:
         return
     _commands_synced = True
     try:
         if DISCORD_HOME_GUILD_ID:
-            guild = discord.Object(id=int(DISCORD_HOME_GUILD_ID))
-            tree.copy_global_to(guild=guild)
-            synced = await tree.sync(guild=guild)
-        else:
-            synced = await tree.sync()
+            home = discord.Object(id=int(DISCORD_HOME_GUILD_ID))
+            tree.clear_commands(guild=home)
+            await tree.sync(guild=home)
+        synced = await tree.sync()
         print(f"Slash commands synced: {', '.join('/' + c.name for c in synced)}", flush=True)
     except Exception as e:
         print(f"Slash command sync failed: {e!r}", flush=True)
