@@ -61,11 +61,13 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import discord
 import requests
+from discord import app_commands
 from dotenv import load_dotenv
 from groq import Groq
 from supabase import create_client
 
 import channel_summary as cs
+import club_commands as cc
 import member_details as md
 
 load_dotenv()
@@ -94,7 +96,7 @@ supabase = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
 # whether the running bot is the current code. Unlike Railway, deploy-
 # bot.yml really does redeploy on every push now, but this is still
 # worth checking after one.
-BOT_BUILD = "2026-11-04 record which model answered"
+BOT_BUILD = "2026-11-04 slash commands"
 
 # The bot now lives in a SECOND server it doesn't own — the Exun clan's,
 # in their RoboKnights channel, so their side can ask it about
@@ -1731,6 +1733,92 @@ async def _send(channel, text, allowed_mentions=None):
         await channel.send(text[i:i + 2000], suppress_embeds=True, allowed_mentions=allowed_mentions)
 
 
+# --- Slash commands (2026-11-04) -------------------------------------------
+# /nextcomp, /mycomps, /meetings, /deadlines, /help - answered from the
+# club's own data with no AI (see club_commands.py), so they're instant and
+# don't touch the models' daily limits. Replies are ephemeral: only the
+# person who asked sees them, so nothing personal lands in a channel.
+# Registered for our own server only (on_ready syncs them there), so they
+# don't appear in guest servers or DMs.
+tree = app_commands.CommandTree(client)
+_commands_synced = False
+
+
+def _rows(table, columns="*"):
+    return supabase.table(table).select(columns).execute().data
+
+
+async def _command_reply(interaction, build):
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    try:
+        text = await asyncio.to_thread(build)
+    except Exception as e:
+        print(f"/{interaction.command.name} failed: {e!r}", flush=True)
+        text = "I couldn't load that right now. Try again in a bit."
+    await interaction.followup.send(text, ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
+
+
+@tree.command(name="nextcomp", description="The club's next competition and its events")
+async def nextcomp_command(interaction: discord.Interaction):
+    await _command_reply(interaction, lambda: cc.next_comp_text(
+        _rows("competitions"), _rows("competition_events"), _today_ist()))
+
+
+@tree.command(name="deadlines", description="Upcoming competition registration deadlines")
+async def deadlines_command(interaction: discord.Interaction):
+    await _command_reply(interaction, lambda: cc.deadlines_text(_rows("competitions"), _today_ist()))
+
+
+@tree.command(name="mycomps", description="The upcoming events you're signed up or selected for")
+async def mycomps_command(interaction: discord.Interaction):
+    def build():
+        user_id, _name = _linked_user(str(interaction.user.id))
+        if not user_id:
+            return cc.NOT_LINKED
+        return cc.my_comps_text(
+            user_id, _rows("competitions"), _rows("competition_events"),
+            _rows("event_volunteers", "event_id,user_id,selected"), _today_ist(),
+        )
+    await _command_reply(interaction, build)
+
+
+@tree.command(name="meetings", description="Upcoming meetings you're invited to")
+async def meetings_command(interaction: discord.Interaction):
+    def build():
+        user_id, _name = _linked_user(str(interaction.user.id))
+        return cc.meetings_text(
+            user_id, _rows("meetings", "meeting_id,title,meeting_date,meeting_time"),
+            _rows("meeting_invitees", "meeting_id,user_id"), _today_ist(),
+        )
+    await _command_reply(interaction, build)
+
+
+@tree.command(name="help", description="What the RoboKnights bot can do")
+async def help_command(interaction: discord.Interaction):
+    await interaction.response.send_message(cc.HELP_TEXT, ephemeral=True)
+
+
+async def _sync_commands():
+    # Once per process (on_ready also fires on every reconnect). Synced to
+    # our own server, where it shows up straight away; a global sync can
+    # take up to an hour. Needs the bot to have been invited with the
+    # applications.commands scope - a 403 here means re-invite it with that.
+    global _commands_synced
+    if _commands_synced:
+        return
+    _commands_synced = True
+    try:
+        if DISCORD_HOME_GUILD_ID:
+            guild = discord.Object(id=int(DISCORD_HOME_GUILD_ID))
+            tree.copy_global_to(guild=guild)
+            synced = await tree.sync(guild=guild)
+        else:
+            synced = await tree.sync()
+        print(f"Slash commands synced: {', '.join('/' + c.name for c in synced)}", flush=True)
+    except Exception as e:
+        print(f"Slash command sync failed: {e!r}", flush=True)
+
+
 @client.event
 async def on_ready():
     print(f"Logged in as {client.user} (id: {client.user.id})")
@@ -1741,6 +1829,7 @@ async def on_ready():
     # push now - still worth confirming after one, via
     # `journalctl --user -u roboknights-bot` on the VPS.
     print(f"Running build: {BOT_BUILD}", flush=True)
+    await _sync_commands()
 
     # Backfill: read real past messages so the bot has context from
     # before it was even running, not just whatever's said while it's
