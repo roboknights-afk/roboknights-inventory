@@ -1,0 +1,25 @@
+name: Clio cleanup
+
+# Takes every removed (kicked) member - access_roles.is_removed - off the
+# current year's tab of the Clio roster. Run by hand from the Actions tab.
+# New removals on the Members page already do this themselves; this is for
+# sweeping out anyone removed before that, or after a failed attempt.
+# Logs show counts only, never names.
+on:
+  workflow_dispatch:
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install supabase gspread google-auth
+      - name: Remove removed members from Clio
+        run: python clio_cleanup.py
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          GOOGLE_SERVICE_ACCOUNT_JSON_B64: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON_B64 }}

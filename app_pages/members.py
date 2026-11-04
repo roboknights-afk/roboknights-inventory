@@ -9,9 +9,10 @@ from datetime import datetime, timezone
 
 import streamlit as st
 
+from clio_cleanup import remove_from_clio
 from shared import (
-    HOST_EMAILS, IST, cached_table, get_client, get_storage_client, invalidate_cache, removal_email,
-    removed_emails, safe_write, send_email,
+    HOST_EMAILS, IST, cached_table, get_client, get_sheets_write_client, get_storage_client,
+    invalidate_cache, removal_email, removed_emails, safe_write, send_email,
 )
 
 is_host = st.session_state.is_host
@@ -152,7 +153,17 @@ def _remove_members(targets):
             admin.auth.admin.delete_user(u["user_id"])
         except Exception:
             profile_note += "; their login wasn't deleted, but it's blocked"
-        report.append(f"- {name}: {mail_note}, {profile_note}.{events_note}")
+        # 6. Off the Clio roster (current year's tab), best-effort.
+        try:
+            gc = get_sheets_write_client()
+            if gc is None:
+                clio_note = " Not taken off Clio (the Google key isn't set up here)."
+            else:
+                n = remove_from_clio(gc, [email])
+                clio_note = " Taken off Clio." if n else " Wasn't on Clio."
+        except Exception as e:
+            clio_note = f" Couldn't take them off Clio ({e}) - do it by hand."
+        report.append(f"- {name}: {mail_note}, {profile_note}.{events_note}{clio_note}")
     invalidate_cache()
     return ["Removed from the club:"] + report
 

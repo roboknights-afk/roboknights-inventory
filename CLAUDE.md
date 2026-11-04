@@ -3101,3 +3101,13 @@ call for the host.
 
 Migrations to run (end of supabase_schema.sql): `ai_chat_messages.model`,
 `access_roles.is_removed`, `competition_rulebooks`, `club_faq`.
+
+## Removed members come off Clio (2026-11-04)
+`clio_cleanup.py` deletes the current Clio tab's rows (CLIO_CURRENT_TAB_ID) for
+given school emails, matched by admission number (col A, from the email
+prefix) or institutional email (col D), never by name; older per-year tabs are
+left alone. "Remove kicked members" on the Members page calls it as step 6,
+best-effort. The manual "Clio cleanup" workflow sweeps everyone with
+`access_roles.is_removed`. It prints counts only, since this repo's Actions logs
+are public. It doesn't import shared.py, so keep CLIO_SHEET_ID /
+CLIO_CURRENT_TAB_ID in step with it.
