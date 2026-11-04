@@ -98,7 +98,7 @@ supabase = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
 # whether the running bot is the current code. Unlike Railway, deploy-
 # bot.yml really does redeploy on every push now, but this is still
 # worth checking after one.
-BOT_BUILD = "2026-11-04 slash commands everywhere"
+BOT_BUILD = "2026-11-04 status countdown"
 
 # The bot now lives in a SECOND server it doesn't own — the Exun clan's,
 # in their RoboKnights channel, so their side can ask it about
@@ -1930,6 +1930,37 @@ async def help_command(interaction: discord.Interaction):
         await interaction.response.send_message(cc.HELP_TEXT, ephemeral=True)
 
 
+# --- Status countdown (2026-11-04) ------------------------------------------
+# The bot's status line counts down to the club's next competition ("NYRC
+# 2027 in 26 days"), refreshed hourly. No AI, no messages - just the status.
+PRESENCE_REFRESH_SECONDS = 3600
+_presence_started = False
+
+
+def _countdown_text():
+    return cc.countdown_status(
+        _rows("competitions", "competition_id,name,competition_date,is_past,not_attending"), _today_ist()
+    )
+
+
+async def _presence_loop():
+    while True:
+        try:
+            text = await asyncio.to_thread(_countdown_text)
+            await client.change_presence(activity=discord.CustomActivity(name=text) if text else None)
+        except Exception as e:
+            print(f"Status countdown update failed: {e!r}", flush=True)
+        await asyncio.sleep(PRESENCE_REFRESH_SECONDS)
+
+
+def _start_presence():
+    # Once per process - on_ready fires again on every reconnect.
+    global _presence_started
+    if not _presence_started:
+        _presence_started = True
+        asyncio.create_task(_presence_loop())
+
+
 async def _sync_commands():
     # Once per process (on_ready also fires on every reconnect). A global
     # sync, so the commands work in DMs and guest servers too; Discord can
@@ -1964,6 +1995,7 @@ async def on_ready():
     # `journalctl --user -u roboknights-bot` on the VPS.
     print(f"Running build: {BOT_BUILD}", flush=True)
     await _sync_commands()
+    _start_presence()
 
     # Backfill: read real past messages so the bot has context from
     # before it was even running, not just whatever's said while it's

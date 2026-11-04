@@ -86,6 +86,14 @@ text = cc.meetings_text("u2", MEETINGS, INVITEES, TODAY)
 check("meetings non-invitee doesn't see private", "Core Meet" in text, False)
 check("meetings unlinked sees open ones", "Open Meet" in cc.meetings_text(None, MEETINGS, INVITEES, TODAY), True)
 
+# --- the bot's status countdown -----------------------------------------------------
+check("countdown next dated comp", cc.countdown_status(COMPS, TODAY), "\N{CHEQUERED FLAG} Test Cup in 16 days")
+check("countdown tomorrow", cc.countdown_status(COMPS, date(2026, 11, 19)), "\N{CHEQUERED FLAG} Test Cup tomorrow")
+check("countdown today", cc.countdown_status(COMPS, date(2026, 11, 20)), "\N{CHEQUERED FLAG} Test Cup today!")
+check("countdown skips not attending",
+      cc.countdown_status([dict(COMPS[1], not_attending=True), COMPS[2]], TODAY), "\N{CHEQUERED FLAG} Later Fest in 31 days")
+check("countdown none", cc.countdown_status(COMPS[:1], TODAY), None)
+
 # --- length cap ---------------------------------------------------------------------
 many = [{"competition_id": i, "name": f"Comp {i} " + "x" * 60, "is_past": False,
          "registration_deadline": "2026-12-01"} for i in range(100)]

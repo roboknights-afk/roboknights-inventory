@@ -80,6 +80,20 @@ def next_comp_text(competitions, events, today):
     return _clip("\n".join(lines))
 
 
+def countdown_status(competitions, today):
+    # The bot's Discord status line (2026-11-04), e.g. "NYRC 2027 in 26
+    # days". The next dated competition the club is going to; None when
+    # there isn't one, which clears the status.
+    going = [c for c in upcoming_competitions(competitions, today)
+             if c.get("competition_date") and not c.get("not_attending")]
+    if not going:
+        return None
+    comp = going[0]
+    gap = (_d(comp["competition_date"]) - today).days
+    when = "today!" if gap == 0 else "tomorrow" if gap == 1 else f"in {gap} days"
+    return f"\N{CHEQUERED FLAG} {comp['name']} {when}"[:128]
+
+
 def deadlines_text(competitions, today):
     found = sorted(
         (c for c in competitions
