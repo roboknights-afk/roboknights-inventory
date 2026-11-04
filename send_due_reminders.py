@@ -19,6 +19,7 @@ from dotenv import load_dotenv
 from supabase import create_client
 
 from email_theme import build_message
+from reminder_dms import bot_status_dm, consent_form_dm, send_dm
 
 load_dotenv()
 
@@ -183,7 +184,10 @@ def send_competition_reminders():
         print("No competitions tomorrow.")
         return
 
-    users = {u["user_id"]: u for u in client.table("users").select("user_id, name, email").execute().data}
+    users = {
+        u["user_id"]: u
+        for u in client.table("users").select("user_id, name, email, discord_user_id").execute().data
+    }
 
     for comp in competitions:
         events = (
@@ -216,6 +220,9 @@ def send_competition_reminders():
                     f"Log in to the app and update your bot's status before the "
                     f"competition.",
                 )
+                # And a DM, to them only (2026-11-04) - students see Discord
+                # sooner than email.
+                send_dm(user.get("discord_user_id"), bot_status_dm(comp["name"], event["name"]))
                 client.table("event_volunteers").update({"reminder_sent": True}).eq(
                     "volunteer_id", volunteer["volunteer_id"]
                 ).execute()
@@ -440,12 +447,48 @@ def send_unread_exun_reminders():
         print(f"Sent unread-Exun-channel reminder to {user['name']}")
 
 
+def send_consent_form_reminders():
+    # The day before an ONLINE intra-school form's date (stay back, or come
+    # in on a Saturday), DM each member whose guardian hasn't submitted it
+    # yet (2026-11-04). Once a day, so no "already sent" column is needed.
+    # Physical forms aren't tracked in the app, so they're skipped. DM only:
+    # the form's own email went out when it was made.
+    tomorrow = date.today() + timedelta(days=1)
+    try:
+        forms = (
+            client.table("intraschool_forms").select("*")
+            .eq("stay_date", tomorrow.isoformat()).eq("mode", "online").execute().data
+        )
+    except Exception as e:
+        print(f"Consent form reminders skipped ({e!r}).")
+        return
+    if not forms:
+        print("No online consent forms for tomorrow.")
+        return
+    linked = {
+        u["user_id"]: u
+        for u in client.table("users").select("user_id, name, discord_user_id").execute().data
+    }
+    for form in forms:
+        noun = "Saturday" if form.get("kind") == "saturday" else "stay-back"
+        when = tomorrow.strftime("%a %d %b")
+        pending = (
+            client.table("intraschool_form_members").select("user_id")
+            .eq("form_id", form["form_id"]).is_("submitted_at", "null").execute().data
+        )
+        for row in pending:
+            user = linked.get(row["user_id"])
+            if user and send_dm(user.get("discord_user_id"), consent_form_dm(noun, form["reason"], when)):
+                print(f"Sent consent form reminder DM to {user['name']}")
+
+
 send_reminders_for(2, "reminder_2day_sent")
 send_reminders_for(1, "reminder_1day_sent")
 send_competition_reminders()
 send_registration_deadline_reminders()
 send_unread_query_reminders()
 send_unread_exun_reminders()
+send_consent_form_reminders()
 
 if discord_failures:
     print(f"Discord posts that did not go out: {', '.join(discord_failures)}")

@@ -14,6 +14,7 @@ from dotenv import load_dotenv
 from supabase import create_client
 
 from email_theme import build_message
+from reminder_dms import log_result_dm, send_dm
 
 load_dotenv()
 
@@ -45,7 +46,10 @@ competitions = (
 if not competitions:
     print("No competitions today.")
 else:
-    users = {u["user_id"]: u for u in client.table("users").select("user_id, name, email").execute().data}
+    users = {
+        u["user_id"]: u
+        for u in client.table("users").select("user_id, name, email, discord_user_id").execute().data
+    }
 
     for comp in competitions:
         events = (
@@ -97,4 +101,6 @@ else:
                     f"Log in to the app and add your result under Achievements "
                     f"(position, plus a photo/video link if you have one).",
                 )
+                # And a DM, to them only (2026-11-04).
+                send_dm(user.get("discord_user_id"), log_result_dm(comp["name"], event["name"]))
                 print(f"Sent achievement reminder to {user['name']} for {event['name']}")
