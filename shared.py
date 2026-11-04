@@ -2639,9 +2639,8 @@ def removal_email(name):
     body = "\n".join([
         f"Hi {name or 'there'},",
         "",
-        "This is a follow-up to our previous email. We are writing to let you know that you "
-        "have been removed from the RoboKnights club. "
-        "As a result, your access to the RoboKnights dashboard has been revoked and your "
+        "This is a follow-up to our previous email. Since you have been removed from the "
+        "RoboKnights club, your access to the RoboKnights dashboard has been revoked and your "
         "dashboard account has been deleted.",
         "",
         "What this means for you:",
@@ -2652,9 +2651,6 @@ def removal_email(name):
         "through the dashboard.",
         "- Any sign-ups you had for upcoming competitions or events have been withdrawn.",
         "- Creating a new account with the same email address will not restore access.",
-        "",
-        "If you still have any club parts or equipment with you, please return them to a "
-        "club host as soon as possible.",
         "",
         "Thank you for the time and effort you put into RoboKnights while you were a member. "
         "We wish you all the very best for whatever you take on next.",
