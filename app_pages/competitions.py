@@ -574,6 +574,67 @@ def _insert_matched_participants(client, event_id, teams, event_name, comp_name,
         notify_if_roster_complete(competition_id)
 
 
+# --- Withdrawing after being selected (2026-11-07) ---------------------------
+# Host's request: a member who was SELECTED for an event and withdraws must
+# give a reason; the reason goes to the hosts by email, the member is told it
+# counts against their standing, and every such withdrawal is kept in
+# event_withdrawals so the Members page can show who has withdrawn how many
+# times, and why.
+WITHDRAW_REASON_MIN_CHARS = 10
+WITHDRAW_NOTE = (
+    "**Withdrawing after being selected is recorded.** It will affect your standing "
+    "in the club, and it counts when promotions and demotions are decided. Your "
+    "reason is sent to the hosts."
+)
+
+
+def _withdrawal_count(user_id):
+    # How many times this member has withdrawn after being selected, or None
+    # if the table isn't there yet (migration not run).
+    try:
+        return sum(1 for w in cached_table("event_withdrawals") if w["user_id"] == user_id)
+    except Exception:
+        return None
+
+
+def _record_withdrawal(comp, event, reason):
+    # Names are copied in as text, so the record still reads properly after
+    # the competition or event is edited or deleted. Returns False (and the
+    # withdrawal still goes ahead) if the table isn't there yet - the host
+    # email then carries the reason and says it wasn't recorded.
+    try:
+        client.table("event_withdrawals").insert({
+            "user_id": current_user_id,
+            "competition_id": comp["competition_id"],
+            "event_id": event["event_id"],
+            "competition_name": comp["name"],
+            "event_name": event["name"],
+            "reason": reason,
+        }).execute()
+        return True
+    except Exception as err:
+        print(f"Couldn't record a withdrawal (has the event_withdrawals migration run?): {err!r}", flush=True)
+        return False
+
+
+def _email_hosts_withdrawal(comp, event, reason, recorded):
+    volunteer_name = user_name_by_id.get(current_user_id, "A member")
+    # Same recipients as before this change: hosts with a member account.
+    host_emails = [email for uid, email in user_email_by_id.items() if email in HOST_EMAILS]
+    count = _withdrawal_count(current_user_id) if recorded else None
+    if count:
+        tally = f"This is their withdrawal no. {count} after being selected. See Members -> Withdrawals for the full record."
+    else:
+        tally = "Note: this withdrawal could NOT be saved to the withdrawal record (the database table is missing), so keep this email."
+    body = (
+        f"{volunteer_name} was selected for {event['name']} at {comp['name']}, but just withdrew. "
+        f"You may want to pick a replacement.\n\n"
+        f"Their reason:\n{reason}\n\n{tally}"
+    )
+    for host_email in host_emails:
+        send_email(host_email, f"{volunteer_name} withdrew: {event['name']} at {comp['name']}", body)
+
+
 def _send_selected_email(user_id, event_name, comp_name):
     send_email(
         user_email_by_id.get(user_id),
@@ -2114,39 +2175,51 @@ def render_competition_card(comp):
                                 )
                                 confirming = st.session_state.withdrawing_event_id == e["event_id"]
                                 if confirming:
+                                    was_selected = bool(my_row and my_row.get("selected"))
                                     warning = f"Withdraw from {e['name']}?"
-                                    if my_row and my_row.get("selected"):
+                                    if was_selected:
                                         warning += (
                                             " You're currently **selected** for this event — "
                                             "the host will be notified so they can find a replacement."
                                         )
                                     st.warning(warning)
+                                    # Withdrawing AFTER being selected needs a reason
+                                    # (host's request, 2026-11-07): it goes in the
+                                    # host email and in the withdrawal record on the
+                                    # Members page. Withdrawing while only volunteered
+                                    # (not selected yet) stays one click, as before.
+                                    reason = ""
+                                    if was_selected:
+                                        st.error(WITHDRAW_NOTE, icon=":material/gavel:")
+                                        reason = st.text_area(
+                                            "Why are you withdrawing? (required)",
+                                            key=f"withdraw_reason_{e['event_id']}",
+                                            max_chars=500,
+                                            placeholder="Give the actual reason - the host will read this.",
+                                        )
                                     wcol1, wcol2 = st.columns([1, 1])
                                     if wcol1.button(
                                         "Confirm withdraw", key=f"confirm_withdraw_{e['event_id']}",
                                         icon=":material/close:", type="primary",
                                     ):
+                                        if was_selected and len(reason.strip()) < WITHDRAW_REASON_MIN_CHARS:
+                                            st.error(
+                                                f"Please give a proper reason (at least "
+                                                f"{WITHDRAW_REASON_MIN_CHARS} characters) before withdrawing."
+                                            )
+                                            st.stop()
                                         with _safe_write("withdraw from this event"):
-                                            was_selected = bool(my_row and my_row.get("selected"))
+                                            recorded = True
+                                            if was_selected:
+                                                recorded = _record_withdrawal(comp, e, reason.strip())
                                             client.table("event_volunteers").delete().eq(
                                                 "event_id", e["event_id"]
                                             ).eq("user_id", current_user_id).execute()
                                             invalidate_cache()
                                             if was_selected:
-                                                volunteer_name = user_name_by_id.get(current_user_id, "A member")
-                                                host_emails = [
-                                                    email for uid, email in user_email_by_id.items()
-                                                    if email in HOST_EMAILS
-                                                ]
-                                                for host_email in host_emails:
-                                                    send_email(
-                                                        host_email,
-                                                        f"{volunteer_name} withdrew: {e['name']} at {comp['name']}",
-                                                        f"{volunteer_name} was selected for {e['name']} at "
-                                                        f"{comp['name']}, but just withdrew. You may want to "
-                                                        f"pick a replacement.",
-                                                    )
+                                                _email_hosts_withdrawal(comp, e, reason.strip(), recorded)
                                             st.session_state.withdrawing_event_id = None
+                                            st.session_state.pop(f"withdraw_reason_{e['event_id']}", None)
                                             st.session_state.volunteer_message = f"Withdrew from {e['name']}."
                                             st.rerun()
                                     if wcol2.button(

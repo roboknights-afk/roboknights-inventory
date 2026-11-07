@@ -11,7 +11,7 @@ import streamlit as st
 
 from clio_cleanup import remove_from_clio
 from shared import (
-    HOST_EMAILS, IST, cached_table, discord_id_problem, get_client, get_sheets_write_client,
+    HOST_EMAILS, IST, cached_table, discord_id_problem, format_ist, get_client, get_sheets_write_client,
     get_storage_client, invalidate_cache, removal_email, removed_emails, safe_write, send_email,
 )
 
@@ -604,3 +604,67 @@ else:
                         st.session_state.pop("kick_member_ids", None)
                         st.session_state.pop("kick_confirm", None)
                         st.rerun()
+
+        # --- Withdrawals after selection (2026-11-07) ----------------------
+        # Every time a member who was SELECTED for an event withdrew, with the
+        # reason they had to give (Competitions page). Hosts only - reasons
+        # can be personal. Kept for promotion/demotion decisions.
+        with st.expander(":material/event_busy: Withdrawals after selection"):
+            try:
+                withdrawals = sorted(
+                    cached_table("event_withdrawals"), key=lambda w: w["created_at"], reverse=True
+                )
+            except Exception:
+                withdrawals = None
+            if withdrawals is None:
+                st.warning(
+                    "Needs a one-time database change first: run the `event_withdrawals` "
+                    "statement at the end of supabase_schema.sql in Supabase's SQL editor. "
+                    "Until then withdrawals still work and the reason is emailed to hosts, "
+                    "but nothing is recorded here."
+                )
+            elif not withdrawals:
+                st.caption("No one has withdrawn after being selected yet.")
+            else:
+                name_by_id = {u["user_id"]: u["name"] for u in users}
+                per_member = {}
+                for w in withdrawals:
+                    per_member.setdefault(w["user_id"], []).append(w)
+                st.caption(
+                    f"{len(withdrawals)} withdrawal(s) by {len(per_member)} member(s). "
+                    "Most withdrawals first."
+                )
+                st.dataframe(
+                    [
+                        {
+                            "Member": name_by_id.get(uid, "Removed member"),
+                            "Withdrawals": len(rows),
+                            "Last one": format_ist(rows[0]["created_at"]),
+                            "Last event": f"{rows[0]['event_name']} at {rows[0]['competition_name']}",
+                        }
+                        for uid, rows in sorted(per_member.items(), key=lambda kv: -len(kv[1]))
+                    ],
+                    hide_index=True,
+                    width="stretch",
+                )
+                who = st.selectbox(
+                    "Show every withdrawal for",
+                    options=["Everyone"] + [uid for uid in per_member],
+                    format_func=lambda uid: uid if uid == "Everyone" else name_by_id.get(uid, "Removed member"),
+                    key="withdrawals_member_filter",
+                )
+                st.dataframe(
+                    [
+                        {
+                            "When": format_ist(w["created_at"]),
+                            "Member": name_by_id.get(w["user_id"], "Removed member"),
+                            "Competition": w["competition_name"],
+                            "Event": w["event_name"],
+                            "Reason": w["reason"],
+                        }
+                        for w in withdrawals
+                        if who == "Everyone" or w["user_id"] == who
+                    ],
+                    hide_index=True,
+                    width="stretch",
+                )

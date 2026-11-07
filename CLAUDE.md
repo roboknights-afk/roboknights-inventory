@@ -3154,3 +3154,22 @@ public repo.
 - **Not changed, on purpose:** the "I don't talk about that here" filter. The
   questions it blocked were about the sister club's event, which the standing
   no-Exun rule covers.
+
+## Withdrawing after selection needs a reason (2026-11-07)
+
+Host's request. On the Competitions page, a member who is **selected** for an
+event and clicks Withdraw now has to type a reason (at least 10 characters).
+They also see a note that it is recorded, affects their standing in the club,
+and counts towards promotions and demotions. Withdrawing while only
+volunteered (not selected) stays one click, as before.
+
+- The hosts' email (same recipients as before: hosts with a member account)
+  now includes the reason and "withdrawal no. N" for that member.
+- Every such withdrawal is a row in `event_withdrawals` (migration at the end
+  of `supabase_schema.sql`). Competition and event names are copied in as
+  text, so the record survives the competition being edited or deleted.
+- Members page -> "Withdrawals after selection" (hosts only, since reasons can
+  be personal) shows a count per member, then every withdrawal with its
+  reason, filterable by member.
+- If the migration hasn't run, withdrawing still works. The email then says
+  it couldn't be recorded, so the email is the only copy of the reason.
