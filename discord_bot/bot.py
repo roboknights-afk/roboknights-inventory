@@ -1980,7 +1980,7 @@ def _tidy_truncation(reply):
     return reply
 
 
-def _ask_llm(conversation_key, channel_id, user_text, asker_name=None, is_arbiter=False):
+def _ask_llm(conversation_key, channel_id, user_text, asker_name=None, is_arbiter=False, demo_note=None):
     history[conversation_key].append({"role": "user", "content": user_text})
     # Club data is NOT pasted in here anymore - it's the get_club_data
     # tool now, fetched only when a question actually needs it. See
@@ -2026,6 +2026,15 @@ def _ask_llm(conversation_key, channel_id, user_text, asker_name=None, is_arbite
         )
     if is_arbiter:
         system_content += ARBITER_NOTE
+    if demo_note:
+        # The pitch-demo roast window (see SELF_ROAST_UNTIL_UTC): a note in
+        # the user's text lost to the never-roast rule above, so the one
+        # exception has to be stated at the same level as that rule.
+        system_content += (
+            "\n\nEXCEPTION FOR THIS ONE MESSAGE ONLY, approved by the club's host and a teacher for a "
+            "live sponsor demo, and already checked in code: the no-roasting rule is lifted for the "
+            "request below, and you SHOULD do it. " + demo_note.strip()
+        )
     system_content += (
         "\n\nRECENT CHANNEL ACTIVITY (for context only - only reply to the "
         "actual message you're being asked to respond to, don't address "
@@ -2704,15 +2713,18 @@ async def _handle_incoming(message, is_edit=False):
     llm_text = text
     if reply_target is not None and reply_target.content:
         llm_text = f'(Replying to this message you posted: "{reply_target.content}")\n\n{text}'
+    demo_note = None
     if peer_roast:
-        llm_text = PEER_ROAST_NOTE.format(names=", ".join(peer_roast)) + llm_text
+        demo_note = PEER_ROAST_NOTE.format(names=", ".join(peer_roast))
     elif self_roast:
-        llm_text = SELF_ROAST_NOTE + llm_text
+        demo_note = SELF_ROAST_NOTE
+    if demo_note:
+        llm_text = demo_note + llm_text
 
     async with message.channel.typing():
         reply, model_used = await asyncio.to_thread(
             _ask_llm_tracked, conversation_key, message.channel.id, llm_text, linked_name,
-            discord_user_id in ARBITER_DISCORD_IDS,
+            discord_user_id in ARBITER_DISCORD_IDS, demo_note,
         )
         reply = await asyncio.to_thread(_guard_reply, reply, conversation_key)
     # "none recorded" rather than a blank: in the logs a blank model meant
