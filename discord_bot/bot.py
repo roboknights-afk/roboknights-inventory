@@ -701,6 +701,37 @@ def _targets_a_person(lowered):
     return bool(pattern and pattern.search(lowered))
 
 
+# One-off "roast me" window (2026-11-10, sponsor pitch): the arbiter account
+# may ask the bot to roast THEMSELVES - nobody else - until this time (UTC).
+# Asked for by that account's owner, with a teacher's OK, for a 10-minute
+# demo. Any other person named in the message still gets the normal
+# refusal, and every other account is unaffected. After the cutoff this is
+# inert; delete it once the pitch is over.
+SELF_ROAST_UNTIL_UTC = datetime(2026, 11, 9, 21, 0, tzinfo=timezone.utc)
+SELF_ROAST_OWN_NAMES = ("naitik", "jindal")
+SELF_ROAST_ME_RE = re.compile(r"\b(roast|insult|diss|ragebait|rage\s*bait|make fun of|joke about)\s+(me|myself)\b")
+SELF_ROAST_NOTE = (
+    "(One-off, approved by a host for a live demo: the person asking wants YOU to roast THEM - "
+    "only them. Give a short, playful, good-natured roast of the person asking: their robotics, "
+    "coding, building this bot and dashboard, being up at 2am, that kind of thing. Nothing about "
+    "appearance, body, family, race, religion or anything personal and hurtful, and do not mention "
+    "or roast anyone else at all.)\n\n"
+)
+
+
+def _self_roast_allowed(text, discord_user_id):
+    if discord_user_id not in ARBITER_DISCORD_IDS:
+        return False
+    if datetime.now(timezone.utc) >= SELF_ROAST_UNTIL_UTC:
+        return False
+    lowered = text.lower()
+    if not SELF_ROAST_ME_RE.search(lowered):
+        return False
+    for own in SELF_ROAST_OWN_NAMES:
+        lowered = re.sub(rf"\b{own}\b", " ", lowered)
+    return not _targets_a_person(lowered)
+
+
 def _roast_request(text):
     lowered = text.lower()
     if any(re.search(p, lowered) for p in ROAST_REQUEST_PATTERNS):
@@ -2532,7 +2563,8 @@ async def _handle_incoming(message, is_edit=False):
     # is kept out of `history` entirely too - leaving a rejected request
     # in the conversation gives the next reply something to build on
     # ("about that roast..."), which is exactly what we don't want.
-    if _roast_request(text):
+    self_roast = _self_roast_allowed(text, discord_user_id)
+    if _roast_request(text) and not self_roast:
         _log_chat("assistant", ROAST_REFUSAL, discord_user_id, discord_channel_id, linked_user_id)
         await _send(message.channel, ROAST_REFUSAL)
         return
@@ -2631,6 +2663,8 @@ async def _handle_incoming(message, is_edit=False):
     llm_text = text
     if reply_target is not None and reply_target.content:
         llm_text = f'(Replying to this message you posted: "{reply_target.content}")\n\n{text}'
+    if self_roast:
+        llm_text = SELF_ROAST_NOTE + llm_text
 
     async with message.channel.typing():
         reply, model_used = await asyncio.to_thread(
