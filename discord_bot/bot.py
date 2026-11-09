@@ -739,6 +739,37 @@ def _self_roast_allowed(text, discord_user_id, discord_channel_id=None):
     return not _targets_a_person(lowered)
 
 
+PEER_ROAST_NOTE = (
+    "(One-off, approved by a host for a live demo in a private test channel: the person asking wants "
+    "you to roast {names}, who are testers in this channel. Give a short, playful, good-natured roast "
+    "of only them. Nothing about appearance, body, family, race, religion, gender or anything personal "
+    "and hurtful, and do not mention or roast anyone else.)\n\n"
+)
+
+
+def _peer_roast_targets(message, text):
+    # The demo channel only, before the cutoff: a roast of people who are
+    # @mentioned AND are members of that server (the testers). Typed names,
+    # bots, staff and other protected names still get the normal refusal.
+    # Returns the display names to roast, or [] when not allowed.
+    if str(message.channel.id) not in SELF_ROAST_CHANNEL_IDS:
+        return []
+    if datetime.now(timezone.utc) >= SELF_ROAST_UNTIL_UTC:
+        return []
+    targets = [m for m in message.mentions if m.id != client.user.id]
+    if not targets or any(m.bot or not isinstance(m, discord.Member) for m in targets):
+        return []
+    rest = text.lower()
+    for m in targets:
+        rest = rest.replace(m.display_name.lower(), " ")
+    if any(re.search(p, rest) for p in PROTECTED_ENTITY_PATTERNS):
+        return []
+    pattern = _member_name_pattern()
+    if pattern and pattern.search(rest):
+        return []
+    return [m.display_name for m in targets]
+
+
 def _roast_request(text):
     lowered = text.lower()
     if any(re.search(p, lowered) for p in ROAST_REQUEST_PATTERNS):
@@ -2571,7 +2602,10 @@ async def _handle_incoming(message, is_edit=False):
     # in the conversation gives the next reply something to build on
     # ("about that roast..."), which is exactly what we don't want.
     self_roast = _self_roast_allowed(text, discord_user_id, discord_channel_id)
-    if _roast_request(text) and not self_roast:
+    asks_for_roast = _roast_request(text) or re.search(
+        r"\b(roast|ragebait|rage\s*bait|diss|make fun of)\b", text.lower())
+    peer_roast = _peer_roast_targets(message, text) if asks_for_roast else []
+    if _roast_request(text) and not self_roast and not peer_roast:
         _log_chat("assistant", ROAST_REFUSAL, discord_user_id, discord_channel_id, linked_user_id)
         await _send(message.channel, ROAST_REFUSAL)
         return
@@ -2670,7 +2704,9 @@ async def _handle_incoming(message, is_edit=False):
     llm_text = text
     if reply_target is not None and reply_target.content:
         llm_text = f'(Replying to this message you posted: "{reply_target.content}")\n\n{text}'
-    if self_roast:
+    if peer_roast:
+        llm_text = PEER_ROAST_NOTE.format(names=", ".join(peer_roast)) + llm_text
+    elif self_roast:
         llm_text = SELF_ROAST_NOTE + llm_text
 
     async with message.channel.typing():
