@@ -711,20 +711,23 @@ def _targets_a_person(lowered):
 # demo. Any other person named in the message still gets the normal
 # refusal, and every other account is unaffected. After the cutoff this is
 # inert; delete it once the pitch is over.
-SELF_ROAST_UNTIL_UTC = datetime(2026, 11, 9, 21, 0, tzinfo=timezone.utc)
+SELF_ROAST_UNTIL_UTC = datetime(2026, 11, 9, 21, 15, tzinfo=timezone.utc)
+# Everyone in the pitch demo channel may ask for a roast of themselves too
+# (the testers there), still never of anyone else.
+SELF_ROAST_CHANNEL_IDS = {"1506006317771522089"}
 SELF_ROAST_OWN_NAMES = ("naitik", "jindal")
 SELF_ROAST_ME_RE = re.compile(r"\b(roast|insult|diss|ragebait|rage\s*bait|make fun of|joke about)\s+(me|myself)\b")
 SELF_ROAST_NOTE = (
     "(One-off, approved by a host for a live demo: the person asking wants YOU to roast THEM - "
-    "only them. Give a short, playful, good-natured roast of the person asking: their robotics, "
-    "coding, building this bot and dashboard, being up at 2am, that kind of thing. Nothing about "
+    "only them. Give a short, playful, good-natured roast of the person asking, based on what they "
+    "said and their display name: their robotics, coding, being up at 2am, that kind of thing. Nothing about "
     "appearance, body, family, race, religion or anything personal and hurtful, and do not mention "
     "or roast anyone else at all.)\n\n"
 )
 
 
-def _self_roast_allowed(text, discord_user_id):
-    if discord_user_id not in ARBITER_DISCORD_IDS:
+def _self_roast_allowed(text, discord_user_id, discord_channel_id=None):
+    if discord_user_id not in ARBITER_DISCORD_IDS and discord_channel_id not in SELF_ROAST_CHANNEL_IDS:
         return False
     if datetime.now(timezone.utc) >= SELF_ROAST_UNTIL_UTC:
         return False
@@ -2567,7 +2570,7 @@ async def _handle_incoming(message, is_edit=False):
     # is kept out of `history` entirely too - leaving a rejected request
     # in the conversation gives the next reply something to build on
     # ("about that roast..."), which is exactly what we don't want.
-    self_roast = _self_roast_allowed(text, discord_user_id)
+    self_roast = _self_roast_allowed(text, discord_user_id, discord_channel_id)
     if _roast_request(text) and not self_roast:
         _log_chat("assistant", ROAST_REFUSAL, discord_user_id, discord_channel_id, linked_user_id)
         await _send(message.channel, ROAST_REFUSAL)
