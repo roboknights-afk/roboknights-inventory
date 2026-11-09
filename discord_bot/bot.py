@@ -120,6 +120,10 @@ BOT_BUILD = "2026-11-04 small talk on the small model"
 # this bot did before, never to silently ignoring our own server.
 DISCORD_HOME_GUILD_ID = os.environ.get("DISCORD_HOME_GUILD_ID", "").strip()
 DISCORD_GUEST_CHANNEL_IDS = {
+    # The sponsor-pitch demo server's one channel (2026-11-10), on top of
+    # whatever the VPS .env lists. Remove once the pitch is done.
+    "1506006317771522089",
+} | {
     c.strip() for c in os.environ.get("DISCORD_GUEST_CHANNEL_IDS", "").split(",") if c.strip()
 }
 
