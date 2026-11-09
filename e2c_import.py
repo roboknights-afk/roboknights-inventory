@@ -26,6 +26,8 @@
 # our own `users` table (by name, ignoring tags like "[Ad-Hoc]") get
 # auto-added at all.
 
+import base64
+import json
 import os
 import re
 from datetime import date
@@ -128,12 +130,51 @@ class _NameMatcher:
         return None
 
 
-def _api_get(path, api_key, **params):
-    resp = requests.get(
-        f"https://sheets.googleapis.com/v4/spreadsheets/{path}",
-        params={"key": api_key, **params},
+class SheetReadError(Exception):
+    pass
+
+
+def _service_account_session():
+    # The club's Google service account (the one the Clio sync uses), or
+    # None if it isn't configured here.
+    b64 = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON_B64")
+    if not b64:
+        return None
+    from google.auth.transport.requests import AuthorizedSession
+    from google.oauth2.service_account import Credentials
+
+    info = json.loads(base64.b64decode(b64))
+    creds = Credentials.from_service_account_info(
+        info, scopes=["https://www.googleapis.com/auth/spreadsheets.readonly"]
     )
-    resp.raise_for_status()
+    return AuthorizedSession(creds)
+
+
+def _api_get(path, api_key, **params):
+    # The API key only works while the sheet is shared as "Anyone with the
+    # link can view". On 2026-11-10 that sharing was turned off and every
+    # read 403'd - so on a 401/403 this retries as the service account,
+    # which works when the sheet is shared with that one address instead
+    # (the more private option).
+    #
+    # Errors are re-raised WITHOUT the request URL: requests' own message
+    # includes the full URL, ?key=... and all, and the page showed it to
+    # whoever was looking at the import dialog.
+    url = f"https://sheets.googleapis.com/v4/spreadsheets/{path}"
+    resp = requests.get(url, params={"key": api_key, **params}, timeout=30)
+    if resp.status_code in (401, 403):
+        session = _service_account_session()
+        if session is not None:
+            resp = session.get(url, params=params, timeout=30)
+    if resp.status_code in (401, 403):
+        raise SheetReadError(
+            "Google says this account can't open the E2C sheet "
+            f"(HTTP {resp.status_code}). Its sharing was probably changed - ask the "
+            "sheet's owner to share it with the club's service account (Viewer), or "
+            "set it back to 'Anyone with the link can view'."
+        )
+    if not resp.ok:
+        raise SheetReadError(f"Google Sheets returned HTTP {resp.status_code}.")
     return resp.json()
 
 

@@ -3173,3 +3173,21 @@ volunteered (not selected) stays one click, as before.
   reason, filterable by member.
 - If the migration hasn't run, withdrawing still works. The email then says
   it couldn't be recorded, so the email is the only copy of the reason.
+
+## E2C sheet 403 + the API key shown on the page (2026-11-10)
+
+The E2C import started failing with `403 Forbidden`. Probed directly: the
+API key is valid, but Google answers "The caller does not have permission"
+- the sheet is no longer shared "Anyone with the link can view", which is
+the only way an API key can read it. The club's service account couldn't
+read it either (it was never shared with it). The fix is the sheet
+owner's: share it with the service account (Viewer - the more private
+option) or turn link sharing back on.
+
+`_api_get` in `e2c_import.py` now retries as the service account on a
+401/403, so either kind of sharing works with no further code change.
+It also raises `SheetReadError` with a plain message instead of letting
+`requests`' own error through - that one includes the full request URL,
+`?key=...` and all, and the import dialog and the slip dialog both printed
+it on screen. **Never show a raw `requests` exception to a user** when the
+URL carries a key.
