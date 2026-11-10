@@ -371,3 +371,39 @@ with side_col:
                         icon=":material/check_circle:",
                     )
                     st.rerun()
+
+    # Opting out of the bulk competition emails (2026-11-10, host's
+    # request). Only the two emails that go to everyone in a grade range
+    # or the whole club stop: "new event you're eligible for" and
+    # competition date changes (still sent if you're in that competition).
+    # Anything about YOU - selected, team changes, your parts, your
+    # queries - plus announcements and meetings always come through.
+    if not is_read_only and my_row is not None:
+        st.subheader(":material/mail: Emails")
+        with st.container(border=True, key="rkcard_home_emails"):
+            if "unsubscribed_nonessential" not in my_row:
+                st.caption("Email preferences aren't switched on yet - a host needs to run a database update.")
+            else:
+                currently_off = bool(my_row.get("unsubscribed_nonessential"))
+                off = st.toggle(
+                    "Unsubscribe from non-essential emails",
+                    value=currently_off,
+                    key="home_unsub_nonessential",
+                )
+                st.caption(
+                    "Stops the general competition emails (new events you could join, date changes "
+                    "for competitions you're not in). You'll still get emails about you - being "
+                    "selected, team changes, your parts and queries - plus announcements and meetings."
+                )
+                if off != currently_off:
+                    with safe_write("change your email preferences"):
+                        get_client().table("users").update({
+                            "unsubscribed_nonessential": off,
+                        }).eq("user_id", current_user_id).execute()
+                        invalidate_cache()
+                    st.toast(
+                        "Unsubscribed from non-essential emails." if off
+                        else "You'll get every email again.",
+                        icon=":material/check_circle:",
+                    )
+                    st.rerun()

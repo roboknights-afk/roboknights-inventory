@@ -150,9 +150,16 @@ def _notify_date_change(name, old_date, new_date):
     # actually came from.
     old_str = old_date.strftime("%d %b %Y") if old_date else "no date set"
     new_str = new_date.strftime("%d %b %Y")
+    # Members who unsubscribed from non-essential emails (Home page) skip
+    # this - unless they volunteered for this competition, for whom the
+    # date change is about them.
+    comp_ids = {c["competition_id"] for c in cached_table("competitions") if c["name"] == name.strip()}
+    event_ids = {e["event_id"] for e in cached_table("competition_events") if e["competition_id"] in comp_ids}
+    involved = {v["user_id"] for v in cached_table("event_volunteers") if v["event_id"] in event_ids}
     all_emails = [
-        email for email in user_email_by_id.values()
-        if email and email not in EXUN_EMAILS
+        u["email"] for u in cached_table("users")
+        if u.get("email") and u["email"] not in EXUN_EMAILS
+        and (not u.get("unsubscribed_nonessential") or u["user_id"] in involved)
     ]
     for email in all_emails:
         send_email(
@@ -174,6 +181,7 @@ def _email_new_event(comp_name, event_name, min_grade, max_grade):
         u for u in cached_table("users")
         if u.get("grade") is not None and min_grade <= u["grade"] <= max_grade
         and u["email"] not in EXUN_EMAILS
+        and not u.get("unsubscribed_nonessential")  # opted out on the Home page
     ]
     for u in eligible_users:
         send_email(

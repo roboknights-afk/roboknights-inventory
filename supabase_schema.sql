@@ -1271,3 +1271,9 @@ create table if not exists event_withdrawals (
     reason           text not null,
     created_at       timestamptz not null default now()
 );
+
+-- Unsubscribe from non-essential emails (2026-11-10): set by the member on
+-- the Home page. Skips the bulk competition emails ("new event you're
+-- eligible for", date changes for competitions they're not in); personal
+-- emails, announcements and meetings still go out.
+alter table users add column if not exists unsubscribed_nonessential boolean not null default false;

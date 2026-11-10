@@ -3191,3 +3191,16 @@ It also raises `SheetReadError` with a plain message instead of letting
 `?key=...` and all, and the import dialog and the slip dialog both printed
 it on screen. **Never show a raw `requests` exception to a user** when the
 URL carries a key.
+
+## Unsubscribe from non-essential emails (2026-11-10)
+
+A toggle on the Home page ("Emails") sets `users.unsubscribed_nonessential`.
+It stops only the two BULK competition emails - "New event you're eligible
+for" (`_email_new_event`) and "Date change" (`_notify_date_change`, still
+sent to anyone who volunteered for that competition). Everything addressed
+to the person (selected, team change, not attending, bot-status and result
+reminders, parts, queries, messages, merch, website review), plus
+announcements and meetings, always goes out - the host's rule was "only
+mails where the person is tagged, announcements or meetings". **Any new
+bulk email added later should check this flag too.** Until the migration
+runs, the Home section says so instead of showing the toggle.
