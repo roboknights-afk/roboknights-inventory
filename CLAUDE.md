@@ -3223,3 +3223,9 @@ event's class range, not just volunteers (volunteers listed first, the rest
 marked "(didn't volunteer)"; Exun, staff and disabled accounts never
 offered). Picking a non-volunteer inserts their `event_volunteers` row
 already `selected` and sends the usual selected email.
+
+Same day: someone listed under more than one club (17 people - e.g. on the
+Exun team and in D2S) is offered once per club, labelled "[also in X]", and
+the host picks which club they go as. Options are keyed "adm|club"; picking
+the same person twice is refused on save, and switching an already-picked
+person's club just relabels their row (no second email).

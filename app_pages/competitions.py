@@ -681,14 +681,14 @@ def _sister_club_students():
             # looked shouted next to everyone else's.
             name = s["name"].title() if s["name"].isupper() else s["name"]
             found.append({**s, "name": name, "grade": int(s["cls"])})
-    # Some Exun team members are ALSO listed under their own club further
-    # down the sheet (same admission no.). One entry per person, the Exun
-    # one winning, or the picker would have two of them under one key.
-    by_adm = {}
+    # Some people are listed under more than one club (e.g. on the Exun team
+    # AND further down under D2S). They're kept once PER CLUB - the
+    # Finalize dialog lets the host pick which club they go as - with exact
+    # repeats of the same person in the same club dropped.
+    by_key = {}
     for s in found:
-        if s["adm"] not in by_adm or s["club"] == "Exun":
-            by_adm[s["adm"]] = s
-    return sorted(by_adm.values(), key=lambda s: s["name"].lower())
+        by_key.setdefault((s["adm"], s["club"]), s)
+    return sorted(by_key.values(), key=lambda s: (s["name"].lower(), s["club"] != "Exun", s["club"]))
 
 
 def _guest_rows():
@@ -1874,6 +1874,10 @@ def render_finalize_dialog(comp, e, event_volunteers, cap, label_by_uid):
 
     # Sister-club students for this event (see SISTER_CLUBS above): anyone
     # in the event's class range, volunteered or not.
+    # Someone in more than one club (e.g. on the Exun team AND in D2S) is
+    # offered once per club, and the host picks which one they go as - so
+    # an option is "admission no.|club", and only one per person may be
+    # picked.
     existing_guests = [g for g in _guest_rows() if g["event_id"] == e["event_id"]]
     guest_by_adm = {g["adm"]: g for g in existing_guests}
     try:
@@ -1884,22 +1888,35 @@ def render_finalize_dialog(comp, e, event_volunteers, cap, label_by_uid):
         sheet_error = None
     except Exception as err:
         candidates, sheet_error = [], str(err)
-    option_by_adm = {s["adm"]: s for s in candidates}
+
+    def _key(row):
+        return f"{row['adm']}|{row['club']}"
+
+    option_by_key = {_key(s): s for s in candidates}
     for g in existing_guests:  # already picked, even if they've since left the sheet
-        option_by_adm.setdefault(g["adm"], g)
+        option_by_key.setdefault(_key(g), g)
+    clubs_per_adm = {}
+    for k, s in option_by_key.items():
+        clubs_per_adm.setdefault(s["adm"], []).append(s["club"])
     if sheet_error:
         st.warning(f"Couldn't read the sister clubs' list: {sheet_error}")
-    guest_adms = st.multiselect(
+
+    def _option_label(k):
+        s = option_by_key[k]
+        text = f"{guest_label(s)} - {s.get('cls') or s.get('grade')}{s.get('sec') or s.get('section') or ''}"
+        if len(clubs_per_adm.get(s["adm"], [])) > 1:
+            text += f"  [also in {', '.join(c for c in clubs_per_adm[s['adm']] if c != s['club'])}]"
+        return text
+
+    guest_keys = st.multiselect(
         f"From sister clubs ({', '.join(SISTER_CLUBS)}), Class {e['min_grade']}-{e['max_grade']}",
-        options=list(option_by_adm),
-        default=list(guest_by_adm),
-        format_func=lambda adm: (
-            f"{guest_label(option_by_adm[adm])} - {option_by_adm[adm].get('cls') or option_by_adm[adm].get('grade')}"
-            f"{option_by_adm[adm].get('sec') or option_by_adm[adm].get('section') or ''}"
-        ),
+        options=list(option_by_key),
+        default=[_key(g) for g in existing_guests],
+        format_func=_option_label,
         placeholder="Search by name",
         key=f"finalize_guests_{e['event_id']}",
-        help="They don't need to have volunteered. Each one you add gets a 'you've been selected' email.",
+        help="They don't need to have volunteered. Someone in more than one club is listed once "
+             "per club - pick the club they'll go as. Each one you add gets a 'you've been selected' email.",
     )
 
     save_col, cancel_col = st.columns([1, 1])
@@ -1907,19 +1924,33 @@ def render_finalize_dialog(comp, e, event_volunteers, cap, label_by_uid):
         "Save selection", key=f"save_finalize_{e['event_id']}",
         icon=":material/check:", type="primary",
     ):
-        if len(finalize_ids) + len(guest_adms) > cap:
+        picked = {}  # adm -> chosen option
+        for k in guest_keys:
+            s = option_by_key[k]
+            if s["adm"] in picked:
+                st.error(f"{s['name']} is picked twice, under two clubs - keep just the one they'll go as.")
+                st.stop()
+            picked[s["adm"]] = s
+        if len(finalize_ids) + len(picked) > cap:
             st.error(
-                f"That's {len(finalize_ids) + len(guest_adms)} people for {cap} places - "
+                f"That's {len(finalize_ids) + len(picked)} people for {cap} places - "
                 "remove some before saving."
             )
             st.stop()
         with _safe_write("save this selection"):
-            new_guest_adms = [a for a in guest_adms if a not in guest_by_adm]
-            gone_guest_ids = [g["guest_id"] for a, g in guest_by_adm.items() if a not in guest_adms]
+            new_guest_adms = [a for a in picked if a not in guest_by_adm]
+            gone_guest_ids = [g["guest_id"] for a, g in guest_by_adm.items() if a not in picked]
+            # Same person, different club chosen: just relabel them - they
+            # were already told they're selected.
+            switched = [a for a in picked if a in guest_by_adm and picked[a]["club"] != guest_by_adm[a]["club"]]
             if gone_guest_ids:
                 client.table("event_guest_selections").delete().in_("guest_id", gone_guest_ids).execute()
+            for adm in switched:
+                client.table("event_guest_selections").update({"club": picked[adm]["club"]}).eq(
+                    "guest_id", guest_by_adm[adm]["guest_id"]
+                ).execute()
             for adm in new_guest_adms:
-                s = option_by_adm[adm]
+                s = picked[adm]
                 guest = {
                     "event_id": e["event_id"], "adm": adm, "name": s["name"], "club": s["club"],
                     "grade": s["grade"], "section": (s.get("sec") or "").upper() or None,
@@ -1928,7 +1959,7 @@ def render_finalize_dialog(comp, e, event_volunteers, cap, label_by_uid):
                 client.table("event_guest_selections").insert(guest).execute()
                 if guest["email"]:
                     _email_guest_selected(guest, comp, e)
-            if new_guest_adms or gone_guest_ids:
+            if new_guest_adms or gone_guest_ids or switched:
                 invalidate_cache()
                 notify_if_roster_complete(comp["competition_id"])
             previously_selected = {v["user_id"] for v in event_volunteers if v.get("selected")}
