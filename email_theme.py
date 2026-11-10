@@ -212,6 +212,9 @@ def render_html(subject, body):
 </body></html>"""
 
 
+REPLY_TO = "roboknights@dpsrkp.net"
+
+
 def build_message(sender, to_email, subject, body, cc=(), attachments=()):
     # The finished email: plain text + branded HTML (with the logo inline),
     # plus any (filename, bytes) attachments.
@@ -238,6 +241,11 @@ def build_message(sender, to_email, subject, body, cc=(), attachments=()):
         msg = related
     msg["Subject"] = subject
     msg["From"] = sender
+    # Replies go to the club's school address, not the Gmail account that
+    # sends (2026-11-10, host's request). Only Reply-To changes: sending
+    # "From" the school domain is what got mail quarantined before (see
+    # CLAUDE.md, "Email deliverability incident").
+    msg["Reply-To"] = REPLY_TO
     msg["To"] = to_email
     if cc:
         msg["Cc"] = ", ".join(cc)
