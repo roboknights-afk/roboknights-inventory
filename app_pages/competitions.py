@@ -651,7 +651,7 @@ def _email_hosts_withdrawal(comp, event, reason, recorded):
 # Stored in event_guest_selections (not event_volunteers, which needs a
 # users row), shown everywhere as "Name (Club)", counted against the event's
 # cap, and written to Nike's List. Each newly picked student gets an email.
-SISTER_CLUBS = ("D2S", "CubXL", "Digex", "Ad-Hoc")  # the sheet's CLUB column; "RK" rows are our own members
+SISTER_CLUBS = ("Exun", "D2S", "CubXL", "Digex", "Ad-Hoc")  # the sheet's CLUB column; "RK" rows are our own members
 
 
 @st.cache_data(ttl=600, show_spinner=False)
@@ -666,12 +666,29 @@ def _sister_club_students():
         raise RuntimeError("EXUN_DATA_SHEET_URL / GOOGLE_SERVICE_ACCOUNT_JSON_B64 isn't set on this server.")
     found = []
     for s in slip_roster.load_exun_students(sheet, sa_b64):
-        if s.get("club") in SISTER_CLUBS and str(s.get("cls", "")).strip().isdigit() and s.get("adm"):
+        # The Exun team itself sits at the top of the sheet with a serial
+        # number (1, 2, 3...) - or nothing - in the CLUB column instead of a
+        # club name, so those rows were all skipped at first.
+        club = (s.get("club") or "").strip()
+        if club.isdigit() or not club:
+            s = {**s, "club": "Exun"}
+        # A few have no admission no. on the sheet; the name stands in as
+        # the key so they can still be picked.
+        if not s.get("adm"):
+            s = {**s, "adm": "NAME:" + s["name"].strip().lower()}
+        if s.get("club") in SISTER_CLUBS and str(s.get("cls", "")).strip().isdigit():
             # Some names are typed in ALL CAPS on the sheet - "ANAYA SHARMA (D2S)"
             # looked shouted next to everyone else's.
             name = s["name"].title() if s["name"].isupper() else s["name"]
             found.append({**s, "name": name, "grade": int(s["cls"])})
-    return sorted(found, key=lambda s: s["name"].lower())
+    # Some Exun team members are ALSO listed under their own club further
+    # down the sheet (same admission no.). One entry per person, the Exun
+    # one winning, or the picker would have two of them under one key.
+    by_adm = {}
+    for s in found:
+        if s["adm"] not in by_adm or s["club"] == "Exun":
+            by_adm[s["adm"]] = s
+    return sorted(by_adm.values(), key=lambda s: s["name"].lower())
 
 
 def _guest_rows():
