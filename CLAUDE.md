@@ -3217,3 +3217,9 @@ boxes, count against the cap and toward "team names finalized", and get a
 "You've been selected" email (`_email_guest_selected`) when added. Removing
 one sends nothing. `slip_roster.load_exun_students` now also returns
 `club` and `email` (school email first). E2C sync never touches these rows.
+
+Same day: the dialog's RoboKnights box now offers **every** member in the
+event's class range, not just volunteers (volunteers listed first, the rest
+marked "(didn't volunteer)"; Exun, staff and disabled accounts never
+offered). Picking a non-volunteer inserts their `event_volunteers` row
+already `selected` and sends the usual selected email.

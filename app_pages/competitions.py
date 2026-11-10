@@ -1823,17 +1823,29 @@ def render_finalize_dialog(comp, e, event_volunteers, cap, label_by_uid):
             f":material/group: {len(already_selected_ids) + n_guests} of {cap} places filled"
             + (f" ({n_guests} from sister clubs)." if n_guests else ".")
         )
+    # Any RoboKnights member in the event's class range can be picked, not
+    # just volunteers (2026-11-10, host's request). Volunteers come first;
+    # everyone else is marked "didn't volunteer" so it's clear who asked.
+    # Exun, staff and disabled accounts are never offered.
+    volunteer_ids = [v["user_id"] for v in event_volunteers]
+    other_ids = [
+        u["user_id"] for u in sorted(cached_table("users"), key=lambda u: (u.get("name") or "").lower())
+        if u["user_id"] not in volunteer_ids
+        and u.get("grade") is not None and e["min_grade"] <= u["grade"] <= e["max_grade"]
+        and u.get("email") not in EXUN_EMAILS
+        and not u.get("is_staff") and not u.get("is_disabled")
+    ]
     if not event_volunteers:
-        st.caption("Nobody from RoboKnights has volunteered for this one yet.")
+        st.caption("Nobody from RoboKnights has volunteered for this one yet - you can still pick anyone below.")
 
     finalize_ids = st.multiselect(
-        "Finalize volunteers",
-        options=[v["user_id"] for v in event_volunteers],
+        f"RoboKnights members (volunteers first, then anyone in Class {e['min_grade']}-{e['max_grade']})",
+        options=volunteer_ids + other_ids,
         default=already_selected_ids,
         # Shows which sheet-team someone's on (e.g. "Naitik Jindal (Team 1)")
         # — a flat name list made it hard to tell teammates apart while
         # picking who's finalized.
-        format_func=lambda uid: label_by_uid.get(uid, "Unknown"),
+        format_func=lambda uid: label_by_uid.get(uid) or f"{user_name_by_id.get(uid, 'Unknown')} (didn't volunteer)",
         # Never below however many are ALREADY selected — Streamlit refuses to
         # render a multiselect whose own default exceeds max_selections, which
         # is exactly what crashed this page (E2C sync can push someone selected
@@ -1841,7 +1853,7 @@ def render_finalize_dialog(comp, e, event_volunteers, cap, label_by_uid):
         # widget at all).
         max_selections=max(cap, len(already_selected_ids)),
         key=f"finalize_{e['event_id']}",
-    ) if event_volunteers else []
+    )
 
     # Sister-club students for this event (see SISTER_CLUBS above): anyone
     # in the event's class range, volunteered or not.
@@ -1907,9 +1919,15 @@ def render_finalize_dialog(comp, e, event_volunteers, cap, label_by_uid):
             newly_deselected = previously_selected - set(finalize_ids)
 
             for uid in newly_selected:
-                client.table("event_volunteers").update({"selected": True}).eq(
-                    "event_id", e["event_id"]
-                ).eq("user_id", uid).execute()
+                if uid in volunteer_ids:
+                    client.table("event_volunteers").update({"selected": True}).eq(
+                        "event_id", e["event_id"]
+                    ).eq("user_id", uid).execute()
+                else:
+                    # Picked without volunteering: added and selected in one go.
+                    client.table("event_volunteers").insert({
+                        "event_id": e["event_id"], "user_id": uid, "selected": True,
+                    }).execute()
                 _send_selected_email(uid, e["name"], comp["name"])
             for uid in newly_deselected:
                 client.table("event_volunteers").update({"selected": False}).eq(
