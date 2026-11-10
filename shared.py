@@ -2400,6 +2400,15 @@ def notify_if_roster_complete(competition_id):
         for v in volunteers:
             if v.get("selected"):
                 selected_counts[v["event_id"]] = selected_counts.get(v["event_id"], 0) + 1
+        # Sister-club picks fill places too (2026-11-10). Skipped quietly if
+        # that table doesn't exist yet.
+        try:
+            for g in client.table("event_guest_selections").select("event_id").in_(
+                "event_id", event_ids
+            ).execute().data:
+                selected_counts[g["event_id"]] = selected_counts.get(g["event_id"], 0) + 1
+        except Exception:
+            pass
         is_complete = all(
             selected_counts.get(e["event_id"], 0) >= e["team_size"] * e["max_teams"] for e in events
         )

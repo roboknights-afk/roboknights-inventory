@@ -3204,3 +3204,16 @@ announcements and meetings, always goes out - the host's rule was "only
 mails where the person is tagged, announcements or meetings". **Any new
 bulk email added later should check this flag too.** Until the migration
 runs, the Home section says so instead of showing the toggle.
+
+## Picking sister-club students for an event (2026-11-10)
+
+In the Finalize team dialog (now on every upcoming event, volunteers or
+not) a host can also pick students from the sister clubs - D2S, CubXL,
+Digex, Ad-Hoc (`SISTER_CLUBS`, the CLUB column of Exun's members sheet,
+`EXUN_DATA_SHEET_URL`) - filtered to the event's class range. They have no
+accounts, so they live in `event_guest_selections` (keyed by admission
+no.), show as "Name (Club)" on the event card and in Nike's List's gold
+boxes, count against the cap and toward "team names finalized", and get a
+"You've been selected" email (`_email_guest_selected`) when added. Removing
+one sends nothing. `slip_roster.load_exun_students` now also returns
+`club` and `email` (school email first). E2C sync never touches these rows.

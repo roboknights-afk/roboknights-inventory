@@ -124,6 +124,13 @@ vols = client.table("event_volunteers").select("*").execute().data
 # them out quietly deleted Kush Singh from a Mecha-Cup team he was on.
 users = {u["user_id"]: u["name"]
          for u in client.table("users").select("user_id,name").execute().data}
+# Sister-club students picked on the dashboard (2026-11-10), written into
+# the gold boxes as "Name (Club)" after the members. Empty until the
+# event_guest_selections migration has run.
+try:
+    guests = client.table("event_guest_selections").select("event_id,name,club").execute().data
+except Exception:
+    guests = []
 
 LINK_ORDER = ["Website", "Discord", "Registration Link", "Brochure"]
 
@@ -213,8 +220,17 @@ def render_competition(top, comp):
             else:
                 spot.append(v)
 
-        for team in range(max(max_teams, len(ordered))):
-            members = [users[v["user_id"]] for v in (ordered[team] if team < len(ordered) else [])]
+        ordered_names = [[users[v["user_id"]] for v in grp] for grp in ordered]
+        for g in [x for x in guests if x["event_id"] == e["event_id"]]:
+            label = f"{g['name']} ({g['club']})"
+            spot = next((grp for grp in ordered_names if len(grp) < team_size), None)
+            if spot is None:
+                ordered_names.append([label])
+            else:
+                spot.append(label)
+
+        for team in range(max(max_teams, len(ordered_names))):
+            members = ordered_names[team] if team < len(ordered_names) else []
             slots = (members + ["-"] * team_size)[:max(team_size, len(members))]
             for j, who in enumerate(slots):
                 put(row, FIRST_NAME_COL + j, who, bg=GOLD, fg=DARK)

@@ -97,6 +97,9 @@ def load_exun_students(sheet_value, service_account_b64):
 
     c_name, c_cls, c_sec = col("student name", "name"), col("class"), col("sec", "section")
     c_adm, c_m1, c_m2 = col("studentid", "student id", "adm. no.", "admission no"), col("mobile1", "mobile"), col("mobile2")
+    # Club and email (2026-11-10): for picking sister-club students for an
+    # event and emailing them. School email first, personal one if not.
+    c_club, c_semail, c_email = col("club.", "club"), col("school email"), col("email")
     if c_name is None or c_adm is None:
         raise RuntimeError("The Exun data sheet's columns changed: need 'Student Name' and 'STUDENTID'.")
 
@@ -111,6 +114,9 @@ def load_exun_students(sheet_value, service_account_b64):
         students.append({
             "name": name, "adm": cell(row, c_adm).upper(), "cls": cell(row, c_cls), "sec": cell(row, c_sec),
             "mobile": clean_mobile(cell(row, c_m1)) or clean_mobile(cell(row, c_m2)),
+            "club": cell(row, c_club),
+            "email": next((e.replace(",", ".").lower() for e in (cell(row, c_semail), cell(row, c_email))
+                           if "@" in e), ""),
         })
     return students
 

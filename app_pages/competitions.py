@@ -643,6 +643,83 @@ def _email_hosts_withdrawal(comp, event, reason, recorded):
         send_email(host_email, f"{volunteer_name} withdrew: {event['name']} at {comp['name']}", body)
 
 
+# --- Sister-club picks (2026-11-10) ------------------------------------------
+# Host's request: for any event, pick students from the sister clubs straight
+# from Exun's members sheet (the same sheet the permission slips read),
+# whether or not they volunteered - they have no dashboard account, so they
+# can't. Only students whose class is in the event's range are offered.
+# Stored in event_guest_selections (not event_volunteers, which needs a
+# users row), shown everywhere as "Name (Club)", counted against the event's
+# cap, and written to Nike's List. Each newly picked student gets an email.
+SISTER_CLUBS = ("D2S", "CubXL", "Digex", "Ad-Hoc")  # the sheet's CLUB column; "RK" rows are our own members
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _sister_club_students():
+    import os
+
+    import slip_roster
+
+    sheet = os.environ.get("EXUN_DATA_SHEET_URL", "")
+    sa_b64 = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON_B64", "")
+    if not sheet or not sa_b64:
+        raise RuntimeError("EXUN_DATA_SHEET_URL / GOOGLE_SERVICE_ACCOUNT_JSON_B64 isn't set on this server.")
+    found = []
+    for s in slip_roster.load_exun_students(sheet, sa_b64):
+        if s.get("club") in SISTER_CLUBS and str(s.get("cls", "")).strip().isdigit() and s.get("adm"):
+            # Some names are typed in ALL CAPS on the sheet - "ANAYA SHARMA (D2S)"
+            # looked shouted next to everyone else's.
+            name = s["name"].title() if s["name"].isupper() else s["name"]
+            found.append({**s, "name": name, "grade": int(s["cls"])})
+    return sorted(found, key=lambda s: s["name"].lower())
+
+
+def _guest_rows():
+    # [] until the migration has run, so the page never breaks on it.
+    try:
+        return cached_table("event_guest_selections")
+    except Exception:
+        return []
+
+
+def guest_label(g):
+    return f"{g['name']} ({g['club']})"
+
+
+def _email_guest_selected(guest, comp, event):
+    # Says what, when, where, how they'll be listed, and to reply if they
+    # can't make it. Shown to the host as a draft when this was built.
+    links = [l for l in cached_table("competition_links") if l["competition_id"] == comp["competition_id"]]
+    lines = [
+        f"Hi {guest['name'].split()[0].title()},",
+        "",
+        f"You've been selected to compete in {event['name']} at {comp['name']}, "
+        f"as part of the RoboKnights team.",
+        "",
+        f"Date: {date.fromisoformat(comp['competition_date']).strftime('%d %B %Y') if comp.get('competition_date') else 'to be confirmed'}",
+        f"Venue: {comp.get('venue') or 'to be confirmed'}",
+    ]
+    if links:
+        lines.append(f"Details: {links[0]['url']}")
+    lines += [
+        "",
+        f'You\'ll be listed on the team as "{guest_label(guest)}".',
+    ]
+    if comp.get("student_incharge"):
+        lines.append(
+            f"The student in-charge for this competition is {comp['student_incharge']}, "
+            "who will be in touch about preparation and the permission slip."
+        )
+    lines += [
+        "",
+        "If you can't take part, please reply to this email as soon as possible so we can "
+        "find someone else.",
+        "",
+        "RoboKnights",
+    ]
+    send_email(guest["email"], f"You've been selected: {event['name']} at {comp['name']}", "\n".join(lines))
+
+
 def _send_selected_email(user_id, event_name, comp_name):
     send_email(
         user_email_by_id.get(user_id),
@@ -1741,7 +1818,13 @@ def render_finalize_dialog(comp, e, event_volunteers, cap, label_by_uid):
             f"doesn't check the cap) — remove some below and save to fix it."
         )
     else:
-        st.caption(f":material/group: {len(already_selected_ids)} of {cap} places filled.")
+        n_guests = sum(1 for g in _guest_rows() if g["event_id"] == e["event_id"])
+        st.caption(
+            f":material/group: {len(already_selected_ids) + n_guests} of {cap} places filled"
+            + (f" ({n_guests} from sister clubs)." if n_guests else ".")
+        )
+    if not event_volunteers:
+        st.caption("Nobody from RoboKnights has volunteered for this one yet.")
 
     finalize_ids = st.multiselect(
         "Finalize volunteers",
@@ -1758,6 +1841,36 @@ def render_finalize_dialog(comp, e, event_volunteers, cap, label_by_uid):
         # widget at all).
         max_selections=max(cap, len(already_selected_ids)),
         key=f"finalize_{e['event_id']}",
+    ) if event_volunteers else []
+
+    # Sister-club students for this event (see SISTER_CLUBS above): anyone
+    # in the event's class range, volunteered or not.
+    existing_guests = [g for g in _guest_rows() if g["event_id"] == e["event_id"]]
+    guest_by_adm = {g["adm"]: g for g in existing_guests}
+    try:
+        candidates = [
+            s for s in _sister_club_students()
+            if e["min_grade"] <= s["grade"] <= e["max_grade"]
+        ]
+        sheet_error = None
+    except Exception as err:
+        candidates, sheet_error = [], str(err)
+    option_by_adm = {s["adm"]: s for s in candidates}
+    for g in existing_guests:  # already picked, even if they've since left the sheet
+        option_by_adm.setdefault(g["adm"], g)
+    if sheet_error:
+        st.warning(f"Couldn't read the sister clubs' list: {sheet_error}")
+    guest_adms = st.multiselect(
+        f"From sister clubs ({', '.join(SISTER_CLUBS)}), Class {e['min_grade']}-{e['max_grade']}",
+        options=list(option_by_adm),
+        default=list(guest_by_adm),
+        format_func=lambda adm: (
+            f"{guest_label(option_by_adm[adm])} - {option_by_adm[adm].get('cls') or option_by_adm[adm].get('grade')}"
+            f"{option_by_adm[adm].get('sec') or option_by_adm[adm].get('section') or ''}"
+        ),
+        placeholder="Search by name",
+        key=f"finalize_guests_{e['event_id']}",
+        help="They don't need to have volunteered. Each one you add gets a 'you've been selected' email.",
     )
 
     save_col, cancel_col = st.columns([1, 1])
@@ -1765,7 +1878,30 @@ def render_finalize_dialog(comp, e, event_volunteers, cap, label_by_uid):
         "Save selection", key=f"save_finalize_{e['event_id']}",
         icon=":material/check:", type="primary",
     ):
+        if len(finalize_ids) + len(guest_adms) > cap:
+            st.error(
+                f"That's {len(finalize_ids) + len(guest_adms)} people for {cap} places - "
+                "remove some before saving."
+            )
+            st.stop()
         with _safe_write("save this selection"):
+            new_guest_adms = [a for a in guest_adms if a not in guest_by_adm]
+            gone_guest_ids = [g["guest_id"] for a, g in guest_by_adm.items() if a not in guest_adms]
+            if gone_guest_ids:
+                client.table("event_guest_selections").delete().in_("guest_id", gone_guest_ids).execute()
+            for adm in new_guest_adms:
+                s = option_by_adm[adm]
+                guest = {
+                    "event_id": e["event_id"], "adm": adm, "name": s["name"], "club": s["club"],
+                    "grade": s["grade"], "section": (s.get("sec") or "").upper() or None,
+                    "email": s.get("email") or None,
+                }
+                client.table("event_guest_selections").insert(guest).execute()
+                if guest["email"]:
+                    _email_guest_selected(guest, comp, e)
+            if new_guest_adms or gone_guest_ids:
+                invalidate_cache()
+                notify_if_roster_complete(comp["competition_id"])
             previously_selected = {v["user_id"] for v in event_volunteers if v.get("selected")}
             newly_selected = set(finalize_ids) - previously_selected
             newly_deselected = previously_selected - set(finalize_ids)
@@ -2150,17 +2286,20 @@ def render_competition_card(comp):
 
                         finalized = [v for v in event_volunteers if v.get("selected")]
                         still_pending = [v for v in event_volunteers if not v.get("selected")]
+                        # Sister-club picks, shown as "Name (Club)" after the members.
+                        guests_here = [guest_label(g) for g in _guest_rows() if g["event_id"] == e["event_id"]]
 
                         # Past tense once it's over: on a finished competition
                         # "Finalized team" and "Volunteers" read as though it's
                         # still being organised, which is what made members ask
                         # why the app still showed them as being in it.
-                        if finalized:
+                        if finalized or guests_here:
+                            n_team = len(finalized) + len(guests_here)
                             st.caption(
-                                (f":material/verified: Team that went ({len(finalized)}): "
+                                (f":material/verified: Team that went ({n_team}): "
                                  if comp.get("is_past") else
-                                 f":material/verified: Finalized team ({len(finalized)}/{cap}): ")
-                                + ", ".join(_label(v) for v in finalized)
+                                 f":material/verified: Finalized team ({n_team}/{cap}): ")
+                                + ", ".join([_label(v) for v in finalized] + guests_here)
                             )
                         if still_pending:
                             st.caption(
@@ -2169,7 +2308,7 @@ def render_competition_card(comp):
                                  f":material/group: Volunteers ({len(still_pending)}): ")
                                 + ", ".join(_label(v) for v in still_pending)
                             )
-                        if not finalized and not still_pending:
+                        if not finalized and not still_pending and not guests_here:
                             st.caption(":material/group: No volunteers yet")
 
                         # Only shown when eligible — same pattern as the
@@ -2271,7 +2410,9 @@ def render_competition_card(comp):
                         # capped at team_size * max_teams. Only newly
                         # selected people (not already-selected ones
                         # re-saved unchanged) get an email.
-                        if is_host and event_volunteers:
+                        # Also with no volunteers at all, now that sister-club
+                        # students can be picked here without volunteering.
+                        if is_host and (event_volunteers or not comp.get("is_past")):
                             # The multiselect + Save pair used to sit open on
                             # every single event card, for every competition —
                             # two extra widgets per event, on a page that
@@ -2280,7 +2421,7 @@ def render_competition_card(comp):
                             # dialog with room to show who's double-booked.
                             over_cap = len(
                                 [v for v in event_volunteers if v.get("selected")]
-                            ) > cap
+                            ) + len(guests_here) > cap
                             st.button(
                                 "Finalize team",
                                 key=f"open_finalize_{e['event_id']}",
