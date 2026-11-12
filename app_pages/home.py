@@ -200,8 +200,8 @@ m3.metric(
     help="Threads where the last message wasn't yours",
 )
 m4.metric(
-    "My competitions", len(upcoming_competitions), border=True,
-    help="Upcoming events you've volunteered for or been selected for",
+    "My competitions", len({c["competition_id"] for c, _, _ in upcoming_competitions}), border=True,
+    help="Upcoming competitions you've volunteered for or been selected for",
 )
 
 feed_col, side_col = st.columns([2, 1], gap="medium")
@@ -287,66 +287,92 @@ with feed_col:
             st.markdown(":green-badge[:material/check_circle: All clear] Nothing needs your attention right now.")
 
     # --- Your commitments (context, not action) ------------------------------
+    # Tabs, and one card per COMPETITION rather than per event (2026-11-13):
+    # someone in nine NYRC events used to get nine near-identical cards and
+    # a very long scroll. The three lists share one space now, and each
+    # competition lists its events as badges.
 
-    if upcoming_competitions:
-        st.subheader(":material/emoji_events: Your upcoming competitions", anchor=False)
-        for comp, event, v in upcoming_competitions:
-            with st.container(border=True, key=f"rkcard_home_comp_{v['volunteer_id']}"):
-                st.markdown(f"**{event['name']}** · {comp['name']}")
-                status_badge = (
-                    ":green-badge[:material/verified: Selected]" if v.get("selected")
-                    else ":violet-badge[:material/front_hand: Volunteered]"
-                )
-                comp_date = comp.get("competition_date")
-                days_away = None
-                date_badge = ":gray-badge[:material/event: Date to be announced]"
-                if comp_date:
-                    comp_day = date.fromisoformat(comp_date)
-                    days_away = (comp_day - today).days
-                    date_badge = _date_badge(comp_day)
-                st.markdown(
-                    f"{status_badge} {date_badge} "
-                    f":gray-badge[:material/location_on: {comp.get('venue') or 'Venue to be announced'}]"
-                )
-                # The consent form opens 2 days before and members kept
-                # asking where it was - so say so right here, for the ones
-                # it applies to (selected, form open, a real student account).
-                if (
-                    v.get("selected") and days_away is not None and 0 <= days_away <= 2
-                    and not (is_read_only or is_exun or is_viewer)
-                ):
-                    st.page_link(
-                        "app_pages/consent_form.py", label="Your consent form is open",
-                        icon=":material/description:",
+    comps_grouped = {}
+    for comp, event, v in upcoming_competitions:
+        comps_grouped.setdefault(comp["competition_id"], (comp, []))[1].append((event, v))
+
+    tab_labels = []
+    if comps_grouped:
+        tab_labels.append(f":material/emoji_events: Competitions ({len(comps_grouped)})")
+    if upcoming_meetings:
+        tab_labels.append(f":material/groups: Meetings ({len(upcoming_meetings)})")
+    if my_borrowed:
+        tab_labels.append(f":material/inventory_2: Borrowed parts ({len(my_borrowed)})")
+
+    if tab_labels:
+        st.subheader(":material/event_upcoming: Coming up for you", anchor=False)
+        tabs = iter(st.tabs(tab_labels))
+
+    if comps_grouped:
+        with next(tabs):
+            for comp_id, (comp, entries) in comps_grouped.items():
+                with st.container(border=True, key=f"rkcard_home_comp_{comp_id}"):
+                    comp_date = comp.get("competition_date")
+                    days_away = None
+                    date_badge = ":gray-badge[:material/event: Date to be announced]"
+                    if comp_date:
+                        comp_day = date.fromisoformat(comp_date)
+                        days_away = (comp_day - today).days
+                        date_badge = _date_badge(comp_day)
+                    st.markdown(
+                        f"**{comp['name']}** {date_badge} "
+                        f":gray-badge[:material/location_on: {comp.get('venue') or 'Venue to be announced'}]"
                     )
-        st.page_link("app_pages/competitions.py", label="All competitions", icon=":material/arrow_forward:")
+                    # Selected events first, then the ones still only volunteered for.
+                    entries.sort(key=lambda e: (not e[1].get("selected"), e[0]["name"]))
+                    st.markdown(" ".join(
+                        f":green-badge[:material/verified: {event['name']}]" if v.get("selected")
+                        else f":violet-badge[:material/front_hand: {event['name']}]"
+                        for event, v in entries
+                    ))
+                    # The consent form opens 2 days before and members kept
+                    # asking where it was - so say so right here, for the ones
+                    # it applies to (selected, form open, a real student account).
+                    if (
+                        any(v.get("selected") for _, v in entries)
+                        and days_away is not None and 0 <= days_away <= 2
+                        and not (is_read_only or is_exun or is_viewer)
+                    ):
+                        st.page_link(
+                            "app_pages/consent_form.py", label="Your consent form is open",
+                            icon=":material/description:",
+                        )
+            st.caption(":green-badge[:material/verified: Selected] :violet-badge[:material/front_hand: Volunteered]")
+            st.page_link("app_pages/competitions.py", label="All competitions", icon=":material/arrow_forward:")
 
     if upcoming_meetings:
-        st.subheader(":material/groups: Upcoming meetings", anchor=False)
-        for m in upcoming_meetings[:5]:
-            with st.container(border=True, key=f"rkcard_home_meeting_{m['meeting_id']}"):
-                st.markdown(f"**{m['title']}**")
-                rsvp_badge = (
-                    ":green-badge[:material/check: Going]" if m["meeting_id"] in my_rsvp_ids
-                    else ":gray-badge[:material/help: No RSVP yet]"
-                )
-                time_badge = (
-                    f" :gray-badge[:material/schedule: {m['meeting_time']}]" if m.get("meeting_time") else ""
-                )
-                st.markdown(f"{rsvp_badge} {_date_badge(date.fromisoformat(m['meeting_date']))}{time_badge}")
-        st.page_link("app_pages/meetings.py", label="All meetings", icon=":material/arrow_forward:")
+        with next(tabs):
+            for m in upcoming_meetings[:5]:
+                with st.container(border=True, key=f"rkcard_home_meeting_{m['meeting_id']}"):
+                    rsvp_badge = (
+                        ":green-badge[:material/check: Going]" if m["meeting_id"] in my_rsvp_ids
+                        else ":gray-badge[:material/help: No RSVP yet]"
+                    )
+                    time_badge = (
+                        f" :gray-badge[:material/schedule: {m['meeting_time']}]" if m.get("meeting_time") else ""
+                    )
+                    st.markdown(
+                        f"**{m['title']}** {rsvp_badge} "
+                        f"{_date_badge(date.fromisoformat(m['meeting_date']))}{time_badge}"
+                    )
+            st.page_link("app_pages/meetings.py", label="All meetings", icon=":material/arrow_forward:")
 
     if my_borrowed:
-        st.subheader(":material/inventory_2: Parts you've borrowed", anchor=False)
-        for r in sorted(my_borrowed, key=lambda r: (r.get("due_date") or "9999-99-99", r["request_id"])):
-            part = part_by_id.get(r["part_id"], {})
-            due = r.get("due_date")
-            due_badge = (
-                f":gray-badge[:material/schedule: Due {date.fromisoformat(due).strftime('%d %b %Y')}]"
-                if due else ":gray-badge[:material/schedule: No due date]"
-            )
-            with st.container(border=True, key=f"rkcard_home_borrowed_{r['request_id']}"):
-                st.markdown(f"**{part.get('name', 'Unknown')}** ({part.get('part_number', '?')}) {due_badge}")
+        with next(tabs):
+            for r in sorted(my_borrowed, key=lambda r: (r.get("due_date") or "9999-99-99", r["request_id"])):
+                part = part_by_id.get(r["part_id"], {})
+                due = r.get("due_date")
+                due_badge = (
+                    f":gray-badge[:material/schedule: Due {date.fromisoformat(due).strftime('%d %b %Y')}]"
+                    if due else ":gray-badge[:material/schedule: No due date]"
+                )
+                with st.container(border=True, key=f"rkcard_home_borrowed_{r['request_id']}"):
+                    st.markdown(f"**{part.get('name', 'Unknown')}** ({part.get('part_number', '?')}) {due_badge}")
 
 
 # --- Right: announcements + navigation ----------------------------------------

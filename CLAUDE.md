@@ -3277,3 +3277,9 @@ settings" (Discord stays open until an ID is linked). No data or logic changed;
 all `rkcard_home_*` keys are kept so the hover CSS still applies. Tested with
 AppTest through a wrapper that stubs `st.page_link` (it can't resolve pages
 outside `st.navigation`).
+
+Home scroll fix (2026-11-13): the student found Home too long to scroll. The
+three lists (competitions, meetings, borrowed parts) are now tabs under "Coming
+up for you", and competitions are ONE card per competition with its events as
+badges (green = selected, violet = volunteered) instead of one card per event.
+The "My competitions" metric counts competitions, not events, to match.
