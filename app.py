@@ -34,7 +34,7 @@ from shared import (
     VIEWER_EMAILS, cached_table,
     get_client, has_unread_chats, has_unread_exun_channel, has_unread_queries, invalidate_cache,
     _audit_purge_device_data, log_action, request_client_info,
-    is_removed_email, safe_write, send_email,
+    is_removed_email, request_nike_list_sync, safe_write, send_email,
     sync_member_to_clio_sheet,
 )
 
@@ -1491,6 +1491,8 @@ def render_verify_details_dialog(user_row):
                     "details_verified": True,
                 }).eq("user_id", user_row["user_id"]).execute()
                 invalidate_cache()
+                if name.strip() != (user_row.get("name") or ""):
+                    request_nike_list_sync()  # Nike's List shows names
 
                 # Best-effort: the Clio roster stays in sync when it can,
                 # but a Sheets hiccup must never block saving to our own

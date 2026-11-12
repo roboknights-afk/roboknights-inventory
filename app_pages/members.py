@@ -12,7 +12,8 @@ import streamlit as st
 from clio_cleanup import remove_from_clio
 from shared import (
     HOST_EMAILS, IST, cached_table, discord_id_problem, format_ist, get_client, get_sheets_write_client,
-    get_storage_client, invalidate_cache, removal_email, removed_emails, safe_write, send_email,
+    get_storage_client, invalidate_cache, removal_email, removed_emails, request_nike_list_sync, safe_write,
+    send_email,
 )
 
 is_host = st.session_state.is_host
@@ -397,6 +398,8 @@ else:
                     updates = {}
                     if edited["Name"].strip() != original["name"]:
                         updates["name"] = edited["Name"].strip()
+                        # Nike's List shows names, so a rename rebuilds it.
+                        request_nike_list_sync()
                     if edited["Institutional email"].strip() != original["email"]:
                         updates["email"] = edited["Institutional email"].strip()
                     if edited["Grade"] != original.get("grade"):

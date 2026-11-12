@@ -11,11 +11,14 @@ name: Nike's List sync
 # is not read, written or resized.
 on:
   schedule:
-    # 2:30 UTC = 8:00 AM IST. GitHub delays scheduled runs on this repo by
-    # anywhere from minutes to several hours, which is fine here - the tab
-    # is a full rebuild from the database, so a late run is simply a
-    # slightly later refresh, never a missed one.
-    - cron: "30 2 * * *"
+    # Every 15 minutes (2026-11-12; was once a day at 8 AM IST). The
+    # dashboard's own rebuild-after-a-change only covers the Competitions
+    # page, and is lost if the app restarts in its 15-second wait; direct
+    # database edits never trigger it at all. This catches all of those.
+    # GitHub delays scheduled runs by minutes to hours under load, which
+    # is fine - the tab is a full rebuild, so a late run is just a later
+    # refresh. Free: Actions minutes are unlimited on a public repo.
+    - cron: "*/15 * * * *"
   workflow_dispatch: # "Run workflow" in the Actions tab, for an immediate refresh
 
 jobs:

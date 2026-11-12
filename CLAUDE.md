@@ -3229,3 +3229,27 @@ Exun team and in D2S) is offered once per club, labelled "[also in X]", and
 the host picks which club they go as. Options are keyed "adm|club"; picking
 the same person twice is refused on save, and switching an already-picked
 person's club just relabels their row (no second email).
+
+## E2C header parsing + Nike's List every 15 minutes (2026-11-12)
+
+**NYRC 2027 "isn't on the E2C sheet" (permission slip).** It was. Its
+header is name / blank / blank / "Offline" / status, every cell formatted
+22pt, and `_split_into_blocks` only counted FILLED big-font cells as a
+run, so the name looked like a lone annotation: NYRC was glued onto the
+competition above and a block called "Offline" started instead. Blank
+big-font cells now continue a header run (the run must still start on a
+filled cell and hold 2+ filled ones, so a lone annotation is still not a
+boundary). Second case fixed alongside: TechBuzz 2026 has a SMALL-font
+blank row between its name and "Hybrid"; a name followed within 2 blank
+rows by a big-font mode word (MODE_VALUES) is now a boundary too. Result
+on the live sheet: 0 blocks named after a mode word (there were 2), and
+NYRC, Techathlon'26 and TechBuzz 2026 all found as themselves.
+
+**Nike's List sync now runs every 15 minutes** (`nike-list-sync.yml`,
+was daily). The in-app rebuild (`request_nike_list_sync`) only fires from
+the Competitions page, is lost if Streamlit Cloud restarts during its
+15-second debounce, and never fires for direct database edits. Renames on
+the Members page and in the verify-your-details popup now request a
+rebuild too. Note the rebuild rewrites every cell of the bot tab, so
+anything typed into it by hand is overwritten on the next run, as it
+already was.

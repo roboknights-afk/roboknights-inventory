@@ -244,20 +244,41 @@ def _split_into_blocks(rows):
     # annotation) isn't followed by another big-font row, so it's correctly
     # left as just another line inside the current competition instead of
     # being mistaken for the start of a new one.
+    #
+    # A big-font cell left EMPTY inside the header doesn't break the run
+    # (2026-11-12): NYRC 2027's header is name / blank / blank / "Offline",
+    # all formatted 22pt, so counting only filled cells saw a lone name,
+    # glued NYRC onto the competition above, and started a block called
+    # "Offline". The run is still anchored on a filled cell and needs 2+
+    # filled cells, so a lone annotation is still not a boundary.
     n = len(rows)
-    is_large = [
-        bool(rows[i][0]["text"]) and (rows[i][0]["font_size"] or 0) >= LARGE_FONT
-        for i in range(n)
-    ]
+    big_font = [(rows[i][0]["font_size"] or 0) >= LARGE_FONT for i in range(n)]
+    has_text = [bool(rows[i][0]["text"]) for i in range(n)]
     boundary_starts = set()
     i = 0
     while i < n:
-        if is_large[i]:
+        if big_font[i] and has_text[i]:
             run_start = i
-            while i < n and is_large[i]:
+            filled = 0
+            while i < n and big_font[i]:
+                filled += has_text[i]
                 i += 1
-            if i - run_start >= 2:
+            if filled >= 2:
                 boundary_starts.add(run_start)
+            else:
+                # A name with a blank small-font row before its "Hybrid"/
+                # "Offline"/"Online" line (TechBuzz 2026). Only the mode
+                # word bridges that gap, so a lone annotation still can't.
+                k = i
+                while k < n and k - i < 2 and not has_text[k]:
+                    k += 1
+                if k < n and big_font[k] and rows[k][0]["text"].strip().lower() in MODE_VALUES:
+                    boundary_starts.add(run_start)
+                    # ...and the mode/status lines are this header, not a
+                    # new competition of their own.
+                    i = k
+                    while i < n and big_font[i]:
+                        i += 1
         else:
             i += 1
 
