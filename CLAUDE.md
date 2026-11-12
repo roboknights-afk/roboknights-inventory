@@ -3265,3 +3265,15 @@ new page colour. Emails and the Clio/Nike sheets still use #242424 on purpose
 (they're separate surfaces). Planned next: phase 2 Home page, phase 3 the
 shared page pattern (headers, metric rows, filters) across the big pages,
 phase 4 forms/dialogs and cleanup of leftover emojis and dividers.
+
+## UI refresh, phase 2: Home page (2026-11-13)
+
+`app_pages/home.py`, native components only. A "Next up" card at the top shows
+the nearest competition or meeting with a days-to-go count. Status text became
+badges (selected / volunteered / date / venue on one line per card), "(s)"
+plurals are real plurals via `_n()`, Quick links is a wrapping horizontal row,
+and the Discord ID and email preference moved into expanders under "Your
+settings" (Discord stays open until an ID is linked). No data or logic changed;
+all `rkcard_home_*` keys are kept so the hover CSS still applies. Tested with
+AppTest through a wrapper that stubs `st.page_link` (it can't resolve pages
+outside `st.navigation`).

@@ -140,13 +140,50 @@ latest_announcements = sorted(
     cached_table("announcements"), key=lambda a: a["created_at"], reverse=True
 )[:3]
 
+my_row = next((u for u in cached_table("users") if u["user_id"] == current_user_id), None)
+
+
+def _n(count, word):
+    # "1 day", "2 days" - instead of "day(s)" everywhere.
+    return f"{count} {word}" if count == 1 else f"{count} {word}s"
+
+
+def _date_badge(day):
+    # Orange when it's within three days, so the close ones stand out.
+    days_away = (day - today).days
+    colour = "orange" if 0 <= days_away <= 3 else "blue"
+    return f":{colour}-badge[:material/event: {day.strftime('%d %b %Y')} · {relative_days_label(days_away)}]"
+
+
+# The single nearest thing on my calendar, for the card at the top. A
+# competition wins a tie with a meeting on the same day.
+next_up = None
+for comp, event, v in upcoming_competitions:
+    if comp.get("competition_date") and comp["competition_date"] >= today_iso:
+        next_up = {
+            "day": date.fromisoformat(comp["competition_date"]),
+            "kind": "Competition", "icon": ":material/emoji_events:",
+            "title": comp["name"],
+            "detail": comp.get("venue") or "Venue to be announced",
+            "page": "app_pages/competitions.py",
+        }
+        break
+if upcoming_meetings:
+    m = upcoming_meetings[0]
+    meeting_day = date.fromisoformat(m["meeting_date"])
+    if next_up is None or meeting_day < next_up["day"]:
+        next_up = {
+            "day": meeting_day, "kind": "Meeting", "icon": ":material/groups:",
+            "title": m["title"],
+            "detail": f"Starts {m['meeting_time']}" if m.get("meeting_time") else "Time to be announced",
+            "page": "app_pages/meetings.py",
+        }
+
 
 # --- Header + metrics strip ---------------------------------------------------
 
-st.title(f":material/waving_hand: Welcome back, {current_user_name.split()[0]}")
-st.caption(
-    f"{today.strftime('%A, %d %B %Y')}  •  Everything waiting on you, in one place."
-)
+st.title(f"Welcome back, {current_user_name.split()[0]}")
+st.caption(f":material/calendar_today: {today.strftime('%A, %d %B %Y')}")
 
 m1, m2, m3, m4 = st.columns(4)
 m1.metric(
@@ -173,7 +210,25 @@ feed_col, side_col = st.columns([2, 1], gap="medium")
 # --- Left: what actually needs you --------------------------------------------
 
 with feed_col:
-    st.subheader(":material/priority_high: Needs you right now")
+    if next_up:
+        days_to_go = (next_up["day"] - today).days
+        with st.container(border=True, key="rkcard_home_next"):
+            text_col, count_col = st.columns([3, 1], vertical_alignment="center")
+            with text_col:
+                st.caption(f"{next_up['icon']} Next up · {next_up['kind']}")
+                st.subheader(next_up["title"], anchor=False)
+                st.markdown(
+                    f":blue-badge[:material/event: {next_up['day'].strftime('%A, %d %B')}] "
+                    f":gray-badge[{next_up['detail']}]"
+                )
+            with count_col:
+                if days_to_go == 0:
+                    st.metric("Happening", "Today")
+                else:
+                    st.metric("Days to go", days_to_go)
+                st.page_link(next_up["page"], label="Open", icon=":material/arrow_forward:")
+
+    st.subheader(":material/priority_high: Needs you right now", anchor=False)
 
     # Ordered by how time-sensitive each thing is: an overdue part first,
     # then approvals blocking someone else, then your own follow-ups.
@@ -191,70 +246,68 @@ with feed_col:
         label = f"**{part.get('name', 'Unknown')}** ({part.get('part_number', '?')})"
         with st.container(border=True, key=f"rkcard_home_due_{r['request_id']}"):
             if days_left < 0:
-                st.markdown(f":material/warning: :red[Overdue by {-days_left} day(s)] — {label}")
+                st.markdown(f":red-badge[:material/warning: Overdue by {_n(-days_left, 'day')}] {label}")
             elif days_left == 0:
-                st.markdown(f":material/schedule: :orange[Due today] — {label}")
+                st.markdown(f":orange-badge[:material/schedule: Due today] {label}")
             else:
-                st.markdown(f":material/schedule: :orange[Due in {days_left} day(s)] — {label}")
-            st.caption(f"Return it to its owner • was due {due}")
+                st.markdown(f":orange-badge[:material/schedule: Due in {_n(days_left, 'day')}] {label}")
+            st.caption(f"Return it to its owner · was due {date.fromisoformat(due).strftime('%d %b %Y')}")
 
     if pending_for_me and not is_read_only:
         nothing_pending = False
         with st.container(border=True, key="rkcard_home_approvals"):
             st.markdown(
-                f":material/inventory_2: **{len(pending_for_me)}** part request(s) waiting on your approval"
+                f":material/inventory_2: **{_n(len(pending_for_me), 'part request')}** waiting on your approval"
             )
             for r in pending_for_me[:3]:
                 part = part_by_id.get(r["part_id"], {})
-                st.caption(f"{part.get('part_number', '?')} — {part.get('name', 'Unknown')}")
+                st.caption(f"{part.get('part_number', '?')} · {part.get('name', 'Unknown')}")
             st.page_link("app_pages/inventory.py", label="Review requests", icon=":material/arrow_forward:")
 
     if queries_waiting and not is_read_only:
         nothing_pending = False
         with st.container(border=True, key="rkcard_home_queries"):
             if is_host:
-                st.markdown(f":material/quiz: **{queries_waiting}** query thread(s) waiting on your reply")
+                st.markdown(f":material/quiz: **{_n(queries_waiting, 'query thread')}** waiting on your reply")
             else:
-                st.markdown(f":material/quiz: **{queries_waiting}** of your questions got a reply")
+                st.markdown(f":material/quiz: **{_n(queries_waiting, 'question')}** of yours got a reply")
             st.page_link("app_pages/queries.py", label="Open Queries", icon=":material/arrow_forward:")
 
     if meetings_today:
         nothing_pending = False
         for m in meetings_today:
             with st.container(border=True, key=f"rkcard_home_checkin_{m['meeting_id']}"):
-                st.markdown(f":material/how_to_reg: **{m['title']}** is today — check in when you're there")
+                st.markdown(f":material/how_to_reg: **{m['title']}** is today. Check in when you're there.")
                 if m.get("meeting_time"):
                     st.caption(f"Starts {m['meeting_time']}")
                 st.page_link("app_pages/meetings.py", label="Go to Meetings", icon=":material/arrow_forward:")
 
     if nothing_pending:
         with st.container(border=True, key="rkcard_home_allclear"):
-            st.markdown(":material/check_circle: **All clear** — nothing needs your attention right now.")
+            st.markdown(":green-badge[:material/check_circle: All clear] Nothing needs your attention right now.")
 
     # --- Your commitments (context, not action) ------------------------------
 
     if upcoming_competitions:
-        st.subheader(":material/emoji_events: Your upcoming competitions")
+        st.subheader(":material/emoji_events: Your upcoming competitions", anchor=False)
         for comp, event, v in upcoming_competitions:
             with st.container(border=True, key=f"rkcard_home_comp_{v['volunteer_id']}"):
-                head_col, badge_col = st.columns([3, 1], vertical_alignment="center")
-                head_col.markdown(f"**{event['name']}** — {comp['name']}")
-                if v.get("selected"):
-                    badge_col.badge("Selected", color="green", icon=":material/verified:")
-                else:
-                    badge_col.badge("Volunteered", color="violet", icon=":material/front_hand:")
+                st.markdown(f"**{event['name']}** · {comp['name']}")
+                status_badge = (
+                    ":green-badge[:material/verified: Selected]" if v.get("selected")
+                    else ":violet-badge[:material/front_hand: Volunteered]"
+                )
                 comp_date = comp.get("competition_date")
-                date_badge = ":gray-badge[:material/event: date TBD]"
                 days_away = None
+                date_badge = ":gray-badge[:material/event: Date to be announced]"
                 if comp_date:
                     comp_day = date.fromisoformat(comp_date)
                     days_away = (comp_day - today).days
-                    date_badge = (
-                        f":{'orange' if 0 <= days_away <= 3 else 'blue'}-badge"
-                        f"[:material/event: {comp_day.strftime('%d %b %Y')} ({relative_days_label(days_away)})]"
-                    )
-                st.markdown(date_badge)
-                st.caption(f":material/location_on: {comp.get('venue') or 'venue TBD'}")
+                    date_badge = _date_badge(comp_day)
+                st.markdown(
+                    f"{status_badge} {date_badge} "
+                    f":gray-badge[:material/location_on: {comp.get('venue') or 'Venue to be announced'}]"
+                )
                 # The consent form opens 2 days before and members kept
                 # asking where it was - so say so right here, for the ones
                 # it applies to (selected, form open, a real student account).
@@ -268,42 +321,38 @@ with feed_col:
                     )
         st.page_link("app_pages/competitions.py", label="All competitions", icon=":material/arrow_forward:")
 
+    if upcoming_meetings:
+        st.subheader(":material/groups: Upcoming meetings", anchor=False)
+        for m in upcoming_meetings[:5]:
+            with st.container(border=True, key=f"rkcard_home_meeting_{m['meeting_id']}"):
+                st.markdown(f"**{m['title']}**")
+                rsvp_badge = (
+                    ":green-badge[:material/check: Going]" if m["meeting_id"] in my_rsvp_ids
+                    else ":gray-badge[:material/help: No RSVP yet]"
+                )
+                time_badge = (
+                    f" :gray-badge[:material/schedule: {m['meeting_time']}]" if m.get("meeting_time") else ""
+                )
+                st.markdown(f"{rsvp_badge} {_date_badge(date.fromisoformat(m['meeting_date']))}{time_badge}")
+        st.page_link("app_pages/meetings.py", label="All meetings", icon=":material/arrow_forward:")
+
     if my_borrowed:
-        st.subheader(":material/inventory_2: Parts you've borrowed")
+        st.subheader(":material/inventory_2: Parts you've borrowed", anchor=False)
         for r in sorted(my_borrowed, key=lambda r: (r.get("due_date") or "9999-99-99", r["request_id"])):
             part = part_by_id.get(r["part_id"], {})
             due = r.get("due_date")
-            due_label = (
-                f"due {date.fromisoformat(due).strftime('%d %b %Y')}" if due else "no due date set"
+            due_badge = (
+                f":gray-badge[:material/schedule: Due {date.fromisoformat(due).strftime('%d %b %Y')}]"
+                if due else ":gray-badge[:material/schedule: No due date]"
             )
             with st.container(border=True, key=f"rkcard_home_borrowed_{r['request_id']}"):
-                st.markdown(f"**{part.get('name', 'Unknown')}** ({part.get('part_number', '?')})")
-                st.caption(f":material/schedule: {due_label}")
-
-    if upcoming_meetings:
-        st.subheader(":material/groups: Upcoming meetings")
-        for m in upcoming_meetings[:5]:
-            with st.container(border=True, key=f"rkcard_home_meeting_{m['meeting_id']}"):
-                head_col, badge_col = st.columns([3, 1], vertical_alignment="center")
-                head_col.markdown(f"**{m['title']}**")
-                if m["meeting_id"] in my_rsvp_ids:
-                    badge_col.badge("Going", color="green", icon=":material/check:")
-                else:
-                    badge_col.badge("No RSVP", color="blue", icon=":material/help:")
-                meeting_day = date.fromisoformat(m["meeting_date"])
-                when = meeting_day.strftime("%d %b %Y")
-                if m.get("meeting_time"):
-                    when += f" at {m['meeting_time']}"
-                st.caption(
-                    f":material/event: {when} ({relative_days_label((meeting_day - today).days)})"
-                )
-        st.page_link("app_pages/meetings.py", label="All meetings", icon=":material/arrow_forward:")
+                st.markdown(f"**{part.get('name', 'Unknown')}** ({part.get('part_number', '?')}) {due_badge}")
 
 
 # --- Right: announcements + navigation ----------------------------------------
 
 with side_col:
-    st.subheader(":material/campaign: Latest announcements")
+    st.subheader(":material/campaign: Latest announcements", anchor=False)
     if not latest_announcements:
         st.caption("Nothing posted yet.")
     else:
@@ -318,45 +367,50 @@ with side_col:
         if not is_exun:
             st.page_link("app_pages/announcements.py", label="All announcements", icon=":material/arrow_forward:")
 
-    st.subheader(":material/link: Quick links")
-    with st.container(border=True, key="rkcard_home_links"):
+    st.subheader(":material/link: Quick links", anchor=False)
+    # A wrapping row of links rather than a tall list: same pages, a third
+    # of the height.
+    with st.container(border=True, key="rkcard_home_links", horizontal=True):
         if not is_exun:
-            st.page_link("app_pages/inventory.py", label="Inventory", icon=":material/inventory_2:")
-        st.page_link("app_pages/competitions.py", label="Competitions", icon=":material/emoji_events:")
-        st.page_link("app_pages/meetings.py", label="Meetings", icon=":material/groups:")
-        st.page_link("app_pages/achievements.py", label="Achievements", icon=":material/military_tech:")
+            st.page_link("app_pages/inventory.py", label="Inventory", icon=":material/inventory_2:", width="content")
+        st.page_link("app_pages/competitions.py", label="Competitions", icon=":material/emoji_events:", width="content")
+        st.page_link("app_pages/meetings.py", label="Meetings", icon=":material/groups:", width="content")
+        st.page_link("app_pages/achievements.py", label="Achievements", icon=":material/military_tech:", width="content")
         if not is_read_only:
-            st.page_link("app_pages/queries.py", label="Queries", icon=":material/quiz:")
+            st.page_link("app_pages/queries.py", label="Queries", icon=":material/quiz:", width="content")
         if is_host or is_exun or is_viewer:
-            st.page_link("app_pages/members.py", label="Members", icon=":material/badge:")
+            st.page_link("app_pages/members.py", label="Members", icon=":material/badge:", width="content")
 
+    # Settings live in expanders (2026-11-13): they're set once and then
+    # rarely touched, so they shouldn't take up the page every visit. The
+    # Discord one stays open until an ID is linked.
+    #
     # The linked ID is how the RoboKnights bot knows who you are: /mycomps,
     # "which comps am I in", meeting and consent-form reminder DMs, and
-    # whether you count as a host. (The old caption said it was only for a
-    # host to @mention you - out of date since the bot started using it.)
-    # Checked before saving (discord_id_problem, 2026-11-05) after one
-    # member's ID was saved on another member's account.
+    # whether you count as a host. Checked before saving (discord_id_problem,
+    # 2026-11-05) after one member's ID was saved on another member's account.
     if not is_read_only:
-        st.subheader(":material/forum: Discord")
-        with st.container(border=True, key="rkcard_home_discord"):
+        st.subheader(":material/settings: Your settings", anchor=False)
+        linked_id = (my_row or {}).get("discord_user_id") or ""
+        with st.expander(
+            "Discord · linked" if linked_id else "Discord · not linked yet",
+            icon=":material/forum:", expanded=not linked_id,
+        ):
             st.caption(
                 "Link your Discord account so the RoboKnights bot knows it's you: "
                 "`/mycomps`, questions like \"which comps am I in\", and reminder "
                 "DMs for your meetings and competitions all use it. Only put in "
                 "your own ID."
             )
-            my_row = next(
-                (u for u in cached_table("users") if u["user_id"] == current_user_id), None
-            )
             new_discord_id = st.text_input(
                 "Your Discord User ID",
-                value=(my_row or {}).get("discord_user_id") or "",
+                value=linked_id,
                 key="home_discord_id_input",
                 placeholder="e.g. 123456789012345678",
                 help="In Discord: Settings → Advanced → turn on Developer Mode, then "
                      "right-click your own name anywhere and choose Copy User ID.",
             )
-            if st.button("Save", icon=":material/check:", key="save_discord_id_btn"):
+            if st.button("Save", icon=":material/check:", key="save_discord_id_btn", type="primary"):
                 problem = discord_id_problem(new_discord_id, current_user_id, cached_table("users"))
                 if problem:
                     st.error(problem, icon=":material/error:")
@@ -379,8 +433,7 @@ with side_col:
     # Anything about YOU - selected, team changes, your parts, your
     # queries - plus announcements and meetings always come through.
     if not is_read_only and my_row is not None:
-        st.subheader(":material/mail: Emails")
-        with st.container(border=True, key="rkcard_home_emails"):
+        with st.expander("Emails", icon=":material/mail:"):
             if "unsubscribed_nonessential" not in my_row:
                 st.caption("Email preferences aren't switched on yet - a host needs to run a database update.")
             else:
