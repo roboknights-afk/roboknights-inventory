@@ -23,27 +23,75 @@
 # otherwise, but won't track someone who explicitly picks Light while
 # their OS itself is set to Dark (or vice versa).
 
+# UI refresh, phase 1 (2026-11-13): depth instead of one flat grey. The
+# page sits a step darker than cards and inputs, the sidebar a step darker
+# again, so cards read as raised without any CSS. Headings are tighter and
+# heavier, status colours are tuned to sit with the gold (Streamlit's
+# defaults are much more saturated), charts lead with gold, and code and
+# numbers get a proper monospace face. Colours only: no layout changed.
+
 [theme]
 base = "dark"
 font = "Work Sans:https://fonts.googleapis.com/css2?family=Work+Sans:wght@400;500;600;700&display=swap"
 headingFont = "Work Sans:https://fonts.googleapis.com/css2?family=Work+Sans:wght@600;700&display=swap"
+codeFont = "'JetBrains Mono':https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&display=swap"
+codeFontSize = "0.85rem"
 baseFontSize = 16
-baseRadius = "16px"
+headingFontSizes = ["2.25rem", "1.6rem", "1.25rem", "1.05rem", "0.95rem", "0.85rem"]
+headingFontWeights = [700, 700, 600, 600, 600, 600]
+metricValueFontSize = "2rem"
+metricValueFontWeight = 600
+baseRadius = "14px"
+buttonRadius = "full"
 showWidgetBorder = true
+showSidebarBorder = true
 linkUnderline = false
+# Gold first, then colours that stay distinct from it and from each other.
+chartCategoricalColors = ["#E8B33D", "#5BA8E0", "#57C08A", "#E0726B", "#A98BE0", "#E08F4A", "#9A9AA2"]
+chartSequentialColors = ["#3A2F14", "#56441A", "#735A20", "#907127", "#AD882E", "#C99E35", "#E8B33D", "#EEC466", "#F3D590", "#F9E7BC"]
 
 [theme.dark]
 primaryColor = "#E8B33D"
-backgroundColor = "#242424"
-secondaryBackgroundColor = "#2E2E2E"
-textColor = "#FFFFFF"
+backgroundColor = "#1A1A1C"
+secondaryBackgroundColor = "#262629"
+textColor = "#F4F4F5"
 linkColor = "#E8B33D"
-borderColor = "#3A3A3A"
+borderColor = "#35353A"
+codeBackgroundColor = "#222225"
+dataframeHeaderBackgroundColor = "#222225"
+dataframeBorderColor = "#303034"
+redColor = "#F0736B"
+orangeColor = "#EE9A4D"
+yellowColor = "#E8B33D"
+greenColor = "#5CC98F"
+blueColor = "#62AEEA"
+violetColor = "#AE92EA"
+grayColor = "#9A9AA2"
+
+[theme.dark.sidebar]
+backgroundColor = "#131314"
+secondaryBackgroundColor = "#1F1F22"
+borderColor = "#2A2A2E"
 
 [theme.light]
-primaryColor = "#B8860B"
-backgroundColor = "#FFFFFF"
-secondaryBackgroundColor = "#F2F2F2"
-textColor = "#1A1A1A"
-linkColor = "#B8860B"
-borderColor = "#DDDDDD"
+primaryColor = "#A8780A"
+backgroundColor = "#FBFAF7"
+secondaryBackgroundColor = "#F1EFEA"
+textColor = "#1C1B19"
+linkColor = "#8F6608"
+borderColor = "#DFDBD2"
+codeBackgroundColor = "#F1EFEA"
+dataframeHeaderBackgroundColor = "#F1EFEA"
+dataframeBorderColor = "#E4E0D8"
+redColor = "#C9423A"
+orangeColor = "#C2681A"
+yellowColor = "#A8780A"
+greenColor = "#23875A"
+blueColor = "#2A72B5"
+violetColor = "#6E4FC0"
+grayColor = "#6B6964"
+
+[theme.light.sidebar]
+backgroundColor = "#F3F1EC"
+secondaryBackgroundColor = "#E9E6DF"
+borderColor = "#DFDBD2"

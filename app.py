@@ -305,7 +305,7 @@ def render_gear_splash(direction="in"):
 100% { transform: scale(0.15) rotate(-540deg); opacity: 0; }"""
     st.markdown(f"""<style>
 #rk-splash {{
-    position: fixed; inset: 0; z-index: 999999; background: #242424;
+    position: fixed; inset: 0; z-index: 999999; background: #1A1A1C;
     display: flex; align-items: center; justify-content: center;
     pointer-events: none;
     animation: rk-splash-fade {overlay_secs} ease forwards;

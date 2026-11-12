@@ -3253,3 +3253,15 @@ the Members page and in the verify-your-details popup now request a
 rebuild too. Note the rebuild rewrites every cell of the bot tab, so
 anything typed into it by hand is overwritten on the next run, as it
 already was.
+
+## UI refresh, phase 1: theme (2026-11-13)
+
+The student asked for the dashboard to look better, done in phases. Phase 1 is
+`.streamlit/config.toml` only, no new CSS: page #1A1A1C, cards/inputs #262629,
+sidebar #131314 (three layers, so cards read as raised), tuned status colours,
+gold-led chart palette, JetBrains Mono for code, tighter heading scale, pill
+buttons, 14px radius. The login splash background in app.py was matched to the
+new page colour. Emails and the Clio/Nike sheets still use #242424 on purpose
+(they're separate surfaces). Planned next: phase 2 Home page, phase 3 the
+shared page pattern (headers, metric rows, filters) across the big pages,
+phase 4 forms/dialogs and cleanup of leftover emojis and dividers.
