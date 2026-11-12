@@ -3283,3 +3283,14 @@ three lists (competitions, meetings, borrowed parts) are now tabs under "Coming
 up for you", and competitions are ONE card per competition with its events as
 badges (green = selected, violet = volunteered) instead of one card per event.
 The "My competitions" metric counts competitions, not events, to match.
+
+## UI refresh, phase 3a: Competitions scroll (2026-11-13)
+
+Each competition card's events now sit inside `st.expander(key=f"comp_events_{cid}")`
+("Events (14) · you're in 2") instead of always being listed, because the page
+was a very long scroll. Open by default only for upcoming competitions the
+viewer is in, and for whatever a search/filter has narrowed to. The key keeps
+it open across the reruns volunteering/finalizing cause. The change is a pure
+re-indent of the events block (so `git blame` on those ~300 lines points here);
+no logic changed. The "Event details" expander inside is now nested, which this
+Streamlit version allows.

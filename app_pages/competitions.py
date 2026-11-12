@@ -2254,317 +2254,331 @@ def render_competition_card(comp):
                 render_rulebooks(comp, events)
 
             if events:
-                st.markdown("**Events**")
-                comp_event_ids = {e["event_id"] for e in events}
-                if any(v.get("team_no") for v in all_volunteers if v["event_id"] in comp_event_ids):
-                    st.caption(
-                        ":material/travel_explore: Team labels come from the E2C sheet and update "
-                        "automatically when it changes."
-                    )
-                for e in events:
-                    grade_range = (
-                        f"Grade {e['min_grade']}"
-                        if e["min_grade"] == e["max_grade"]
-                        else f"Grades {e['min_grade']}–{e['max_grade']}"
-                    )
-                    event_volunteers = [v for v in all_volunteers if v["event_id"] == e["event_id"]]
-                    # An event capped at exactly 1 team has no real
-                    # "other" team to be separate from — anyone finalized
-                    # or self-volunteered without a sheet team_no (e.g.
-                    # someone the host added by hand) is still trying for
-                    # that same single slot as whoever the sheet DID
-                    # assign a team_no. Only kicks in once the sheet has
-                    # actually given this event a real team_no to begin
-                    # with — a plain in-app-only event (no sheet team data
-                    # at all) keeps the old flat Volunteers list, since
-                    # calling that a "Team" would be misleading.
-                    single_team_merge = e["max_teams"] == 1 and any(
-                        v.get("team_no") for v in event_volunteers
-                    )
-
-                    def _effective_team_no(v):
-                        return 1 if single_team_merge else v.get("team_no")
-
-                    # team_no itself is the sheet ROW position, with gaps
-                    # left by rows that had no matched members (see
-                    # _parse_teams in e2c_import.py — it has to stay that
-                    # way underneath, so a newly-matched row can't merge
-                    # into an unrelated team_no). Only the display needs to
-                    # be gap-free, so remap to a plain 1, 2, 3... just for
-                    # what's shown on screen.
-                    team_no_display = {
-                        real: i
-                        for i, real in enumerate(
-                            sorted({_effective_team_no(v) for v in event_volunteers if _effective_team_no(v)}),
-                            start=1,
+                # Events fold away (2026-11-13): every card used to show every
+                # event and every volunteer, which made this page a very long
+                # scroll. A card is now the summary; the events open on click.
+                # Open by default where it matters: the competitions you are
+                # in, and whatever a search or filter has narrowed down to.
+                mine_here = sum(1 for e in events if e["event_id"] in my_event_ids)
+                events_label = f"Events ({len(events)})"
+                if mine_here and not comp.get("is_past"):
+                    events_label += f" · you're in {mine_here}"
+                # The key keeps it open through the reruns that volunteering,
+                # finalizing and saving trigger.
+                with st.expander(
+                    events_label, key=f"comp_events_{cid}", icon=":material/sports_score:",
+                    expanded=filtering_now or bool(mine_here and not comp.get("is_past")),
+                ):
+                    comp_event_ids = {e["event_id"] for e in events}
+                    if any(v.get("team_no") for v in all_volunteers if v["event_id"] in comp_event_ids):
+                        st.caption(
+                            ":material/travel_explore: Team labels come from the E2C sheet and update "
+                            "automatically when it changes."
                         )
-                    }
-                    selected_names = [
-                        user_name_by_id.get(v["user_id"], "Unknown")
-                        for v in event_volunteers
-                        if v.get("selected")
-                    ]
-                    already_volunteered = any(v["user_id"] == current_user_id for v in event_volunteers)
-                    is_eligible = (
-                        not is_read_only  # view-only tiers see every event, never volunteer
-                        and not comp.get("is_past")  # it already happened
-                        and not comp.get("not_attending")
-                        and current_user_grade is not None
-                        and e["min_grade"] <= current_user_grade <= e["max_grade"]
-                    )
-                    cap = e["team_size"] * e["max_teams"]
-
-                    with st.container(border=True, key=f"rkcard_event_{e['event_id']}"):
-                        team_badge = "Solo" if e["team_size"] == 1 else f"{e['team_size']} per team"
-                        teams_badge = "1 team" if e["max_teams"] == 1 else f"up to {e['max_teams']} teams"
-                        header = (
-                            f"**{e['name']}**  :gray-badge[{grade_range}]  "
-                            f":gray-badge[{team_badge}]  :gray-badge[{teams_badge}]"
+                    for e in events:
+                        grade_range = (
+                            f"Grade {e['min_grade']}"
+                            if e["min_grade"] == e["max_grade"]
+                            else f"Grades {e['min_grade']}–{e['max_grade']}"
                         )
-                        my_event_row = next((v for v in event_volunteers if v["user_id"] == current_user_id), None)
-                        if my_event_row and my_event_row.get("selected"):
-                            header += (
-                                "  :green-badge[:material/verified: You went]" if comp.get("is_past")
-                                else "  :green-badge[:material/verified: You're selected]"
+                        event_volunteers = [v for v in all_volunteers if v["event_id"] == e["event_id"]]
+                        # An event capped at exactly 1 team has no real
+                        # "other" team to be separate from — anyone finalized
+                        # or self-volunteered without a sheet team_no (e.g.
+                        # someone the host added by hand) is still trying for
+                        # that same single slot as whoever the sheet DID
+                        # assign a team_no. Only kicks in once the sheet has
+                        # actually given this event a real team_no to begin
+                        # with — a plain in-app-only event (no sheet team data
+                        # at all) keeps the old flat Volunteers list, since
+                        # calling that a "Team" would be misleading.
+                        single_team_merge = e["max_teams"] == 1 and any(
+                            v.get("team_no") for v in event_volunteers
+                        )
+
+                        def _effective_team_no(v):
+                            return 1 if single_team_merge else v.get("team_no")
+
+                        # team_no itself is the sheet ROW position, with gaps
+                        # left by rows that had no matched members (see
+                        # _parse_teams in e2c_import.py — it has to stay that
+                        # way underneath, so a newly-matched row can't merge
+                        # into an unrelated team_no). Only the display needs to
+                        # be gap-free, so remap to a plain 1, 2, 3... just for
+                        # what's shown on screen.
+                        team_no_display = {
+                            real: i
+                            for i, real in enumerate(
+                                sorted({_effective_team_no(v) for v in event_volunteers if _effective_team_no(v)}),
+                                start=1,
                             )
-                        elif my_event_row and not comp.get("is_past"):
-                            header += "  :orange-badge[:material/front_hand: You volunteered]"
-                        st.markdown(header)
-                        # Rules and format can run to a paragraph or three -
-                        # long ones fold away so a card stays scannable.
-                        details_text = e.get("details") or ""
-                        if len(details_text) > 220:
-                            with st.expander("Event details", icon=":material/info:"):
-                                st.markdown(details_text)
-                        elif details_text:
-                            st.caption(details_text)
+                        }
+                        selected_names = [
+                            user_name_by_id.get(v["user_id"], "Unknown")
+                            for v in event_volunteers
+                            if v.get("selected")
+                        ]
+                        already_volunteered = any(v["user_id"] == current_user_id for v in event_volunteers)
+                        is_eligible = (
+                            not is_read_only  # view-only tiers see every event, never volunteer
+                            and not comp.get("is_past")  # it already happened
+                            and not comp.get("not_attending")
+                            and current_user_grade is not None
+                            and e["min_grade"] <= current_user_grade <= e["max_grade"]
+                        )
+                        cap = e["team_size"] * e["max_teams"]
 
-                        # Every event gets exactly two sections regardless of
-                        # where its volunteers came from: who's actually
-                        # finalized to represent the club, and who's
-                        # volunteered but not (yet) picked. Team labels (from
-                        # the E2C sheet) are appended per name so it's still
-                        # clear who's grouped together within either section.
-                        def _label(v):
-                            name = user_name_by_id.get(v["user_id"], "Unknown")
-                            team_no = _effective_team_no(v)
-                            return f"{name} (Team {team_no_display[team_no]})" if team_no else name
-
-                        finalized = [v for v in event_volunteers if v.get("selected")]
-                        still_pending = [v for v in event_volunteers if not v.get("selected")]
-                        # Sister-club picks, shown as "Name (Club)" after the members.
-                        guests_here = [guest_label(g) for g in _guest_rows() if g["event_id"] == e["event_id"]]
-
-                        # Past tense once it's over: on a finished competition
-                        # "Finalized team" and "Volunteers" read as though it's
-                        # still being organised, which is what made members ask
-                        # why the app still showed them as being in it.
-                        if finalized or guests_here:
-                            n_team = len(finalized) + len(guests_here)
-                            st.caption(
-                                (f":material/verified: Team that went ({n_team}): "
-                                 if comp.get("is_past") else
-                                 f":material/verified: Finalized team ({n_team}/{cap}): ")
-                                + ", ".join([_label(v) for v in finalized] + guests_here)
+                        with st.container(border=True, key=f"rkcard_event_{e['event_id']}"):
+                            team_badge = "Solo" if e["team_size"] == 1 else f"{e['team_size']} per team"
+                            teams_badge = "1 team" if e["max_teams"] == 1 else f"up to {e['max_teams']} teams"
+                            header = (
+                                f"**{e['name']}**  :gray-badge[{grade_range}]  "
+                                f":gray-badge[{team_badge}]  :gray-badge[{teams_badge}]"
                             )
-                        if still_pending:
-                            st.caption(
-                                (f":material/group: Volunteered but not selected ({len(still_pending)}): "
-                                 if comp.get("is_past") else
-                                 f":material/group: Volunteers ({len(still_pending)}): ")
-                                + ", ".join(_label(v) for v in still_pending)
-                            )
-                        if not finalized and not still_pending and not guests_here:
-                            st.caption(":material/group: No volunteers yet")
-
-                        # Only shown when eligible — same pattern as the
-                        # "Request this" button on Inventory only
-                        # showing up when a part is actually
-                        # requestable by you.
-                        if is_eligible:
-                            if already_volunteered:
-                                my_row = next(
-                                    (v for v in event_volunteers if v["user_id"] == current_user_id), None
+                            my_event_row = next((v for v in event_volunteers if v["user_id"] == current_user_id), None)
+                            if my_event_row and my_event_row.get("selected"):
+                                header += (
+                                    "  :green-badge[:material/verified: You went]" if comp.get("is_past")
+                                    else "  :green-badge[:material/verified: You're selected]"
                                 )
-                                confirming = st.session_state.withdrawing_event_id == e["event_id"]
-                                if confirming:
-                                    was_selected = bool(my_row and my_row.get("selected"))
-                                    warning = f"Withdraw from {e['name']}?"
-                                    if was_selected:
-                                        warning += (
-                                            " You're currently **selected** for this event — "
-                                            "the host will be notified so they can find a replacement."
-                                        )
-                                    st.warning(warning)
-                                    # Withdrawing AFTER being selected needs a reason
-                                    # (host's request, 2026-11-07): it goes in the
-                                    # host email and in the withdrawal record on the
-                                    # Members page. Withdrawing while only volunteered
-                                    # (not selected yet) stays one click, as before.
-                                    reason = ""
-                                    if was_selected:
-                                        st.error(WITHDRAW_NOTE, icon=":material/gavel:")
-                                        reason = st.text_area(
-                                            "Why are you withdrawing? (required)",
-                                            key=f"withdraw_reason_{e['event_id']}",
-                                            max_chars=500,
-                                            placeholder="Give the actual reason - the host will read this.",
-                                        )
-                                    wcol1, wcol2 = st.columns([1, 1])
-                                    if wcol1.button(
-                                        "Confirm withdraw", key=f"confirm_withdraw_{e['event_id']}",
-                                        icon=":material/close:", type="primary",
-                                    ):
-                                        if was_selected and len(reason.strip()) < WITHDRAW_REASON_MIN_CHARS:
-                                            st.error(
-                                                f"Please give a proper reason (at least "
-                                                f"{WITHDRAW_REASON_MIN_CHARS} characters) before withdrawing."
+                            elif my_event_row and not comp.get("is_past"):
+                                header += "  :orange-badge[:material/front_hand: You volunteered]"
+                            st.markdown(header)
+                            # Rules and format can run to a paragraph or three -
+                            # long ones fold away so a card stays scannable.
+                            details_text = e.get("details") or ""
+                            if len(details_text) > 220:
+                                with st.expander("Event details", icon=":material/info:"):
+                                    st.markdown(details_text)
+                            elif details_text:
+                                st.caption(details_text)
+
+                            # Every event gets exactly two sections regardless of
+                            # where its volunteers came from: who's actually
+                            # finalized to represent the club, and who's
+                            # volunteered but not (yet) picked. Team labels (from
+                            # the E2C sheet) are appended per name so it's still
+                            # clear who's grouped together within either section.
+                            def _label(v):
+                                name = user_name_by_id.get(v["user_id"], "Unknown")
+                                team_no = _effective_team_no(v)
+                                return f"{name} (Team {team_no_display[team_no]})" if team_no else name
+
+                            finalized = [v for v in event_volunteers if v.get("selected")]
+                            still_pending = [v for v in event_volunteers if not v.get("selected")]
+                            # Sister-club picks, shown as "Name (Club)" after the members.
+                            guests_here = [guest_label(g) for g in _guest_rows() if g["event_id"] == e["event_id"]]
+
+                            # Past tense once it's over: on a finished competition
+                            # "Finalized team" and "Volunteers" read as though it's
+                            # still being organised, which is what made members ask
+                            # why the app still showed them as being in it.
+                            if finalized or guests_here:
+                                n_team = len(finalized) + len(guests_here)
+                                st.caption(
+                                    (f":material/verified: Team that went ({n_team}): "
+                                     if comp.get("is_past") else
+                                     f":material/verified: Finalized team ({n_team}/{cap}): ")
+                                    + ", ".join([_label(v) for v in finalized] + guests_here)
+                                )
+                            if still_pending:
+                                st.caption(
+                                    (f":material/group: Volunteered but not selected ({len(still_pending)}): "
+                                     if comp.get("is_past") else
+                                     f":material/group: Volunteers ({len(still_pending)}): ")
+                                    + ", ".join(_label(v) for v in still_pending)
+                                )
+                            if not finalized and not still_pending and not guests_here:
+                                st.caption(":material/group: No volunteers yet")
+
+                            # Only shown when eligible — same pattern as the
+                            # "Request this" button on Inventory only
+                            # showing up when a part is actually
+                            # requestable by you.
+                            if is_eligible:
+                                if already_volunteered:
+                                    my_row = next(
+                                        (v for v in event_volunteers if v["user_id"] == current_user_id), None
+                                    )
+                                    confirming = st.session_state.withdrawing_event_id == e["event_id"]
+                                    if confirming:
+                                        was_selected = bool(my_row and my_row.get("selected"))
+                                        warning = f"Withdraw from {e['name']}?"
+                                        if was_selected:
+                                            warning += (
+                                                " You're currently **selected** for this event — "
+                                                "the host will be notified so they can find a replacement."
                                             )
-                                            st.stop()
-                                        with _safe_write("withdraw from this event"):
-                                            recorded = True
-                                            if was_selected:
-                                                recorded = _record_withdrawal(comp, e, reason.strip())
-                                            client.table("event_volunteers").delete().eq(
-                                                "event_id", e["event_id"]
-                                            ).eq("user_id", current_user_id).execute()
-                                            invalidate_cache()
-                                            if was_selected:
-                                                _email_hosts_withdrawal(comp, e, reason.strip(), recorded)
+                                        st.warning(warning)
+                                        # Withdrawing AFTER being selected needs a reason
+                                        # (host's request, 2026-11-07): it goes in the
+                                        # host email and in the withdrawal record on the
+                                        # Members page. Withdrawing while only volunteered
+                                        # (not selected yet) stays one click, as before.
+                                        reason = ""
+                                        if was_selected:
+                                            st.error(WITHDRAW_NOTE, icon=":material/gavel:")
+                                            reason = st.text_area(
+                                                "Why are you withdrawing? (required)",
+                                                key=f"withdraw_reason_{e['event_id']}",
+                                                max_chars=500,
+                                                placeholder="Give the actual reason - the host will read this.",
+                                            )
+                                        wcol1, wcol2 = st.columns([1, 1])
+                                        if wcol1.button(
+                                            "Confirm withdraw", key=f"confirm_withdraw_{e['event_id']}",
+                                            icon=":material/close:", type="primary",
+                                        ):
+                                            if was_selected and len(reason.strip()) < WITHDRAW_REASON_MIN_CHARS:
+                                                st.error(
+                                                    f"Please give a proper reason (at least "
+                                                    f"{WITHDRAW_REASON_MIN_CHARS} characters) before withdrawing."
+                                                )
+                                                st.stop()
+                                            with _safe_write("withdraw from this event"):
+                                                recorded = True
+                                                if was_selected:
+                                                    recorded = _record_withdrawal(comp, e, reason.strip())
+                                                client.table("event_volunteers").delete().eq(
+                                                    "event_id", e["event_id"]
+                                                ).eq("user_id", current_user_id).execute()
+                                                invalidate_cache()
+                                                if was_selected:
+                                                    _email_hosts_withdrawal(comp, e, reason.strip(), recorded)
+                                                st.session_state.withdrawing_event_id = None
+                                                st.session_state.pop(f"withdraw_reason_{e['event_id']}", None)
+                                                st.session_state.volunteer_message = f"Withdrew from {e['name']}."
+                                                st.rerun()
+                                        if wcol2.button(
+                                            "Cancel", key=f"cancel_withdraw_{e['event_id']}", icon=":material/close:"
+                                        ):
                                             st.session_state.withdrawing_event_id = None
-                                            st.session_state.pop(f"withdraw_reason_{e['event_id']}", None)
-                                            st.session_state.volunteer_message = f"Withdrew from {e['name']}."
                                             st.rerun()
-                                    if wcol2.button(
-                                        "Cancel", key=f"cancel_withdraw_{e['event_id']}", icon=":material/close:"
-                                    ):
-                                        st.session_state.withdrawing_event_id = None
-                                        st.rerun()
+                                    else:
+                                        if st.button(
+                                            "Withdraw", key=f"withdraw_{e['event_id']}", icon=":material/close:"
+                                        ):
+                                            st.session_state.withdrawing_event_id = e["event_id"]
+                                            st.rerun()
                                 else:
                                     if st.button(
-                                        "Withdraw", key=f"withdraw_{e['event_id']}", icon=":material/close:"
+                                        "Volunteer",
+                                        key=f"volunteer_{e['event_id']}",
+                                        icon=":material/front_hand:",
+                                        type="primary",
                                     ):
-                                        st.session_state.withdrawing_event_id = e["event_id"]
-                                        st.rerun()
-                            else:
-                                if st.button(
-                                    "Volunteer",
-                                    key=f"volunteer_{e['event_id']}",
-                                    icon=":material/front_hand:",
-                                    type="primary",
-                                ):
-                                    with _safe_write("volunteer for this event"):
-                                        client.table("event_volunteers").insert({
-                                            "event_id": e["event_id"],
-                                            "user_id": current_user_id,
-                                        }).execute()
-                                        invalidate_cache()
-                                        st.session_state.volunteer_message = f"You volunteered for {e['name']}!"
-                                        st.rerun()
-
-                        elif comp.get("is_past") and not is_read_only:
-                            # The Volunteer/Withdraw buttons used to keep
-                            # showing on finished competitions, so members
-                            # could sign up for something that had already
-                            # happened — and withdrawing would have quietly
-                            # edited the record of who actually went.
-                            st.caption(
-                                ":material/lock: This competition is over — signups are closed."
-                            )
-
-                        # Host-only: finalize who's actually selected,
-                        # capped at team_size * max_teams. Only newly
-                        # selected people (not already-selected ones
-                        # re-saved unchanged) get an email.
-                        # Also with no volunteers at all, now that sister-club
-                        # students can be picked here without volunteering.
-                        if is_host and (event_volunteers or not comp.get("is_past")):
-                            # The multiselect + Save pair used to sit open on
-                            # every single event card, for every competition —
-                            # two extra widgets per event, on a page that
-                            # already renders one card per event. It's behind
-                            # this one button now; the picking happens in a
-                            # dialog with room to show who's double-booked.
-                            over_cap = len(
-                                [v for v in event_volunteers if v.get("selected")]
-                            ) + len(guests_here) > cap
-                            st.button(
-                                "Finalize team",
-                                key=f"open_finalize_{e['event_id']}",
-                                icon=":material/warning:" if over_cap else ":material/how_to_reg:",
-                                help="Over the cap — open to fix" if over_cap
-                                else "Pick who's actually representing the club",
-                                on_click=_open_finalize,
-                                args=(e["event_id"],),
-                            )
-                            if st.session_state.finalizing_event_id == e["event_id"]:
-                                # Team labels are worked out here, where the
-                                # per-event team_no remapping already exists,
-                                # rather than recomputing it in the dialog.
-                                label_by_uid = {
-                                    v["user_id"]: (
-                                        f"{user_name_by_id.get(v['user_id'], 'Unknown')} "
-                                        f"(Team {team_no_display[_effective_team_no(v)]})"
-                                        if _effective_team_no(v)
-                                        else user_name_by_id.get(v["user_id"], "Unknown")
-                                    )
-                                    for v in event_volunteers
-                                }
-                                render_finalize_dialog(
-                                    comp, e, event_volunteers, cap, label_by_uid
-                                )
-
-                        # Bot status: unlocked starting the day before
-                        # the competition (matches when the day-before
-                        # reminder email goes out), for anyone selected.
-                        # Everyone can see the statuses once unlocked;
-                        # only the selected person themselves can edit
-                        # their own.
-                        if selected_names and comp.get("competition_date"):
-                            days_until = (
-                                date.fromisoformat(comp["competition_date"]) - today_ist
-                            ).days
-                            if days_until <= 1:
-                                st.markdown("**Bot status**")
-                                for v in event_volunteers:
-                                    if not v.get("selected"):
-                                        continue
-                                    vol_name = user_name_by_id.get(v["user_id"], "Unknown")
-                                    status_text = v.get("bot_status") or "Not updated yet"
-                                    st.caption(f"{vol_name}: {status_text}")
-
-                                my_row = next(
-                                    (v for v in event_volunteers if v["user_id"] == current_user_id),
-                                    None,
-                                )
-                                if my_row and my_row.get("selected"):
-                                    new_status = st.text_input(
-                                        "Update your bot's status",
-                                        value=my_row.get("bot_status") or "",
-                                        key=f"bot_status_{e['event_id']}",
-                                    )
-                                    if st.button(
-                                        "Save status", key=f"save_bot_status_{e['event_id']}",
-                                        icon=":material/check:",
-                                    ):
-                                        with _safe_write("save the bot status"):
-                                            # Shared across the whole team (same team_no) when
-                                            # one's known — one bot, one status, no need for every
-                                            # teammate to separately type the same update.
-                                            my_team_no = my_row.get("team_no")
-                                            update_query = (
-                                                client.table("event_volunteers")
-                                                .update({"bot_status": new_status.strip()})
-                                                .eq("event_id", e["event_id"])
-                                            )
-                                            if my_team_no:
-                                                update_query = update_query.eq("team_no", my_team_no)
-                                            else:
-                                                update_query = update_query.eq("user_id", current_user_id)
-                                            update_query.execute()
+                                        with _safe_write("volunteer for this event"):
+                                            client.table("event_volunteers").insert({
+                                                "event_id": e["event_id"],
+                                                "user_id": current_user_id,
+                                            }).execute()
                                             invalidate_cache()
-                                            st.session_state.volunteer_message = "Bot status updated."
+                                            st.session_state.volunteer_message = f"You volunteered for {e['name']}!"
                                             st.rerun()
+
+                            elif comp.get("is_past") and not is_read_only:
+                                # The Volunteer/Withdraw buttons used to keep
+                                # showing on finished competitions, so members
+                                # could sign up for something that had already
+                                # happened — and withdrawing would have quietly
+                                # edited the record of who actually went.
+                                st.caption(
+                                    ":material/lock: This competition is over — signups are closed."
+                                )
+
+                            # Host-only: finalize who's actually selected,
+                            # capped at team_size * max_teams. Only newly
+                            # selected people (not already-selected ones
+                            # re-saved unchanged) get an email.
+                            # Also with no volunteers at all, now that sister-club
+                            # students can be picked here without volunteering.
+                            if is_host and (event_volunteers or not comp.get("is_past")):
+                                # The multiselect + Save pair used to sit open on
+                                # every single event card, for every competition —
+                                # two extra widgets per event, on a page that
+                                # already renders one card per event. It's behind
+                                # this one button now; the picking happens in a
+                                # dialog with room to show who's double-booked.
+                                over_cap = len(
+                                    [v for v in event_volunteers if v.get("selected")]
+                                ) + len(guests_here) > cap
+                                st.button(
+                                    "Finalize team",
+                                    key=f"open_finalize_{e['event_id']}",
+                                    icon=":material/warning:" if over_cap else ":material/how_to_reg:",
+                                    help="Over the cap — open to fix" if over_cap
+                                    else "Pick who's actually representing the club",
+                                    on_click=_open_finalize,
+                                    args=(e["event_id"],),
+                                )
+                                if st.session_state.finalizing_event_id == e["event_id"]:
+                                    # Team labels are worked out here, where the
+                                    # per-event team_no remapping already exists,
+                                    # rather than recomputing it in the dialog.
+                                    label_by_uid = {
+                                        v["user_id"]: (
+                                            f"{user_name_by_id.get(v['user_id'], 'Unknown')} "
+                                            f"(Team {team_no_display[_effective_team_no(v)]})"
+                                            if _effective_team_no(v)
+                                            else user_name_by_id.get(v["user_id"], "Unknown")
+                                        )
+                                        for v in event_volunteers
+                                    }
+                                    render_finalize_dialog(
+                                        comp, e, event_volunteers, cap, label_by_uid
+                                    )
+
+                            # Bot status: unlocked starting the day before
+                            # the competition (matches when the day-before
+                            # reminder email goes out), for anyone selected.
+                            # Everyone can see the statuses once unlocked;
+                            # only the selected person themselves can edit
+                            # their own.
+                            if selected_names and comp.get("competition_date"):
+                                days_until = (
+                                    date.fromisoformat(comp["competition_date"]) - today_ist
+                                ).days
+                                if days_until <= 1:
+                                    st.markdown("**Bot status**")
+                                    for v in event_volunteers:
+                                        if not v.get("selected"):
+                                            continue
+                                        vol_name = user_name_by_id.get(v["user_id"], "Unknown")
+                                        status_text = v.get("bot_status") or "Not updated yet"
+                                        st.caption(f"{vol_name}: {status_text}")
+
+                                    my_row = next(
+                                        (v for v in event_volunteers if v["user_id"] == current_user_id),
+                                        None,
+                                    )
+                                    if my_row and my_row.get("selected"):
+                                        new_status = st.text_input(
+                                            "Update your bot's status",
+                                            value=my_row.get("bot_status") or "",
+                                            key=f"bot_status_{e['event_id']}",
+                                        )
+                                        if st.button(
+                                            "Save status", key=f"save_bot_status_{e['event_id']}",
+                                            icon=":material/check:",
+                                        ):
+                                            with _safe_write("save the bot status"):
+                                                # Shared across the whole team (same team_no) when
+                                                # one's known — one bot, one status, no need for every
+                                                # teammate to separately type the same update.
+                                                my_team_no = my_row.get("team_no")
+                                                update_query = (
+                                                    client.table("event_volunteers")
+                                                    .update({"bot_status": new_status.strip()})
+                                                    .eq("event_id", e["event_id"])
+                                                )
+                                                if my_team_no:
+                                                    update_query = update_query.eq("team_no", my_team_no)
+                                                else:
+                                                    update_query = update_query.eq("user_id", current_user_id)
+                                                update_query.execute()
+                                                invalidate_cache()
+                                                st.session_state.volunteer_message = "Bot status updated."
+                                                st.rerun()
 
 
 # --- Layout ------------------------------------------------------------------
