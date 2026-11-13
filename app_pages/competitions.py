@@ -15,6 +15,7 @@ from datetime import date, datetime
 import streamlit as st
 
 from e2c_import import find_e2c_competition, scan_e2c_sheet
+from comp_fees import render_fees
 from rulebooks import render_rulebooks
 from slip_dialog import FLAG_KEY as SLIP_FLAG, open_slip, render_slip_dialog
 from shared import (
@@ -2252,6 +2253,10 @@ def render_competition_card(comp):
             # Rules PDFs the Discord bot answers rules questions from.
             if is_host:
                 render_rulebooks(comp, events)
+
+            # Registration fee: what a selected member owes and where to pay
+            # it, and the host's review of payment screenshots (comp_fees.py).
+            render_fees(comp, events)
 
             if events:
                 # Events fold away (2026-11-13): every card used to show every

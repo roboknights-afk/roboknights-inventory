@@ -3294,3 +3294,24 @@ it open across the reruns volunteering/finalizing cause. The change is a pure
 re-indent of the events block (so `git blame` on those ~300 lines points here);
 no logic changed. The "Event details" expander inside is now nested, which this
 Streamlit version allows.
+
+## Competition registration fees (2026-11-13, first used for NYRC 2027)
+
+Host's rule: every event's registration fee (NYRC: ₹1,500) is split evenly
+between everyone selected for it, sister-club guests included; a member's total
+is the sum over their events. `fee_math.py` (no Streamlit, so email scripts use
+the same arithmetic; shares round UP to the rupee) and `comp_fees.py`
+(`render_fees(comp, events)`, called on every competition card).
+
+- Host: "Registration fees" expander on the card: fee per event, UPI ID, payee,
+  QR upload; expected/confirmed totals; Confirm/Reject on each screenshot
+  (Reject emails the member); a table of who owes what.
+- Selected member: "Registration fee · ₹X" expander: breakdown per event, QR,
+  UPI ID, screenshot upload ("I've paid"). Hosts who are selected see it too.
+- Guests have no account: they reply to the fee email with the screenshot and a
+  host marks them off by hand.
+- Data: `competitions.fee_per_event/fee_upi_id/fee_payee_name/fee_qr_path` and
+  `competition_payments` (unique per competition+user). Migration at the end of
+  `supabase_schema.sql`; until it runs, hosts see a note and members nothing.
+  The UPI ID/QR are in the DB and the private `competition-payments` bucket
+  (created 2026-11-13 with the service key), never in this public repo.
