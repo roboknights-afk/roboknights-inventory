@@ -9,6 +9,8 @@
 # competition's own day — this page only has to display things, not chase
 # anyone.
 
+from datetime import datetime
+
 import streamlit as st
 
 from shared import (
@@ -339,11 +341,44 @@ with browse:
             (v["event_id"], v["user_id"]): v["team_no"] for v in cached_table("event_volunteers")
         }
 
+        # Also grouped (2026-11-17): results logged TOGETHER - same event,
+        # same position, saved within a minute of each other. That's one
+        # person logging "us" with their teammates picked, and it doesn't
+        # depend on team_no, which is often missing (Robo Race at
+        # Compufest'26 showed as two cards because only one of the pair
+        # had a team number).
+        def _logged_at(a):
+            return datetime.fromisoformat(a["created_at"].replace("Z", "+00:00"))
+
+        group_of = {}  # achievement_id -> its group's key
         groups = {}
-        for a in achievements:
+        for a in sorted(achievements, key=_logged_at):
             team_no = team_no_by_event_user.get((a["event_id"], a["user_id"]))
-            key = (a["event_id"], team_no) if team_no else ("solo", a["achievement_id"])
+            key = None
+            if team_no:
+                key = next(
+                    (group_of[b["achievement_id"]] for b in achievements
+                     if b["achievement_id"] in group_of and b["event_id"] == a["event_id"]
+                     and team_no_by_event_user.get((b["event_id"], b["user_id"])) == team_no),
+                    None,
+                )
+            if key is None:
+                key = next(
+                    (group_of[b["achievement_id"]] for b in achievements
+                     if b["achievement_id"] in group_of and b["event_id"] == a["event_id"]
+                     and (b.get("position") or "").strip().lower() == (a.get("position") or "").strip().lower()
+                     and abs((_logged_at(a) - _logged_at(b)).total_seconds()) <= 60),
+                    None,
+                )
+            if key is None:
+                key = a["achievement_id"]
+            group_of[a["achievement_id"]] = key
             groups.setdefault(key, []).append(a)
+        # Built oldest-first (so "logged together" compares in order), but
+        # shown newest-first, same as before.
+        groups = dict(sorted(
+            groups.items(), key=lambda kv: max(a["created_at"] for a in kv[1]), reverse=True,
+        ))
 
         if achievement_search:
             needle = achievement_search.lower()
