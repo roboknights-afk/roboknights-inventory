@@ -11,13 +11,15 @@
 # show is skipped entirely, so this stays a summary rather than turning
 # into a copy of every other page.
 
+import html
 from datetime import date
 
 import streamlit as st
 
 from shared import (
     cached_table, discord_id_problem, format_ist, get_client, invalidate_cache, is_meeting_visible,
-    meeting_invited_ids, meeting_invitee_rows, relative_days_label, safe_write, today_ist,
+    meeting_invited_ids, meeting_invitee_rows, plain_text_from_rich_html, relative_days_label,
+    safe_write, today_ist,
 )
 
 # Read-only page — every table it needs goes through the shared 8-second
@@ -382,16 +384,23 @@ with side_col:
     if not latest_announcements:
         st.caption("Nothing posted yet.")
     else:
-        for a in latest_announcements:
-            with st.container(border=True, key=f"rkcard_home_ann_{a['announcement_id']}"):
+        # One card for all three, a one-line preview each (2026-11-17).
+        # Bodies are stored as rich-text HTML, so they're turned into plain
+        # text first. Showing the raw body printed "<div style=...>" tags
+        # and &quot; entities on Home. The full post is one click away.
+        with st.container(border=True, key="rkcard_home_announcements"):
+            for i, a in enumerate(latest_announcements):
+                if i:
+                    st.divider()
+                # Older announcements were Markdown, so "**" goes too - a
+                # cut-off preview could otherwise leave half a bold marker.
+                preview = html.unescape(plain_text_from_rich_html(a["body"])).replace("**", "")
+                if len(preview) > 90:
+                    preview = preview[:87].rstrip() + "…"
                 st.markdown(f"**{a['subject']}**")
-                st.caption(f":material/schedule: {format_ist(a['created_at'])}")
-                body = a["body"]
-                # Keep the sidebar column skimmable — the full text is one
-                # click away on the Announcements page.
-                st.write(body if len(body) <= 180 else body[:177] + "...")
-        if not is_exun:
-            st.page_link("app_pages/announcements.py", label="All announcements", icon=":material/arrow_forward:")
+                st.caption(f":material/schedule: {format_ist(a['created_at'])}" + (f" · {preview}" if preview else ""))
+            if not is_exun:
+                st.page_link("app_pages/announcements.py", label="All announcements", icon=":material/arrow_forward:")
 
     st.subheader(":material/link: Quick links", anchor=False)
     # A wrapping row of links rather than a tall list: same pages, a third
@@ -415,11 +424,13 @@ with side_col:
     # "which comps am I in", meeting and consent-form reminder DMs, and
     # whether you count as a host. Checked before saving (discord_id_problem,
     # 2026-11-05) after one member's ID was saved on another member's account.
+    # No "Your settings" heading any more (2026-11-17): the two collapsed
+    # expanders already say what they are, and the heading was one more
+    # thing to scroll past on a phone.
     if not is_read_only:
-        st.subheader(":material/settings: Your settings", anchor=False)
         linked_id = (my_row or {}).get("discord_user_id") or ""
         with st.expander(
-            "Discord · linked" if linked_id else "Discord · not linked yet",
+            "Settings · Discord linked" if linked_id else "Settings · Discord not linked yet",
             icon=":material/forum:", expanded=not linked_id,
         ):
             st.caption(
@@ -459,7 +470,7 @@ with side_col:
     # Anything about YOU - selected, team changes, your parts, your
     # queries - plus announcements and meetings always come through.
     if not is_read_only and my_row is not None:
-        with st.expander("Emails", icon=":material/mail:"):
+        with st.expander("Settings · Emails", icon=":material/mail:"):
             if "unsubscribed_nonessential" not in my_row:
                 st.caption("Email preferences aren't switched on yet - a host needs to run a database update.")
             else:
