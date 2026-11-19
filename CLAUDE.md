@@ -3328,6 +3328,28 @@ No data or schema change: `requests.due_date` has existed since the loan
 due-dates chunk. Tested with AppTest on made-up parts/loans (non-host and
 host), including an overdue loan and a loan with no date.
 
+## Login screen polish (2026-11-19)
+
+All in `app.py`'s login screen, no new CSS:
+- The email/password fields + Log in button are an `st.form("login_form",
+  border=False)` so **Enter submits**. "Forgot password?" stays outside it
+  (a form holds only its own submit button).
+- `friendly_auth_error(error, action)` replaces raw Supabase text on log in,
+  sign up and resend: wrong password, unconfirmed email, weak password,
+  already registered, rate limit. Anything else gets a generic line and the
+  real error is printed to the server log.
+- Sign up checks name, phone and password length (`MIN_PASSWORD_LENGTH = 6`,
+  Supabase's default) BEFORE calling Supabase, and shows the rule under the
+  box. If the project's minimum is ever raised, Supabase's own message (which
+  names the real minimum) still comes through.
+- The divider under "Continue with Google" is an "or use your email and
+  password" caption; the stay-logged-in note is plain English now.
+
+Tested with AppTest against a MagicMock Supabase client (the real login
+screen writes a `google_pkce_state` row on every load, so the test stubs
+`shared.get_client`). Enter-to-submit can't be pressed in AppTest; it's
+Streamlit's default for forms (`enter_to_submit=True`).
+
 ## Competition registration fees (2026-11-13, first used for NYRC 2027)
 
 Host's rule: every event's registration fee (NYRC: ₹1,500) is split evenly

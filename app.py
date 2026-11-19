@@ -368,6 +368,38 @@ def school_email_input(label, key):
     return build_school_email(username)
 
 
+# The shortest password the sign-up form accepts before asking Supabase.
+# 6 is Supabase's own default minimum. If the project's setting is ever
+# raised, Supabase still refuses a shorter one and its own message (which
+# names the real minimum) is shown, so this can only be too lenient, never
+# block a password Supabase would have taken.
+MIN_PASSWORD_LENGTH = 6
+
+
+def friendly_auth_error(error, action):
+    # Login-screen errors used to show Supabase's raw text ("Couldn't log
+    # in: Invalid login credentials"). This turns the common ones into what
+    # to actually do next (2026-11-19). Anything unrecognised gets a generic
+    # line, with the real error printed to the server log for debugging.
+    text = str(error)
+    lowered = text.lower()
+    if "invalid login credentials" in lowered:
+        return "Wrong email or password. Check them and try again, or use **Forgot password?** below."
+    if "email not confirmed" in lowered:
+        return (
+            "Your email isn't confirmed yet. Open the confirmation email we sent you "
+            "(check spam too), or use **Resend confirmation email** on the Sign up tab."
+        )
+    if "password" in lowered and ("at least" in lowered or "weak" in lowered):
+        return f"That password won't work: {text}"
+    if "already registered" in lowered:
+        return "This email already has an account. Log in instead, or use **Forgot password?**."
+    if "rate limit" in lowered or "too many" in lowered:
+        return "Too many attempts in a short time. Wait a minute, then try again."
+    print(f"[login screen] couldn't {action}: {error!r}")
+    return f"Couldn't {action} right now. Try again in a moment, and ask a host if it keeps happening."
+
+
 # --- "Save my login details" -----------------------------------------------
 # A real stay-logged-in session, using Supabase's OWN refresh token stored
 # in the browser — never the actual password — so you don't have to type
@@ -950,21 +982,27 @@ def show_login_signup(client):
                 "Opens in a new tab. Only @dpsrkp.net Google accounts can sign in this way.",
                 text_alignment="center",
             )
-            st.divider()
+            # A small "or" line instead of a grey divider (2026-11-19).
+            st.caption("or use your email and password", text_alignment="center")
 
             login_tab, signup_tab = st.tabs(["Log in", "Sign up"])
 
             with login_tab:
-                email = school_email_input("Email", key="login_username")
-                password = st.text_input(
-                    "Password", type="password", key="login_password",
-                    autocomplete="current-password",
-                )
-                st.caption(
-                    ":material/check_circle: Stays logged in on this device — "
-                    "never your actual password, just a secure session token.",
-                )
-                if st.button("Log in", icon=":material/login:", type="primary", width="stretch"):
+                # A form (2026-11-19) so pressing Enter in the password box
+                # logs you in. With a plain st.button, Enter did nothing and
+                # you had to click. Forgot password stays OUTSIDE the form:
+                # a form can only hold its one submit button.
+                with st.form("login_form", border=False):
+                    email = school_email_input("Email", key="login_username")
+                    password = st.text_input(
+                        "Password", type="password", key="login_password",
+                        autocomplete="current-password",
+                    )
+                    st.caption(":material/check_circle: You'll stay logged in on this device.")
+                    login_clicked = st.form_submit_button(
+                        "Log in", icon=":material/login:", type="primary", width="stretch",
+                    )
+                if login_clicked:
                     try:
                         result = client.auth.sign_in_with_password({"email": email, "password": password})
                         st.session_state.auth_user = {"id": result.user.id, "email": result.user.email}
@@ -979,7 +1017,7 @@ def show_login_signup(client):
                             st.session_state.pending_remember_token = result.session.refresh_token
                         st.rerun()
                     except Exception as e:
-                        st.error(f"Couldn't log in: {e}")
+                        st.error(friendly_auth_error(e, "log in"))
 
                 # Sends the user to the separate reset screen (below). A plain
                 # button + full screen swap avoids Streamlit's habit of
@@ -1012,9 +1050,19 @@ def show_login_signup(client):
                     "Password", type="password", key="signup_password",
                     autocomplete="new-password",
                 )
+                st.caption(f"Password: at least {MIN_PASSWORD_LENGTH} characters.")
                 if st.button("Sign up", icon=":material/person_add:", type="primary", width="stretch"):
+                    # Checked here, before Supabase, so a missing field is
+                    # caught up front instead of creating a half-empty
+                    # account (2026-11-19).
                     if email == ALLOWED_EMAIL_DOMAIN:
                         st.error("Enter your username.")
+                    elif not name.strip():
+                        st.error("Enter your name.")
+                    elif not phone_no.strip():
+                        st.error("Enter your phone number.")
+                    elif len(password) < MIN_PASSWORD_LENGTH:
+                        st.error(f"Your password needs at least {MIN_PASSWORD_LENGTH} characters.")
                     elif is_removed_email(email):
                         _log_removed_block(email, "Blocked a sign-up by a member removed from the club")
                         st.error("This account has been removed from RoboKnights and can no longer sign in.")
@@ -1087,7 +1135,7 @@ def show_login_signup(client):
                                     st.balloons()
                                     st.success("Account created! Check your email (including spam) to confirm it, then log in above.")
                         except Exception as e:
-                            st.error(f"Couldn't sign up: {e}")
+                            st.error(friendly_auth_error(e, "sign up"))
 
                 # If the confirmation email never arrived (spam filter, typo
                 # fixed, etc.), asks Supabase to send it again.
@@ -1096,7 +1144,7 @@ def show_login_signup(client):
                         client.auth.resend({"type": "signup", "email": email})
                         st.success("Confirmation email resent — check your inbox and spam folder.")
                     except Exception as e:
-                        st.error(f"Couldn't resend: {e}")
+                        st.error(friendly_auth_error(e, "resend the email"))
 
 
 def show_email_verified_screen():
