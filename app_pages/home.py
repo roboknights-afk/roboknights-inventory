@@ -12,12 +12,12 @@
 # into a copy of every other page.
 
 import html
-from datetime import date
+from datetime import date, datetime
 
 import streamlit as st
 
 from shared import (
-    cached_table, discord_id_problem, format_ist, get_client, invalidate_cache, is_meeting_visible,
+    IST, cached_table, discord_id_problem, format_ist, get_client, invalidate_cache, is_meeting_visible,
     meeting_invited_ids, meeting_invitee_rows, plain_text_from_rich_html, relative_days_label,
     safe_write, today_ist,
 )
@@ -184,27 +184,36 @@ if upcoming_meetings:
 
 # --- Header + metrics strip ---------------------------------------------------
 
-st.title(f"Welcome back, {current_user_name.split()[0]}")
+# Greeting by IST time of day (2026-11-19) instead of always "Welcome back".
+# Late night (before 5 AM) still counts as evening.
+_hour = datetime.now(IST).hour
+_greeting = (
+    "Good morning" if 5 <= _hour < 12
+    else "Good afternoon" if 12 <= _hour < 17
+    else "Good evening"
+)
+st.title(f"{_greeting}, {current_user_name.split()[0]}")
 st.caption(f":material/calendar_today: {today.strftime('%A, %d %B %Y')}")
 
-m1, m2, m3, m4 = st.columns(4)
-m1.metric(
-    "Part requests for me", len(pending_for_me), border=True,
-    help="Requests from other members waiting on your approval",
-)
-m2.metric(
-    "Upcoming meetings", len(upcoming_meetings), border=True,
-    help="Meetings scheduled for today or later",
-)
-m3.metric(
-    "Queries needing a reply" if is_host else "Queries with a new reply",
-    queries_waiting, border=True,
-    help="Threads where the last message wasn't yours",
-)
-m4.metric(
-    "My competitions", len({c["competition_id"] for c, _, _ in upcoming_competitions}), border=True,
-    help="Upcoming competitions you've volunteered for or been selected for",
-)
+# Only the counts that aren't zero (2026-11-19). A row of four zeros told
+# a member with nothing on their plate nothing at all, and pushed the
+# "Next up" card down; when everything is zero the row is skipped and
+# "Next up" is the first thing on the page. Always four columns, so a lone
+# tile keeps the same size instead of stretching across the page.
+_tiles = [
+    ("Part requests for me", len(pending_for_me),
+     "Requests from other members waiting on your approval"),
+    ("Upcoming meetings", len(upcoming_meetings),
+     "Meetings scheduled for today or later"),
+    ("Queries needing a reply" if is_host else "Queries with a new reply", queries_waiting,
+     "Threads where the last message wasn't yours"),
+    ("My competitions", len({c["competition_id"] for c, _, _ in upcoming_competitions}),
+     "Upcoming competitions you've volunteered for or been selected for"),
+]
+_tiles = [t for t in _tiles if t[1]]
+if _tiles:
+    for _col, (_label, _value, _help) in zip(st.columns(4), _tiles):
+        _col.metric(_label, _value, border=True, help=_help)
 
 feed_col, side_col = st.columns([2, 1], gap="medium")
 
@@ -362,6 +371,9 @@ with feed_col:
                         f"**{m['title']}** {rsvp_badge} "
                         f"{_date_badge(date.fromisoformat(m['meeting_date']))}{time_badge}"
                     )
+            # Only the next five are listed; say so rather than cutting off silently.
+            if len(upcoming_meetings) > 5:
+                st.caption(f"+{len(upcoming_meetings) - 5} more on the Meetings page")
             st.page_link("app_pages/meetings.py", label="All meetings", icon=":material/arrow_forward:")
 
     if my_borrowed:
@@ -388,17 +400,19 @@ with side_col:
         # Bodies are stored as rich-text HTML, so they're turned into plain
         # text first. Showing the raw body printed "<div style=...>" tags
         # and &quot; entities on Home. The full post is one click away.
-        with st.container(border=True, key="rkcard_home_announcements"):
-            for i, a in enumerate(latest_announcements):
-                if i:
-                    st.divider()
+        # Spacing instead of grey divider lines between the three
+        # (2026-11-19): each subject + preview sits in its own tight group,
+        # and the card puts a medium gap between the groups.
+        with st.container(border=True, key="rkcard_home_announcements", gap="medium"):
+            for a in latest_announcements:
                 # Older announcements were Markdown, so "**" goes too - a
                 # cut-off preview could otherwise leave half a bold marker.
                 preview = html.unescape(plain_text_from_rich_html(a["body"])).replace("**", "")
                 if len(preview) > 90:
                     preview = preview[:87].rstrip() + "…"
-                st.markdown(f"**{a['subject']}**")
-                st.caption(f":material/schedule: {format_ist(a['created_at'])}" + (f" · {preview}" if preview else ""))
+                with st.container(gap="xxsmall"):
+                    st.markdown(f"**{a['subject']}**")
+                    st.caption(f":material/schedule: {format_ist(a['created_at'])}" + (f" · {preview}" if preview else ""))
             if not is_exun:
                 st.page_link("app_pages/announcements.py", label="All announcements", icon=":material/arrow_forward:")
 

@@ -3284,6 +3284,14 @@ up for you", and competitions are ONE card per competition with its events as
 badges (green = selected, violet = volunteered) instead of one card per event.
 The "My competitions" metric counts competitions, not events, to match.
 
+Home follow-up (2026-11-19, student picked from a list): the title greets by
+IST time of day ("Good morning/afternoon/evening, Name"; before 5 AM counts
+as evening). The metric strip shows only NON-ZERO counts, always in four
+columns so a lone tile keeps its size, and is skipped entirely when all are
+zero, so "Next up" is the first card. The Meetings tab says "+N more on the
+Meetings page" past five. Announcements are separated by container gaps
+(`gap="medium"` outside, `"xxsmall"` per item) instead of `st.divider()`.
+
 ## UI refresh, phase 3a: Competitions scroll (2026-11-13)
 
 Each competition card's events now sit inside `st.expander(key=f"comp_events_{cid}")`
