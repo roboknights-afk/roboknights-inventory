@@ -3295,6 +3295,31 @@ re-indent of the events block (so `git blame` on those ~300 lines points here);
 no logic changed. The "Event details" expander inside is now nested, which this
 Streamlit version allows.
 
+## UI refresh, phase 3b: Inventory + expected-back dates (2026-11-19)
+
+Inventory already had the shared pattern (title, 4 bordered metrics, search +
+segmented filter), so this is polish plus one real addition the student asked
+for: **on-loan parts now show when they're expected back, to everyone.**
+
+- `loans_by_part_id` (every approved loan, NOT owner-filtered) feeds
+  `expected_back_badge()`: a grey "Back by 24 Nov" (or "Next back" when a
+  card's units are due on different dates) under the "on loan" badge, on both
+  serialised and loose-item cards. Overdue shows orange "Was due 18 Nov", not
+  red, because every member sees it. No due date (old loans, host-flipped
+  status) → no badge. The badge's help text says it's the date agreed at
+  approval and can change, which is the "tentative" the student asked for.
+- The badge never names the borrower. WHO has a part is still owner/host only
+  (`active_loan_by_part_id`), and their "lent to X" captions now end in
+  "· back by 24 Nov"; "Manage units" rows show it under the On loan badge.
+- The "On loan" filter sorts soonest-back first (no date last).
+- Smaller: title "Parts inventory" + a one-line caption, metric help text,
+  the read-only notice and the column headers are captions instead of an
+  info box / bold text.
+
+No data or schema change: `requests.due_date` has existed since the loan
+due-dates chunk. Tested with AppTest on made-up parts/loans (non-host and
+host), including an overdue loan and a loan with no date.
+
 ## Competition registration fees (2026-11-13, first used for NYRC 2027)
 
 Host's rule: every event's registration fee (NYRC: ₹1,500) is split evenly

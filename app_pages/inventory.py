@@ -63,10 +63,13 @@ if "requesting_key" not in st.session_state:
 if "show_add_part" not in st.session_state:
     st.session_state.show_add_part = False
 
-st.title(":material/inventory_2: RoboKnights Parts Inventory")
+st.title(":material/inventory_2: Parts inventory")
+st.caption("Borrow parts other members own, and lend out your own.")
 
 if is_read_only:
-    st.info(
+    # A caption, not an st.info box (UI refresh phase 3): it's a standing
+    # note about the account, not something that needs acting on.
+    st.caption(
         ":material/visibility: Read-only account — you can browse everything "
         "here, but requesting, adding and editing parts are turned off."
     )
@@ -124,6 +127,56 @@ for r in approved_requests:
 def bulk_available(part):
     # Total owned minus whatever's currently lent out.
     return (part.get("quantity") or 1) - on_loan_qty_by_part_id.get(part["part_id"], 0)
+
+
+# Every active loan, per part, for EVERYONE — unlike active_loan_by_part_id
+# below, which is owner/host only because it's used to say WHO has a part.
+# This one is only read for the expected-back date, which anyone looking
+# for a part needs ("it's out, but back on the 24th") and which says
+# nothing about who borrowed it. A list, because a bulk row can have
+# several loans out at once.
+loans_by_part_id = {}
+for r in approved_requests:
+    loans_by_part_id.setdefault(r["part_id"], []).append(r)
+
+
+def loan_due(loan):
+    # The due date the owner set on approval, or None for loans from before
+    # due dates existed (and parts a host flipped to "on loan" by hand).
+    return date.fromisoformat(loan["due_date"]) if loan.get("due_date") else None
+
+
+def short_date(d):
+    # "24 Nov" — the year only when it isn't this year.
+    return d.strftime("%d %b") if d.year == today_ist().year else d.strftime("%d %b %Y")
+
+
+def back_by_text(loan):
+    d = loan_due(loan)
+    if not d:
+        return "no return date set"
+    return f"was due {short_date(d)}" if d < today_ist() else f"back by {short_date(d)}"
+
+
+def expected_back_badge(loans):
+    # One badge for a card: when the first of its on-loan units is due back.
+    # "Back by" when there's a single date, "Next back" when several units
+    # are out on different dates. It's tentative on purpose (the help text
+    # says so): it's the date agreed at approval, not a promise.
+    dates = sorted(d for d in (loan_due(l) for l in loans) if d)
+    if not dates:
+        return
+    first = dates[0]
+    tip = "The return date agreed when the loan was approved. It can change."
+    if first < today_ist():
+        # Orange, not red: everyone sees this badge, and it shouldn't read
+        # as calling someone out. The owner gets the full detail elsewhere.
+        st.badge(f"Was due {short_date(first)}", icon=":material/event_busy:",
+                 color="orange", help=tip)
+    else:
+        label = "Back by" if len(set(dates)) == 1 and len(dates) == len(loans) else "Next back"
+        st.badge(f"{label} {short_date(first)}", icon=":material/event:",
+                 color="gray", help=tip)
 
 # Owners can see who their own on-loan part is with, right in the main
 # list (not just buried in "Parts I've lent out"). Hosts can see this for
@@ -502,18 +555,20 @@ available_count = sum(
 on_loan_count = total_count - available_count
 
 m1, m2, m3, m4 = st.columns(4)
-m1.metric("Total parts", total_count, border=True)
-m2.metric("Available", available_count, border=True)
-m3.metric("On loan", on_loan_count, border=True)
+m1.metric("Total parts", total_count, border=True, help="Every unit in the club, loose items counted one by one")
+m2.metric("Available", available_count, border=True, help="Free to request right now")
+m3.metric("On loan", on_loan_count, border=True, help="Out with someone at the moment")
 # The one number that means "you need to do something" pulses gold while
 # it's non-zero. The keyed container just gives CSS a stable hook
 # (st-key-rkpulse_requests) — the rule in app.py does the pulsing.
 if my_requests:
     with m4:
         with st.container(key="rkpulse_requests"):
-            st.metric("Requests for me", len(my_requests), border=True)
+            st.metric("Requests for me", len(my_requests), border=True,
+                      help="Requests for your parts waiting on your approval")
 else:
-    m4.metric("Requests for me", len(my_requests), border=True)
+    m4.metric("Requests for me", len(my_requests), border=True,
+              help="Requests for your parts waiting on your approval")
 
 # If they got here by clicking the "New request" email link, that link ends
 # in ?tab=requests. Unlike the password-reset links, this is a normal query
@@ -564,6 +619,9 @@ def _render_serialised_card(group_name, group_owner_id, units):
                     f"{len(on_loan_units)} on loan",
                     icon=":material/schedule:", color="orange",
                 )
+                expected_back_badge([
+                    loan for u in on_loan_units for loan in loans_by_part_id.get(u["part_id"], [])
+                ])
 
         if available_units and not is_mine and not is_read_only and my_pending_count < MAX_PENDING_REQUESTS:
             # How many, and for how long, are asked in the dialog — they
@@ -588,7 +646,9 @@ def _render_serialised_card(group_name, group_owner_id, units):
                 loan = active_loan_by_part_id.get(u["part_id"])
                 if loan:
                     borrower = user_name_by_id.get(loan["requester_id"], "Unknown")
-                    st.caption(f":material/person: {u['part_number']} lent to {borrower}")
+                    st.caption(
+                        f":material/person: {u['part_number']} lent to {borrower} · {back_by_text(loan)}"
+                    )
 
         # Per-unit actions (return, delete, host edit) live behind an
         # expander so the card stays readable — they're per physical unit,
@@ -605,6 +665,11 @@ def _render_serialised_card(group_name, group_owner_id, units):
                         ucol2.badge("Available", icon=":material/check_circle:", color="green")
                     else:
                         ucol2.badge("On loan", icon=":material/schedule:", color="orange")
+                        unit_loan = active_loan_by_part_id.get(part["part_id"])
+                        if unit_loan:
+                            text = back_by_text(unit_loan)
+                            # Not .capitalize(): that would lower-case the month.
+                            ucol2.caption(text[0].upper() + text[1:])
 
                     # The owner can mark their own on-loan part as returned —
                     # finishes the lifecycle: on loan -> returned -> available.
@@ -692,6 +757,7 @@ def _render_bulk_card(part):
             )
             if out_qty:
                 st.badge(f"{out_qty} on loan", icon=":material/schedule:", color="orange")
+                expected_back_badge(loans_by_part_id.get(part["part_id"], []))
 
         if free_qty > 0 and not is_mine and not is_read_only and my_pending_count < MAX_PENDING_REQUESTS:
             col4.button(
@@ -714,7 +780,9 @@ def _render_bulk_card(part):
             ]
             for loan in out_loans:
                 borrower = user_name_by_id.get(loan["requester_id"], "Unknown")
-                st.caption(f":material/person: {loan.get('quantity') or 1} with {borrower}")
+                st.caption(
+                    f":material/person: {loan.get('quantity') or 1} with {borrower} · {back_by_text(loan)}"
+                )
 
             with st.expander("Manage stock"):
                 new_total = st.number_input(
@@ -837,6 +905,19 @@ with tab_parts:
     ]
     cards.sort(key=lambda c: (c[1].lower(), user_name_by_id.get(c[2], "").lower()))
 
+    # On the "On loan" filter, the useful order is "what's back soonest",
+    # not alphabetical. Loans with no due date go last. sort() is stable,
+    # so cards due back the same day keep their alphabetical order.
+    def _next_back(card):
+        kind, _, _, payload = card
+        part_ids = [u["part_id"] for u in payload] if kind == "group" else [payload["part_id"]]
+        dates = [loan_due(l) for pid in part_ids for l in loans_by_part_id.get(pid, [])]
+        dates = [d for d in dates if d]
+        return min(dates) if dates else date.max
+
+    if status_filter == "On loan":
+        cards.sort(key=_next_back)
+
     if not parts:
         st.caption("No parts yet — add one from the **Add & manage** tab.")
     elif not cards:
@@ -846,10 +927,14 @@ with tab_parts:
         # same `cards` list. They used to sit in separate blocks — the headers
         # under this if/else, the card loops outside it — which happened to
         # line up only because both were derived from visible_parts.
+        if status_filter == "On loan":
+            st.caption(":material/sort: Soonest back first.")
+        # Captions rather than bold text (UI refresh phase 3): column labels
+        # should sit quieter than the part names under them.
         head1, head2, head3, head4 = st.columns([3, 2, 2, 2])
-        head1.markdown("**Name**")
-        head2.markdown("**Owned by**")
-        head3.markdown("**Availability**")
+        head1.caption("Name")
+        head2.caption("Owned by")
+        head3.caption("Availability")
 
         for kind, _name, _owner_id, payload in cards:
             if kind == "group":
